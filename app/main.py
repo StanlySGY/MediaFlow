@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import router as asr_router
+from app.api.routes import meta_router, router as asr_router
 from app.config import get_settings
 from app.services.stream_manager import TaskManager
 
@@ -28,6 +28,7 @@ def create_app() -> FastAPI:
     )
     app.state.manager = TaskManager(settings)
     app.include_router(asr_router)
+    app.include_router(meta_router)
 
     if not settings.asr_api_key:
         logging.getLogger(__name__).warning(

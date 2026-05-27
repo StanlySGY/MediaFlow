@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from app.config import Settings
-from app.models.schemas import Segment, SegmentEvent, TaskInfo, TaskResult, TaskStatus
+from app.models.schemas import Segment, SegmentEvent, TaskInfo, TaskResult, TaskStatus, Word
 from app.services import splitter
-from app.services.asr_client import ASRClient, ASRError
+from app.services.asr import ASRError, create_provider
 from app.services.ffmpeg_service import FFmpegError, normalize_to_wav, probe_duration
 from app.services.merger import merge_segments
 
@@ -219,21 +219,17 @@ class TaskManager:
         s = self._settings
         sem = asyncio.Semaphore(max(1, s.asr_concurrency))
 
-        async with ASRClient(
-            base_url=s.asr_base_url,
-            api_key=s.asr_api_key,
-            model=s.asr_model,
-            language=s.asr_language,
-            timeout=s.asr_timeout,
-            max_retries=s.asr_max_retries,
-            retry_backoff=s.asr_retry_backoff,
-        ) as client:
+        async with create_provider(s) as provider:
 
             async def worker(seg: Segment) -> None:
                 async with sem:
                     try:
-                        res = await client.transcribe(seg.file_path)
+                        res = await provider.transcribe(seg.file_path)
                         seg.text = res.text
+                        seg.words = [
+                            Word(word=w.word, start=w.start + seg.start, end=w.end + seg.start)
+                            for w in res.words
+                        ]
                         seg.is_final = True
                     except ASRError as e:
                         seg.error = str(e)

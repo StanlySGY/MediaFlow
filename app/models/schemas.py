@@ -16,6 +16,12 @@ class TaskStatus(str, Enum):
     failed = "failed"
 
 
+class Word(BaseModel):
+    word: str
+    start: float
+    end: float
+
+
 class Segment(BaseModel):
     segment_id: int
     start: float
@@ -24,6 +30,7 @@ class Segment(BaseModel):
     text: str = ""
     is_final: bool = False
     error: str | None = None
+    words: list[Word] = Field(default_factory=list)
 
     @property
     def duration(self) -> float:

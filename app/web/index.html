@@ -137,6 +137,9 @@
         <button id="copyBtn">复制</button>
         <button id="downloadBtn">下载 .txt</button>
         <button id="jsonBtn">下载 .json</button>
+        <button id="srtBtn">下载 .srt</button>
+        <button id="vttBtn">下载 .vtt</button>
+        <button id="tokenBtn" title="更改访问令牌">🔑</button>
       </div>
     </div>
   </section>
@@ -152,6 +155,39 @@ const segs = new Map();
 let taskId = null;
 let es = null;
 let pollTimer = null;
+let authRequired = false;
+
+const TOKEN_KEY = 'asr_token';
+const getToken = () => localStorage.getItem(TOKEN_KEY) || '';
+const setToken = (t) => { if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); };
+
+async function authedFetch(url, opts = {}) {
+  const t = getToken();
+  const headers = { ...(opts.headers || {}) };
+  if (t) headers['Authorization'] = `Bearer ${t}`;
+  const r = await fetch(url, { ...opts, headers });
+  if (r.status === 401) {
+    setToken('');
+    const tok = prompt('需要访问令牌');
+    if (tok) { setToken(tok); return authedFetch(url, opts); }
+  }
+  return r;
+}
+function sseUrl(path) {
+  const t = getToken();
+  return t ? `${path}?token=${encodeURIComponent(t)}` : path;
+}
+
+(async function initAuth() {
+  try {
+    const info = await fetch('/auth/info').then(r => r.json());
+    authRequired = !!info.auth_required;
+    if (authRequired && !getToken()) {
+      const tok = prompt('需要访问令牌（已启用鉴权）');
+      if (tok) setToken(tok);
+    }
+  } catch (e) { /* ignore */ }
+})();
 
 const drop = $('#drop'), fileInput = $('#file');
 drop.addEventListener('click', () => fileInput.click());
@@ -173,9 +209,23 @@ $('#copyBtn').addEventListener('click', () => navigator.clipboard.writeText($('#
 $('#downloadBtn').addEventListener('click', () => downloadFile(`${taskId}.txt`, $('#fullText').value, 'text/plain'));
 $('#jsonBtn').addEventListener('click', async () => {
   if (!taskId) return;
-  const r = await fetch(`/asr/task/${taskId}/result`); const txt = await r.text();
+  const r = await authedFetch(`/asr/task/${taskId}/result`); const txt = await r.text();
   downloadFile(`${taskId}.json`, txt, 'application/json');
 });
+$('#srtBtn').addEventListener('click', () => downloadSubtitle('srt'));
+$('#vttBtn').addEventListener('click', () => downloadSubtitle('vtt'));
+$('#tokenBtn').addEventListener('click', () => {
+  const cur = getToken();
+  const tok = prompt('访问令牌（留空清除）', cur);
+  if (tok !== null) setToken(tok.trim());
+});
+
+async function downloadSubtitle(fmt) {
+  if (!taskId) return;
+  const r = await authedFetch(`/asr/task/${taskId}/subtitle?format=${fmt}`);
+  if (!r.ok) { alert(`字幕下载失败: ${r.status}`); return; }
+  downloadFile(`${taskId}.${fmt}`, await r.text(), fmt === 'srt' ? 'application/x-subrip' : 'text/vtt');
+}
 
 function downloadFile(name, content, type) {
   const blob = new Blob([content], { type });
@@ -190,7 +240,7 @@ async function submit(file) {
   $('#status').textContent = 'uploading';
   const fd = new FormData(); fd.append('file', file);
   try {
-    const r = await fetch('/asr/task', { method: 'POST', body: fd });
+    const r = await authedFetch('/asr/task', { method: 'POST', body: fd });
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
     taskId = data.task_id;
@@ -205,7 +255,7 @@ async function submit(file) {
 
 function start() {
   poll();
-  es = new EventSource(`/asr/task/${taskId}/stream`);
+  es = new EventSource(sseUrl(`/asr/task/${taskId}/stream`));
   es.addEventListener('segment', (e) => {
     const seg = JSON.parse(e.data);
     segs.set(seg.segment_id, seg);
@@ -215,10 +265,10 @@ function start() {
   es.addEventListener('done', async () => {
     if (es) { es.close(); es = null; }
     if (pollTimer) clearTimeout(pollTimer);
-    const info = await fetch(`/asr/task/${taskId}`).then(r => r.json()).catch(() => null);
+    const info = await authedFetch(`/asr/task/${taskId}`).then(r => r.json()).catch(() => null);
     if (info) { $('#status').textContent = info.status; setStatusClass(info.status); $('#progress').style.width = '100%'; }
     if (info && info.status === 'done') {
-      const res = await fetch(`/asr/task/${taskId}/result`).then(r => r.json());
+      const res = await authedFetch(`/asr/task/${taskId}/result`).then(r => r.json());
       $('#fullText').value = res.text || '';
       $('#duration').textContent = res.duration ? fmtDur(res.duration) : '—';
       switchTab('final');
@@ -230,7 +280,7 @@ function start() {
 async function poll() {
   if (!taskId) return;
   try {
-    const info = await fetch(`/asr/task/${taskId}`).then(r => r.json());
+    const info = await authedFetch(`/asr/task/${taskId}`).then(r => r.json());
     $('#status').textContent = info.status;
     setStatusClass(info.status);
     if (info.total_segments > 0) { $('#totalSeg').textContent = info.total_segments; $('#emptyHint').classList.add('hidden'); }

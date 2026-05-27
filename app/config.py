@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     asr_model: str = "qwen3-asr-flash"
     asr_language: str | None = "zh"
     asr_timeout: float = 120.0
+    asr_provider: str = "openai_compat"
+    asr_timestamps: bool = True
 
     split_strategy: str = Field("silence", pattern="^(fixed|silence|overlap)$")
     split_chunk_seconds: float = 30.0
@@ -28,12 +30,18 @@ class Settings(BaseSettings):
     max_tasks_in_memory: int = 100
     task_ttl_seconds: int = 3600
 
+    access_tokens: str = ""
+
     temp_dir: Path = Path("./temp")
     output_dir: Path = Path("./outputs")
 
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "info"
+
+    @property
+    def access_tokens_list(self) -> list[str]:
+        return [t.strip() for t in self.access_tokens.split(",") if t.strip()]
 
 
 @lru_cache

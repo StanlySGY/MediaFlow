@@ -6,15 +6,18 @@ from pathlib import Path
 
 import aiofiles
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from sse_starlette.sse import EventSourceResponse
 
 from app.config import get_settings
-from app.models.schemas import TaskInfo, TaskResult
+from app.models.schemas import TaskInfo, TaskResult, TaskStatus
+from app.security import require_token
 from app.services.stream_manager import TaskManager
+from app.services.subtitles import to_srt, to_vtt
 
 log = logging.getLogger(__name__)
-router = APIRouter(prefix="/asr", tags=["asr"])
+router = APIRouter(prefix="/asr", tags=["asr"], dependencies=[Depends(require_token)])
+meta_router = APIRouter(tags=["meta"])
 
 
 def get_manager(request: Request) -> TaskManager:
@@ -76,11 +79,7 @@ async def stream_task(task_id: str, manager: TaskManager = Depends(get_manager))
 
     async def event_gen():
         async for evt in manager.stream(task_id):
-            yield {
-                "event": "segment",
-                "data": evt.model_dump_json(),
-            }
-        # terminal marker
+            yield {"event": "segment", "data": evt.model_dump_json()}
         info = manager.get_info(task_id)
         if info is not None:
             yield {"event": "done", "data": info.model_dump_json()}
@@ -89,10 +88,39 @@ async def stream_task(task_id: str, manager: TaskManager = Depends(get_manager))
 
 
 @router.get("/task/{task_id}/result", response_model=TaskResult)
-async def get_result(task_id: str, manager: TaskManager = Depends(get_manager)) -> TaskResult:
+async def get_result(task_id: str, manager: TaskManager = Depends(get_manager)) -> TaskResult | Response:
     result = manager.get_result(task_id)
     if result is None:
         raise HTTPException(404, "task not found")
-    if result.status.value not in {"done", "failed"}:
+    if result.status not in {TaskStatus.done, TaskStatus.failed}:
         return JSONResponse(status_code=202, content=result.model_dump(mode="json"))
     return result
+
+
+@router.get("/task/{task_id}/subtitle", response_class=PlainTextResponse)
+async def get_subtitle(
+    task_id: str,
+    format: str = "srt",
+    manager: TaskManager = Depends(get_manager),
+) -> Response:
+    fmt = format.lower()
+    if fmt not in {"srt", "vtt"}:
+        raise HTTPException(400, "format must be 'srt' or 'vtt'")
+    result = manager.get_result(task_id)
+    if result is None:
+        raise HTTPException(404, "task not found")
+    if result.status != TaskStatus.done:
+        raise HTTPException(409, f"task not ready (status={result.status.value})")
+
+    body = to_srt(result.segments) if fmt == "srt" else to_vtt(result.segments)
+    media = "application/x-subrip" if fmt == "srt" else "text/vtt"
+    return Response(
+        content=body,
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{task_id}.{fmt}"'},
+    )
+
+
+@meta_router.get("/auth/info")
+async def auth_info() -> dict[str, bool]:
+    return {"auth_required": bool(get_settings().access_tokens_list)}
