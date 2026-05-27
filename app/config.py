@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     asr_max_retries: int = 3
     asr_retry_backoff: float = 1.5
 
+    max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GiB
+    max_tasks_in_memory: int = 100
+    task_ttl_seconds: int = 3600
+
     temp_dir: Path = Path("./temp")
     output_dir: Path = Path("./outputs")
 

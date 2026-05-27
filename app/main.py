@@ -29,6 +29,11 @@ def create_app() -> FastAPI:
     app.state.manager = TaskManager(settings)
     app.include_router(asr_router)
 
+    if not settings.asr_api_key:
+        logging.getLogger(__name__).warning(
+            "ASR_API_KEY is not set — transcription requests will likely fail with 401 unless your ASR endpoint is unauthenticated."
+        )
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}

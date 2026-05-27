@@ -41,9 +41,21 @@ async def create_task(
 
     upload_id = uuid.uuid4().hex
     dst = settings.temp_dir / f"upload_{upload_id}{suffix or '.bin'}"
-    async with aiofiles.open(dst, "wb") as out:
-        while chunk := await file.read(1024 * 1024):
-            await out.write(chunk)
+    limit = settings.max_upload_bytes
+    written = 0
+    try:
+        async with aiofiles.open(dst, "wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if written > limit:
+                    raise HTTPException(413, f"upload exceeds {limit} bytes")
+                await out.write(chunk)
+    except HTTPException:
+        dst.unlink(missing_ok=True)
+        raise
+    except Exception:
+        dst.unlink(missing_ok=True)
+        raise
 
     task_id = await manager.submit(dst, file.filename)
     return {"task_id": task_id}

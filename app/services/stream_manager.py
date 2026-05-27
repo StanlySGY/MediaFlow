@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import AsyncIterator
@@ -16,59 +18,141 @@ from app.services.merger import merge_segments
 
 log = logging.getLogger(__name__)
 
+_TERMINAL = {TaskStatus.done, TaskStatus.failed}
+
 
 class _Task:
-    __slots__ = ("info", "result", "queue", "subscribers", "_done")
+    """Per-task state: events history + subscriber fan-out + termination signal."""
+
+    __slots__ = ("info", "result", "events", "subscribers", "done", "completed_at")
 
     def __init__(self, task_id: str) -> None:
         self.info = TaskInfo(task_id=task_id, status=TaskStatus.pending)
         self.result = TaskResult(task_id=task_id, status=TaskStatus.pending)
-        self.queue: asyncio.Queue[SegmentEvent | None] = asyncio.Queue()
-        self._done = asyncio.Event()
+        self.events: list[SegmentEvent] = []
+        self.subscribers: set[asyncio.Queue[SegmentEvent | None]] = set()
+        self.done: asyncio.Event = asyncio.Event()
+        self.completed_at: float | None = None
 
-    @property
-    def done(self) -> asyncio.Event:
-        return self._done
+    def publish(self, evt: SegmentEvent) -> None:
+        """Append to history and fan out to all live subscribers. Sync only — atomic w.r.t. subscribe()."""
+        self.events.append(evt)
+        for q in self.subscribers:
+            q.put_nowait(evt)
+
+    def complete(self) -> None:
+        self.done.set()
+        self.completed_at = time.monotonic()
+        for q in self.subscribers:
+            q.put_nowait(None)
+
+    async def subscribe(self) -> AsyncIterator[SegmentEvent]:
+        q: asyncio.Queue[SegmentEvent | None] = asyncio.Queue()
+        # Snapshot + register atomically (no await between these statements).
+        for e in self.events:
+            q.put_nowait(e)
+        if self.done.is_set():
+            q.put_nowait(None)
+        else:
+            self.subscribers.add(q)
+        try:
+            while True:
+                evt = await q.get()
+                if evt is None:
+                    return
+                yield evt
+        finally:
+            self.subscribers.discard(q)
 
 
 class TaskManager:
-    """Owns task lifecycle, segment-level event streaming, and result storage."""
+    """Owns task lifecycle, segment-level event streaming, persistence, and eviction."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._tasks: dict[str, _Task] = {}
         self._lock = asyncio.Lock()
+        self._bg: set[asyncio.Task] = set()
 
-    # ---- public API ----
+    # ---- lifecycle ----
 
     async def submit(self, source_path: Path, original_name: str) -> str:
+        self._evict_if_needed()
         task_id = uuid.uuid4().hex
         task = _Task(task_id)
         async with self._lock:
             self._tasks[task_id] = task
 
-        asyncio.create_task(self._run(task_id, source_path, original_name))
+        bg = asyncio.create_task(self._run(task_id, source_path, original_name))
+        self._bg.add(bg)
+        bg.add_done_callback(self._bg.discard)
         return task_id
 
     def get_info(self, task_id: str) -> TaskInfo | None:
-        t = self._tasks.get(task_id)
+        t = self._tasks.get(task_id) or self._rehydrate(task_id)
         return t.info if t else None
 
     def get_result(self, task_id: str) -> TaskResult | None:
-        t = self._tasks.get(task_id)
+        t = self._tasks.get(task_id) or self._rehydrate(task_id)
         return t.result if t else None
 
     async def stream(self, task_id: str) -> AsyncIterator[SegmentEvent]:
-        task = self._tasks.get(task_id)
+        task = self._tasks.get(task_id) or self._rehydrate(task_id)
         if task is None:
             return
-        while True:
-            evt = await task.queue.get()
-            if evt is None:
-                return
+        async for evt in task.subscribe():
             yield evt
 
-    # ---- internal pipeline ----
+    # ---- eviction & rehydration ----
+
+    def _evict_if_needed(self) -> None:
+        s = self._settings
+        now = time.monotonic()
+        expired = [
+            tid for tid, t in self._tasks.items()
+            if t.completed_at is not None and (now - t.completed_at) > s.task_ttl_seconds
+        ]
+        for tid in expired:
+            self._tasks.pop(tid, None)
+
+        # Bound memory: keep newest by completion time; never evict in-flight tasks.
+        if len(self._tasks) > s.max_tasks_in_memory:
+            completed = sorted(
+                ((tid, t.completed_at) for tid, t in self._tasks.items() if t.completed_at is not None),
+                key=lambda x: x[1] or 0.0,
+            )
+            overflow = len(self._tasks) - s.max_tasks_in_memory
+            for tid, _ in completed[:overflow]:
+                self._tasks.pop(tid, None)
+
+    def _rehydrate(self, task_id: str) -> _Task | None:
+        """Reload a finished task from disk when it's no longer in memory."""
+        path = self._settings.output_dir / f"{task_id}.json"
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            result = TaskResult.model_validate(data)
+        except Exception:  # noqa: BLE001
+            log.warning("failed to rehydrate task %s", task_id, exc_info=True)
+            return None
+
+        task = _Task(task_id)
+        task.result = result
+        task.info = TaskInfo(
+            task_id=task_id,
+            status=result.status,
+            progress=1.0 if result.status in _TERMINAL else 0.0,
+            total_segments=len(result.segments),
+            finished_segments=len(result.segments),
+            error=result.error,
+        )
+        task.done.set()
+        task.completed_at = time.monotonic()
+        self._tasks[task_id] = task
+        return task
+
+    # ---- pipeline ----
 
     async def _run(self, task_id: str, source_path: Path, original_name: str) -> None:
         s = self._settings
@@ -106,7 +190,6 @@ class TaskManager:
             task.info.status = TaskStatus.done
             task.info.progress = 1.0
 
-            # Persist result
             out_path = s.output_dir / f"{task_id}.json"
             out_path.write_text(task.result.model_dump_json(indent=2), encoding="utf-8")
 
@@ -116,11 +199,16 @@ class TaskManager:
             task.info.error = str(e)
             task.result.status = TaskStatus.failed
             task.result.error = str(e)
-        finally:
-            await task.queue.put(None)
-            task.done.set()
+            # Persist failure too, so /result survives restart.
             try:
-                # remove intermediate audio; keep result JSON in outputs/
+                (s.output_dir / f"{task_id}.json").write_text(
+                    task.result.model_dump_json(indent=2), encoding="utf-8",
+                )
+            except Exception:  # noqa: BLE001
+                log.warning("failed to persist failure for %s", task_id, exc_info=True)
+        finally:
+            task.complete()
+            try:
                 shutil.rmtree(work_dir, ignore_errors=True)
                 if source_path.exists():
                     source_path.unlink(missing_ok=True)
@@ -155,7 +243,7 @@ class TaskManager:
                         task.info.finished_segments += 1
                         if task.info.total_segments:
                             task.info.progress = task.info.finished_segments / task.info.total_segments
-                        await task.queue.put(SegmentEvent(
+                        task.publish(SegmentEvent(
                             task_id=task.info.task_id,
                             segment_id=seg.segment_id,
                             start=seg.start,
