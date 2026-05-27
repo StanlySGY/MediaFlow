@@ -4,6 +4,7 @@ from typing import Callable
 
 from app.config import Settings
 from app.services.asr.base import ASRProvider
+from app.services.asr.openai_chat_audio import OpenAIChatAudioProvider
 from app.services.asr.openai_compat import OpenAICompatProvider
 
 
@@ -28,6 +29,21 @@ def _openai_compat(settings: Settings) -> ASRProvider:
         max_retries=settings.asr_max_retries,
         retry_backoff=settings.asr_retry_backoff,
         request_timestamps=settings.asr_timestamps,
+        hotwords=settings.asr_hotwords_list,
+        prompt_hints=settings.asr_prompt_hints,
+    )
+
+
+@register("openai_chat_audio")
+def _openai_chat_audio(settings: Settings) -> ASRProvider:
+    return OpenAIChatAudioProvider(
+        base_url=settings.asr_base_url,
+        api_key=settings.asr_api_key,
+        model=settings.asr_model,
+        language=settings.asr_language,
+        timeout=settings.asr_timeout,
+        max_retries=settings.asr_max_retries,
+        retry_backoff=settings.asr_retry_backoff,
         hotwords=settings.asr_hotwords_list,
         prompt_hints=settings.asr_prompt_hints,
     )

@@ -38,25 +38,53 @@ docker compose up -d --build
 
 ## 对接自部署 ASR
 
-只要你的服务暴露 OpenAI 兼容的 `POST /v1/audio/transcriptions`，就完全不用改代码。
+提供两种 OpenAI 兼容协议，按上游服务暴露的端点二选一：
+
+| `ASR_PROVIDER` | 上游端点 | 适用 | Word 时间戳 |
+|---|---|---|---|
+| `openai_compat` | `POST /v1/audio/transcriptions`（multipart） | OpenAI Whisper、faster-whisper-server、DashScope compat 的 transcriptions、FunASR/SenseVoice OpenAI 网关 | ✅（若上游支持 `timestamp_granularities[]`） |
+| `openai_chat_audio` | `POST /v1/chat/completions`（JSON + base64 audio_url） | vLLM Qwen3-ASR-Flash、DashScope compat 的 chat 多模态、任何把音频模型当多模态 LLM 服务的部署 | ❌（拼接自动回落 LCS，字幕按分片粒度） |
+
+判断方法很简单：拿一条 curl 试一下上游：
+
+```bash
+# 若 200/OK → openai_compat
+curl -X POST $ASR_BASE_URL/audio/transcriptions \
+  -F "file=@any.wav" -F "model=$ASR_MODEL" -H "Authorization: Bearer $ASR_API_KEY"
+
+# 若 200/OK → openai_chat_audio（你同事的那条曲线）
+curl -X POST $ASR_BASE_URL/chat/completions \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $ASR_API_KEY" \
+  -d '{"model":"'$ASR_MODEL'","messages":[{"role":"user","content":[{"type":"audio_url","audio_url":{"url":"https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-ASR-Repo/asr_en.wav"}}]}]}'
+```
+
+或者打开 Web UI 顶部的「服务配置」，点「测试连接」——服务端用 1s 静音 WAV 试探当前 provider，返回 200/4xx 直接显示在面板上，不通就切 `ASR_PROVIDER` 再点一次。
 
 ### vLLM 跑 Qwen3-ASR
 
 ```bash
 # .env
-ASR_PROVIDER=openai_compat
+ASR_PROVIDER=openai_chat_audio   # vLLM 服务 Qwen3-ASR 的标准方式
 ASR_BASE_URL=http://your-vllm-host:8000/v1
 ASR_API_KEY=                       # 内网无鉴权可留空
-ASR_MODEL=Qwen/Qwen3-ASR-Flash     # 与 vllm serve 时的 --served-model-name 对齐
+ASR_MODEL=Qwen/Qwen3-ASR-Flash     # 与 vllm serve --served-model-name 对齐
 ```
 
-注意事项：
-- 不同 vLLM 构建对 `response_format=verbose_json` 与 `timestamp_granularities[]` 的支持不一致。若上游返回 400，把 `ASR_TIMESTAMPS=false` 关掉即可——此时拼接自动回落到最长公共子串路径，字幕仍可按分片粒度生成。
-- 需要热词偏置时把 `ASR_HOTWORDS` 填上，例如 `ASR_HOTWORDS=Qwen,vLLM,LoRA`——会以顿号拼接后发到 OpenAI 标准 `prompt` 字段。
+热词偏置：`ASR_HOTWORDS=Qwen,vLLM,LoRA` 会拼成 system 消息「热词：Qwen、vLLM、LoRA」一并发出。
+
+### 公网 DashScope Qwen ASR
+
+```bash
+ASR_PROVIDER=openai_chat_audio     # 若 Qwen3-ASR-Flash 走 chat 路径
+# 或 openai_compat                  # 若上游开了 transcriptions（先 curl 验）
+ASR_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+ASR_API_KEY=sk-xxx                 # 你的 DashScope key
+ASR_MODEL=qwen3-asr-flash
+```
 
 ### FunASR / SenseVoice / Paraformer 等 OpenAI 兼容网关
 
-同样只改 `ASR_BASE_URL` 和 `ASR_MODEL`。若网关不支持 timestamp 选项，把 `ASR_TIMESTAMPS=false`。
+同 `openai_compat`：只改 `ASR_BASE_URL` 和 `ASR_MODEL`。若网关不支持 timestamp 选项，把 `ASR_TIMESTAMPS=false`。
 
 ### 自部署服务**非** OpenAI 兼容
 
