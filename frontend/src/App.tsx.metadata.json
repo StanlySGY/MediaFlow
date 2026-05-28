@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_OTHER",
+  "summary":  "Created src/App.tsx tying all major views (File Task progress dashboard, Real-time feed soundwave stream, Server Configs form grids, and History Directories) together under unified auth and SSE routing hooks.",
+  "updatedAt":  "2026-05-28T08:47:58.962118Z"
+}

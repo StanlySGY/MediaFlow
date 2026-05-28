@@ -1,0 +1,222 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #070913;
+  --color-fg: #f3f4f6;
+  --color-fg-dim: #9ca3af;
+  --color-muted: #6b7280;
+  --color-muted-2: #4b5563;
+  
+  --color-sidebar: #0b0e1a;
+  --color-panel: rgba(20, 26, 46, 0.6);
+  --color-panel-2: rgba(28, 36, 62, 0.8);
+  --color-accent: #5c54f2;
+  --color-accent-2: #8b5cf6;
+  --color-accent-soft: rgba(92, 84, 242, 0.12);
+  --color-accent-glow: rgba(92, 84, 242, 0.25);
+  
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-title: 'Plus Jakarta Sans', 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+body {
+  @apply bg-bg text-fg font-sans antialiased;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+/* Custom form fields */
+.field {
+  @apply flex flex-col gap-2 text-xs font-semibold text-gray-400 w-full;
+}
+
+.field span {
+  @apply text-gray-400 font-semibold tracking-wide select-none;
+}
+
+.field input[type=text],
+.field input[type=password],
+.field input[type=number],
+.field select,
+.field textarea,
+input[type=text],
+input[type=password],
+input[type=number],
+select,
+textarea {
+  @apply bg-white/3 border border-white/5 text-[#f3f4f6] text-[13px] font-normal px-3.5 py-2.5 rounded-lg outline-none w-full transition-all duration-200;
+}
+
+.field input:hover,
+.field select:hover,
+.field textarea:hover,
+input:hover,
+select:hover,
+textarea:hover {
+  @apply border-white/10;
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus,
+input:focus,
+select:focus,
+textarea:focus {
+  @apply border-accent bg-white/5 ring-4 ring-accent/20;
+}
+
+.field.check {
+  @apply flex-row items-center gap-2.5 cursor-pointer py-3.5 px-4 bg-white/1 border border-white/5 rounded-lg hover:bg-white/3 select-none transition-colors;
+}
+
+.field.check input {
+  @apply w-4 h-4 rounded border-white/10 accent-accent cursor-pointer m-0;
+}
+
+/* Custom Buttons */
+button, .btn {
+  @apply bg-white/4 hover:bg-white/8 border border-white/5 hover:border-white/10 text-white font-semibold text-[13px] px-4 py-2.5 rounded-lg cursor-pointer inline-flex items-center justify-center gap-2 transition-all duration-200 select-none;
+}
+button:hover, .btn:hover {
+  @apply -translate-y-[1px];
+}
+button:active, .btn:active {
+  @apply translate-y-0;
+}
+button.primary {
+  @apply bg-gradient-to-tr from-accent to-accent-2 border-none text-white shadow-lg shadow-accent/25 hover:shadow-xl hover:shadow-accent/30;
+}
+button.primary:hover {
+  @apply from-[#6c64f5] to-[#9b70f8];
+}
+button.danger {
+  @apply bg-[#ef4444]/10 border-[#ef4444]/20 hover:border-[#ef4444]/30 text-[#ef4444] hover:bg-[#ef4444] hover:text-white hover:shadow-lg hover:shadow-[#ef4444]/15;
+}
+button:disabled {
+  @apply opacity-40 cursor-not-allowed transform-none shadow-none;
+}
+
+/* Badges & Status indicators */
+.badge {
+  @apply inline-flex items-center gap-1.5 font-mono text-[11px] font-semibold px-2.5 py-1 rounded-full bg-white/5 border border-white/5 text-gray-300;
+}
+
+.badge.ok {
+  @apply text-[#10b981] border-[#10b981]/20 bg-[#10b981]/10;
+}
+
+.badge.warn {
+  @apply text-[#f59e0b] border-[#f59e0b]/20 bg-[#f59e0b]/10;
+}
+
+.badge.err {
+  @apply text-[#ef4444] border-[#ef4444]/20 bg-[#ef4444]/10;
+}
+
+.badge.set {
+  @apply text-[#10b981] border-[#10b981]/20 bg-[#10b981]/10;
+}
+
+.badge .dot {
+  @apply w-1.5 h-1.5 rounded-full bg-current;
+}
+
+.badge .dot.pulse {
+  @apply animate-pulse;
+}
+
+/* Toasts */
+.toast {
+  @apply font-mono text-xs px-4 py-2 border border-white/5 rounded-lg bg-white/3 text-gray-400 inline-flex items-center gap-2 transition-all duration-300;
+}
+
+.toast.ok {
+  @apply text-[#10b981] border-[#10b981]/20 bg-[#10b981]/5 shadow-md shadow-[#10b981]/2;
+}
+
+.toast.err {
+  @apply text-[#ef4444] border-[#ef4444]/20 bg-[#ef4444]/5 shadow-md shadow-[#ef4444]/2;
+}
+
+/* Console logs */
+.evlog {
+  @apply bg-[#05070f] border border-white/5 rounded-xl p-4 h-[300px] overflow-auto shadow-inner leading-relaxed text-xs;
+}
+
+.evlog .ev {
+  @apply py-1.5 border-b border-white/3 flex items-start gap-2 flex-wrap;
+}
+
+.evlog .ev:last-child {
+  @apply border-none;
+}
+
+.evlog .ev .ty {
+  @apply inline-flex items-center justify-center px-1.5 py-0.5 rounded font-bold text-[9px] uppercase tracking-wide;
+}
+
+.evlog .ev .ty.online { @apply bg-accent/20 text-[#a5b4fc] border border-accent/30; }
+.evlog .ev .ty.final  { @apply bg-[#10b981]/10 text-[#10b981] border border-[#10b981]/20; }
+.evlog .ev .ty.done   { @apply bg-white/5 text-gray-400 border border-white/5; }
+.evlog .ev .ty.error  { @apply bg-[#ef4444]/10 text-[#ef4444] border border-[#ef4444]/20; }
+
+.evlog .ts {
+  @apply text-gray-600 font-semibold;
+}
+
+/* History Cards */
+.hist-item {
+  @apply grid grid-cols-[1fr_100px_100px_100px] gap-4 p-4.5 bg-white/1 border border-white/5 rounded-xl cursor-pointer items-center transition-all duration-300;
+}
+
+.hist-item:hover {
+  @apply bg-accent/3 border-accent/20 -translate-y-[2px] shadow-lg shadow-black/30;
+}
+
+/* Soundwave animations bouncing lines */
+.soundwave-container {
+  @apply flex items-center justify-center gap-1 h-12 my-4 bg-white/1 border border-white/5 rounded-lg px-6;
+}
+
+.soundwave-container .bar {
+  @apply w-1 h-2 bg-gradient-to-t from-accent to-accent-2 rounded-sm transition-all duration-200;
+}
+
+.soundwave-container.active .bar {
+  animation: bounce 0.8s ease-in-out infinite alternate;
+}
+
+.soundwave-container.active .bar:nth-child(1) { animation-delay: 0.1s; }
+.soundwave-container.active .bar:nth-child(2) { animation-delay: 0.3s; }
+.soundwave-container.active .bar:nth-child(3) { animation-delay: 0.5s; }
+.soundwave-container.active .bar:nth-child(4) { animation-delay: 0.2s; }
+.soundwave-container.active .bar:nth-child(5) { animation-delay: 0.4s; }
+.soundwave-container.active .bar:nth-child(6) { animation-delay: 0.6s; }
+.soundwave-container.active .bar:nth-child(7) { animation-delay: 0.15s; }
+.soundwave-container.active .bar:nth-child(8) { animation-delay: 0.35s; }
+.soundwave-container.active .bar:nth-child(9) { animation-delay: 0.25s; }
+.soundwave-container.active .bar:nth-child(10) { animation-delay: 0.45s; }
+.soundwave-container.active .bar:nth-child(11) { animation-delay: 0.12s; }
+.soundwave-container.active .bar:nth-child(12) { animation-delay: 0.32s; }
+
+@keyframes bounce {
+  0% { height: 8px; }
+  100% { height: 32px; }
+}
+
+/* Progress bar shimmer load */
+.bar {
+  @apply h-2 bg-white/5 rounded-full overflow-hidden flex-1 min-w-[180px] border border-white/5 shadow-inner;
+}
+
+.bar > div {
+  @apply h-full bg-gradient-to-r from-accent via-accent-2 to-[#d946ef] rounded-full shadow-lg shadow-accent/20 transition-all duration-300 ease-out;
+  background-size: 200% 100%;
+  animation: shimmer 1.8s infinite linear;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}

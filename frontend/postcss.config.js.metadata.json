@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_OTHER",
+  "summary":  "Updated postcss.config.js to use @tailwindcss/postcss plugin for Tailwind v4 compilation.",
+  "updatedAt":  "2026-05-28T08:49:24.249713300Z"
+}

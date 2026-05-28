@@ -20,5 +20,7 @@ outputs/
 runtime_config.json
 task.md
 .ace-tool/
+.antigravitycli/
+.claude/
 !temp/.gitkeep
 !outputs/.gitkeep

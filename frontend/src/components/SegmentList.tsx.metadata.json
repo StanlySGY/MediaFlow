@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_OTHER",
+  "summary":  "Created src/components/SegmentList.tsx rendering transcript segments as interactive speech bubbles, with support for async raw payload fetch on expand.",
+  "updatedAt":  "2026-05-28T08:47:15.938798300Z"
+}

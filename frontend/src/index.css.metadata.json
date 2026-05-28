@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_OTHER",
+  "summary":  "Fixed index.css by removing invalid !important suffixes from @apply directives.",
+  "updatedAt":  "2026-05-28T08:50:13.126020300Z"
+}

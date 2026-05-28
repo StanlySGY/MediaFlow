@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_OTHER",
+  "summary":  "Created src/components/Header.tsx representing the dashboard header bar, with dynamic badges for models, provider networks, and token settings.",
+  "updatedAt":  "2026-05-28T08:46:59.530961100Z"
+}

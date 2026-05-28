@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_OTHER",
+  "summary":  "Created vite.config.ts for the frontend app in scratch, configured to output to ../app/web and proxy backend API calls to http://localhost:8000.",
+  "updatedAt":  "2026-05-28T08:45:54.097491200Z"
+}

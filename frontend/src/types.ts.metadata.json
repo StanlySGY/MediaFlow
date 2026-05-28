@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_OTHER",
+  "summary":  "Created src/types.ts defining reactive types for segments, file tasks, real-time sessions, EventSource stream notifications, and dynamic settings config.",
+  "updatedAt":  "2026-05-28T08:46:18.470021300Z"
+}

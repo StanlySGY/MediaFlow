@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_OTHER",
+  "summary":  "Updated tsconfig.app.json to relax unused imports and verbatim module syntax checking.",
+  "updatedAt":  "2026-05-28T08:48:39.018915400Z"
+}

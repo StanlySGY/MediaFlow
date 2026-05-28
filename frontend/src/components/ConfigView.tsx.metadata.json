@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_OTHER",
+  "summary":  "Created src/components/ConfigView.tsx representing a fully reactive configurations grid with inline dirty detection, API credentials masking, and connectivity checking.",
+  "updatedAt":  "2026-05-28T08:47:33.717953200Z"
+}

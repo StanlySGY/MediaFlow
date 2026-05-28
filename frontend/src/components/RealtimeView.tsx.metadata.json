@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_OTHER",
+  "summary":  "Created src/components/RealtimeView.tsx supporting full base64 chunking, dynamic 12-channel soundwave animation, and console monitoring for EventSource online/final/error/done tags.",
+  "updatedAt":  "2026-05-28T08:47:23.809518100Z"
+}

@@ -1,3 +1,16 @@
+# ==========================================
+# Stage 1: Build the React Application
+# ==========================================
+FROM node:20-alpine AS frontend-builder
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# ==========================================
+# Stage 2: Create the Python Runner
+# ==========================================
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -15,6 +28,8 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
 COPY app ./app
+# Copy built static assets from the node build stage
+COPY --from=frontend-builder /app/web ./app/web
 
 ENV HOST=0.0.0.0 PORT=8000
 EXPOSE 8000
