@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     runtime_config_path: Path = Path("./runtime_config.json")
 
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8999
     log_level: str = "info"
 
     @property

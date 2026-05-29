@@ -122,10 +122,10 @@ if [[ "$RUN_UP" -eq 1 ]]; then
         cp .env.example .env
     fi
     docker compose up -d
-    ok "Up. Visit http://localhost:8000/"
+    ok "Up. Visit http://localhost:8999/"
 else
     echo "${C_GRN}Next:${C_RST}"
     [[ -f .env ]] || echo "  1. cp .env.example .env && \$EDITOR .env  ${C_DIM}# set ASR_API_KEY${C_RST}"
     echo "  $([ -f .env ] && echo 1 || echo 2). docker compose up -d"
-    echo "  $([ -f .env ] && echo 2 || echo 3). open http://localhost:8000/"
+    echo "  $([ -f .env ] && echo 2 || echo 3). open http://localhost:8999/"
 fi

@@ -25,10 +25,10 @@
 cp .env.example .env
 # 编辑 .env，填入 ASR_API_KEY
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8999
 ```
 
-需要本机已安装 `ffmpeg` 与 `ffprobe`。访问 `http://localhost:8000/` 打开 Web UI，`/docs` 查看 API。
+需要本机已安装 `ffmpeg` 与 `ffprobe`。访问 `http://localhost:8999/` 打开 Web UI，`/docs` 查看 API。
 
 > **运行时配置编辑**：UI 顶部「服务配置」面板可直接修改 provider、base URL、API key、模型、热词、切分参数、鉴权令牌等，点保存即时生效，不需重启服务。改动持久化到 `runtime_config.json`，下次启动自动恢复。点击「重置为 .env 默认」可一键清除运行时改动。注意：`runtime_config.json` 是明文且包含 API key / 访问令牌，部署时确保文件权限合理。
 
@@ -141,25 +141,25 @@ POST   {base}/session/{id}/end
 
 ```bash
 # 1. 创建会话
-SID=$(curl -sX POST http://localhost:8000/asr/realtime/session \
+SID=$(curl -sX POST http://localhost:8999/asr/realtime/session \
   -H "Content-Type: application/json" \
   -d '{"sample_rate":16000,"format":"pcm_s16le","channels":1,"language":"zh"}' \
   | python -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
 echo "session: $SID"
 
 # 2. 订阅 SSE（另起终端）
-curl -N http://localhost:8000/asr/realtime/$SID/events
+curl -N http://localhost:8999/asr/realtime/$SID/events
 
 # 3. 推 chunk（base64 编码的 PCM 数据）
-curl -X POST http://localhost:8000/asr/realtime/$SID/audio \
+curl -X POST http://localhost:8999/asr/realtime/$SID/audio \
   -H "Content-Type: application/json" \
   -d '{"seq":1,"audio":"AAAAAAAAAAAAAAAA","is_final":false}'
 
 # 4. 结束
-curl -X POST http://localhost:8000/asr/realtime/$SID/end
+curl -X POST http://localhost:8999/asr/realtime/$SID/end
 
 # 5. 或直接发空 chunk + is_final=true 也行
-curl -X POST http://localhost:8000/asr/realtime/$SID/audio \
+curl -X POST http://localhost:8999/asr/realtime/$SID/audio \
   -H "Content-Type: application/json" \
   -d '{"seq":99,"audio":"","is_final":true}'
 ```
@@ -231,7 +231,7 @@ async function pushChunk(b64, isFinal=false) {
 ### 提交任务
 
 ```bash
-curl -X POST http://localhost:8000/asr/task \
+curl -X POST http://localhost:8999/asr/task \
   -F "file=@long_meeting.mp3"
 # => {"task_id": "ab12..."}
 ```
@@ -239,7 +239,7 @@ curl -X POST http://localhost:8000/asr/task \
 ### 订阅流式结果
 
 ```bash
-curl -N http://localhost:8000/asr/task/ab12.../stream
+curl -N http://localhost:8999/asr/task/ab12.../stream
 # event: segment
 # data: {"task_id":"ab12...","segment_id":1,"start":0.0,"end":30.0,"text":"……","is_final":true}
 ```
@@ -247,7 +247,7 @@ curl -N http://localhost:8000/asr/task/ab12.../stream
 ### 取最终结果
 
 ```bash
-curl http://localhost:8000/asr/task/ab12.../result
+curl http://localhost:8999/asr/task/ab12.../result
 ```
 
 ```json
