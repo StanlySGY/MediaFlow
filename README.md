@@ -39,6 +39,21 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+部署后访问 `http://<服务器IP>:8999/`（端口由 `.env` 的 `PORT` 决定，默认 8999）。
+
+#### 浏览器打不开 / 端口连不上？
+
+如果容器日志显示 `Uvicorn running` 且 `docker compose ps` 是 `healthy`，但浏览器超时、本机 `curl localhost:8999` 也 reset/refused，多半是 **Docker 的端口转发（iptables/FORWARD）被宿主机防火墙冲掉了**（RHEL/Rocky 的 firewalld、OpenStack/MAAS 节点常见）。
+
+- 有 root：`sudo systemctl restart docker` 重新注入规则即可。
+- **没有 root**：改用 host 网络部署，让服务直接绑宿主机端口，绕开 docker 转发：
+
+  ```bash
+  docker compose -f docker-compose.host.yml up -d --build
+  ```
+
+  外网访问仍需宿主机防火墙放行该端口；若无权限，可把 `.env` 的 `PORT` 改成一个已放行的端口。
+
 ## 对接自部署 ASR
 
 提供两种 OpenAI 兼容协议，按上游服务暴露的端点二选一：

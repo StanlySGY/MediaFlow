@@ -1,0 +1,35 @@
+# Host-network deployment variant.
+#
+# Use this instead of docker-compose.yml on hosts where Docker's bridge port
+# publishing is blocked — e.g. RHEL/Rocky with firewalld, or OpenStack/MAAS
+# nodes where the FORWARD chain drops traffic to the docker bridge. The symptom
+# is: container is healthy and reachable from inside, but `curl localhost:<port>`
+# on the host returns "connection reset/refused" because host→bridge forwarding
+# is broken and restarting docker (to reinstall its iptables rules) needs root.
+#
+# Host networking makes uvicorn bind the host's port directly, bypassing
+# docker-proxy / NAT / FORWARD entirely. No sudo required.
+#
+# Usage:
+#   docker compose -f docker-compose.host.yml up -d --build
+#
+# The listening port is whatever PORT is set to in .env (default 8999).
+# External access still depends on the host firewall allowing that port.
+
+services:
+  audioflow-asr:
+    build: .
+    image: audioflow-asr:latest
+    container_name: audioflow-asr
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - ./temp:/app/temp
+      - ./outputs:/app/outputs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8999/health',timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
