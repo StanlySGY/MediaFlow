@@ -59,12 +59,18 @@ export const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, disabled }) =>
       />
       
       <motion.div
+        role="button"
+        tabIndex={disabled ? -1 : 0}
+        aria-label="选择或拖拽音频/视频文件上传"
         onDragEnter={handleDrag}
         onDragOver={handleDrag}
         onDragLeave={handleDrag}
         onDrop={handleDrop}
         onClick={handleClick}
-        className={`border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-200 flex flex-col items-center justify-center gap-4 ${
+        onKeyDown={(e) => {
+          if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); }
+        }}
+        className={`border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-200 flex flex-col items-center justify-center gap-4 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
           isDragActive
             ? 'border-accent bg-accent-soft text-accent'
             : 'border-border-strong bg-surface-2 hover:border-accent/50 hover:bg-accent-soft/50 text-fg-dim'

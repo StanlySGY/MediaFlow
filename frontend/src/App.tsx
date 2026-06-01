@@ -26,6 +26,38 @@ import { HistoryView } from './components/HistoryView';
 
 import { ASRSegment, ASRTask, SystemConfig } from './types';
 
+// Mirror the backend's segment-level subtitle output (app/services/subtitles.py) so locally
+// proofread segment text can be exported to SRT/VTT without a server round-trip.
+const fmtSubtitleTime = (sec: number, comma: boolean): string => {
+  if (sec < 0) sec = 0;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  let s = Math.floor(sec % 60);
+  let ms = Math.round((sec - Math.floor(sec)) * 1000);
+  if (ms === 1000) { ms = 0; s += 1; }
+  const p = (n: number, l = 2) => String(n).padStart(l, '0');
+  return `${p(h)}:${p(m)}:${p(s)}${comma ? ',' : '.'}${p(ms, 3)}`;
+};
+
+const subtitleEntries = (segs: ASRSegment[]) =>
+  [...segs]
+    .sort((a, b) => a.segment_id - b.segment_id)
+    .filter((s) => s.text && s.text.trim() && !s.error)
+    .map((s) => ({ start: s.start, end: s.end <= s.start ? s.start + 0.1 : s.end, text: s.text.trim() }));
+
+const buildSrt = (segs: ASRSegment[]): string =>
+  subtitleEntries(segs)
+    .map((e, i) => `${i + 1}\n${fmtSubtitleTime(e.start, true)} --> ${fmtSubtitleTime(e.end, true)}\n${e.text}\n`)
+    .join('\n');
+
+const buildVtt = (segs: ASRSegment[]): string => {
+  const body = ['WEBVTT', ''];
+  subtitleEntries(segs).forEach((e, i) => {
+    body.push(String(i + 1), `${fmtSubtitleTime(e.start, false)} --> ${fmtSubtitleTime(e.end, false)}`, e.text, '');
+  });
+  return body.join('\n');
+};
+
 export default function App() {
   const { token, setToken, authedFetch, sseUrl } = useAuth();
   
@@ -63,8 +95,20 @@ export default function App() {
   const [activePane, setActivePane] = useState<'live' | 'final'>('live');
   const [copied, setCopied] = useState(false);
 
+  // Responsive sidebar (mobile drawer)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // Real upload progress (0-100, -1 = not uploading)
+  const [uploadProgress, setUploadProgress] = useState(-1);
+  // Local media for click-to-seek playback proofreading
+  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
+  const [mediaIsVideo, setMediaIsVideo] = useState(false);
+  // Whether any segment text was locally edited (drives front-end subtitle export)
+  const [segmentsEdited, setSegmentsEdited] = useState(false);
+
   const esRef = useRef<EventSource | null>(null);
   const pollTimerRef = useRef<any>(null);
+  const mediaRef = useRef<HTMLAudioElement & HTMLVideoElement | null>(null);
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
 
   // Load backend provider and health status on load
   const refreshTopbar = useCallback(async () => {
@@ -159,7 +203,15 @@ export default function App() {
       clearTimeout(pollTimerRef.current);
       pollTimerRef.current = null;
     }
+    if (xhrRef.current) {
+      xhrRef.current.abort();
+      xhrRef.current = null;
+    }
+    setMediaUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+    setMediaIsVideo(false);
+    setUploadProgress(-1);
     setSegments([]);
+    setSegmentsEdited(false);
     setTaskId(null);
     setTaskStatus('—');
     setTaskTotalSegs('—');
@@ -170,30 +222,65 @@ export default function App() {
     setActivePane('live');
   };
 
+  // Seek the local media player to a segment's start time (proofreading aid).
+  const handleSeek = (start: number) => {
+    const el = mediaRef.current;
+    if (!el) return;
+    el.currentTime = start;
+    el.play().catch(() => {});
+  };
+
+  // Inline proofreading: update a segment's text so SRT/VTT exports reflect the edit.
+  const handleEditSegment = (segId: number, text: string) => {
+    setSegments((prev) => prev.map((s) => (s.segment_id === segId ? { ...s, text } : s)));
+    setSegmentsEdited(true);
+  };
+
   const handleFileSelect = async (file: File) => {
     resetTask();
     setTaskStatus('uploading');
-    
+    setUploadProgress(0);
+
+    // Keep a local object URL so the user can listen back and proofread.
+    const url = URL.createObjectURL(file);
+    setMediaUrl(url);
+    setMediaIsVideo(file.type.startsWith('video/'));
+
     const fd = new FormData();
     fd.append('file', file);
-    
-    const overrides = collectOverrides();
-    Object.entries(overrides).forEach(([k, v]) => {
-      fd.append(k, v);
-    });
+    Object.entries(collectOverrides()).forEach(([k, v]) => fd.append(k, v));
 
+    // Use XHR (not fetch) so we get real upload progress events.
+    const tok = localStorage.getItem('asr_token') || '';
     try {
-      const r = await authedFetch('/asr/task', {
-        method: 'POST',
-        body: fd,
+      const data = await new Promise<{ task_id: string }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhrRef.current = xhr;
+        xhr.open('POST', '/asr/task');
+        if (tok) xhr.setRequestHeader('Authorization', `Bearer ${tok}`);
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+        };
+        xhr.onload = () => {
+          xhrRef.current = null;
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try { resolve(JSON.parse(xhr.responseText)); }
+            catch { reject(new Error('返回解析失败')); }
+          } else {
+            reject(new Error(xhr.responseText || `HTTP ${xhr.status}`));
+          }
+        };
+        xhr.onerror = () => { xhrRef.current = null; reject(new Error('网络错误')); };
+        xhr.onabort = () => { xhrRef.current = null; reject(new Error('已取消')); };
+        xhr.send(fd);
       });
 
-      if (!r.ok) throw new Error(await r.text());
-      const data = await r.json();
-      
+      setUploadProgress(-1);
       setTaskId(data.task_id);
       startTaskStream(data.task_id);
     } catch (e: any) {
+      setUploadProgress(-1);
+      if (e.message === '已取消') return;
       setTaskStatus('failed');
       alert('上传音频或发起切分任务失败: ' + e.message);
     }
@@ -275,7 +362,12 @@ export default function App() {
       const r = await authedFetch(`/asr/task/${tid}/result`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const res = await r.json();
-      
+
+      // No local media for historical tasks — clear any lingering player.
+      setMediaUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
+      setMediaIsVideo(false);
+      setSegmentsEdited(false);
+
       setSegments(
         (res.segments || []).map((s: any) => ({
           segment_id: s.segment_id,
@@ -331,18 +423,20 @@ export default function App() {
 
   const downloadSubtitle = async (fmt: 'srt' | 'vtt') => {
     if (!taskId) return;
+    const mime = fmt === 'srt' ? 'application/x-subrip' : 'text/vtt';
+    // Locally proofread? Build from edited segments. Otherwise use the backend, which
+    // keeps word-level grouping and overlap de-duplication.
+    if (segmentsEdited) {
+      downloadFile(`${taskId}.${fmt}`, fmt === 'srt' ? buildSrt(segments) : buildVtt(segments), mime);
+      return;
+    }
     try {
       const r = await authedFetch(`/asr/task/${taskId}/subtitle?format=${fmt}`);
       if (!r.ok) {
         alert(`导出字幕失败: HTTP ${r.status}`);
         return;
       }
-      const text = await r.text();
-      downloadFile(
-        `${taskId}.${fmt}`,
-        text,
-        fmt === 'srt' ? 'application/x-subrip' : 'text/vtt'
-      );
+      downloadFile(`${taskId}.${fmt}`, await r.text(), mime);
     } catch (e: any) {
       alert(`网络异常: ${e.message}`);
     }
@@ -356,12 +450,22 @@ export default function App() {
 
   return (
     <div className="app font-sans flex min-h-screen bg-bg text-fg">
+      {/* Mobile drawer overlay */}
+      {mobileNavOpen && (
+        <div
+          className="fixed inset-0 bg-black/30 z-[45] md:hidden"
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Sidebar navigation */}
       <Sidebar
         currentView={currentView}
-        onViewChange={handleViewChange}
+        onViewChange={(v) => { handleViewChange(v); setMobileNavOpen(false); }}
         config={config}
         footStatus={footStatus}
+        open={mobileNavOpen}
       />
 
       {/* Main dashboard body */}
@@ -371,9 +475,10 @@ export default function App() {
           crumb={viewCrumb}
           config={config}
           onSetToken={handleSetToken}
+          onToggleNav={() => setMobileNavOpen((v) => !v)}
         />
 
-        <div className="content p-7 max-w-6xl w-full mx-auto flex-1">
+        <div className="content p-4 md:p-7 max-w-6xl w-full mx-auto flex-1">
           <AnimatePresence mode="wait">
 
             {/* 1. TASKS ROUTE */}
@@ -426,6 +531,18 @@ export default function App() {
                 {/* Upload drag drop panel */}
                 <div className="card p-6">
                   <Dropzone onFileSelect={handleFileSelect} disabled={taskStatus === 'uploading' || taskStatus === 'processing'} />
+
+                  {/* Real upload progress */}
+                  {uploadProgress >= 0 && (
+                    <div className="mt-4">
+                      <div className="flex justify-between items-center mb-1.5 text-[12px]">
+                        <span className="text-fg-dim font-semibold">正在上传…</span>
+                        <span className="font-mono text-accent">{uploadProgress}%</span>
+                      </div>
+                      <div className="bar"><div style={{ width: `${uploadProgress}%` }} /></div>
+                      <p className="hint mt-1.5">大文件上传可能需要一些时间，请不要关闭页面。</p>
+                    </div>
+                  )}
 
                   {/* Parameter Accordion Overrides */}
                   <div className="mt-4">
@@ -519,28 +636,45 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* Segmented pane controllers */}
-                    <div className="tabs-container">
-                      <div
-                        onClick={() => setActivePane('live')}
-                        className={`tab ${activePane === 'live' ? 'active' : ''}`}
-                      >
-                        分片明细 ({segments.length})
+                    {/* Local media player — click a segment to seek here and proofread */}
+                    {mediaUrl && (
+                      <div className="panel p-3 mb-5 flex items-center gap-3">
+                        {mediaIsVideo ? (
+                          <video ref={mediaRef} src={mediaUrl} controls className="w-full max-h-64 rounded-lg bg-black" />
+                        ) : (
+                          <audio ref={mediaRef} src={mediaUrl} controls className="w-full" />
+                        )}
                       </div>
+                    )}
 
-                      <div
-                        onClick={() => setActivePane('final')}
-                        className={`tab ${activePane === 'final' ? 'active' : ''}`}
-                      >
-                        完整文本
-                      </div>
+                    {/* Segmented pane controllers */}
+                    <div className="tabs-container" role="tablist">
+                      {([['live', `分片明细 (${segments.length})`], ['final', '完整文本']] as const).map(([pane, label]) => (
+                        <div
+                          key={pane}
+                          role="tab"
+                          tabIndex={0}
+                          aria-selected={activePane === pane}
+                          onClick={() => setActivePane(pane)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActivePane(pane); } }}
+                          className={`tab outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-t-md ${activePane === pane ? 'active' : ''}`}
+                        >
+                          {label}
+                        </div>
+                      ))}
                     </div>
 
                     {/* Sub-panels display */}
                     <div className="mt-4">
                       {activePane === 'live' ? (
                         <div className="pane">
-                          <SegmentList segments={segments} taskId={taskId} authedFetch={authedFetch} />
+                          <SegmentList
+                            segments={segments}
+                            taskId={taskId}
+                            authedFetch={authedFetch}
+                            onSeek={mediaUrl ? handleSeek : undefined}
+                            onEditText={handleEditSegment}
+                          />
                           {segments.length === 0 && (
                             <div className="empty flex flex-col items-center justify-center py-14 border border-dashed border-border rounded-xl">
                               <span className="ico text-3xl">⏳</span>
@@ -552,13 +686,19 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="pane flex flex-col gap-4">
+                          <p className="hint">
+                            可在下方编辑完整文本后「复制全文」或「下载 TXT」。
+                            {segmentsEdited
+                              ? '已应用分片校对：SRT/VTT 将按你校对后的分片文本导出。'
+                              : '若需精修字幕，可在「分片明细」里双击逐句校对，再回到这里导出 SRT/VTT。'}
+                          </p>
                           <textarea
                             value={fullText}
-                            readOnly
-                            placeholder="识别完成后，这里会显示拼接好的完整文本…"
+                            onChange={(e) => setFullText(e.target.value)}
+                            placeholder="识别完成后，这里会显示拼接好的完整文本，可在此校对修改…"
                             className="w-full min-h-[300px] border border-border bg-surface-2 p-5 rounded-xl text-sm leading-relaxed text-fg"
                           />
-                          
+
                           <div className="flex gap-2.5 flex-wrap">
                             <button onClick={handleCopy} className="primary">
                               {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}

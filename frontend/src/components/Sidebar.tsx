@@ -7,6 +7,7 @@ interface SidebarProps {
   onViewChange: (view: string) => void;
   config: SystemConfig | null;
   footStatus: { text: string; status: 'ok' | 'err' | 'warn' | '' };
+  open?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -14,6 +15,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onViewChange,
   config,
   footStatus,
+  open = false,
 }) => {
   const menuItems = [
     { id: 'tasks', label: '文件转写', desc: '上传音频出文本', icon: UploadCloud },
@@ -23,7 +25,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   return (
-    <aside className="w-[244px] shrink-0 bg-sidebar border-r border-border flex flex-col sticky top-0 h-screen z-50">
+    <aside
+      className={`w-[244px] shrink-0 bg-sidebar border-r border-border flex flex-col h-screen z-50
+        fixed md:sticky top-0 transition-transform duration-200
+        ${open ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}
+    >
       {/* Brand */}
       <div className="flex items-center gap-3 px-5 py-5 border-b border-border">
         <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-accent to-accent-2 flex items-center justify-center shadow-md shadow-accent/25">

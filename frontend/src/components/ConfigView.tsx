@@ -280,7 +280,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       })}
 
       {/* Sticky action bar */}
-      <div className="fixed bottom-0 left-[244px] right-0 bg-surface/95 backdrop-blur border-t border-border px-7 py-3.5 flex items-center gap-3 flex-wrap z-30">
+      <div className="fixed bottom-0 left-0 md:left-[244px] right-0 bg-surface/95 backdrop-blur border-t border-border px-5 md:px-7 py-3.5 flex items-center gap-3 flex-wrap z-30">
         <button onClick={handleSave} className="primary">
           <Save className="w-4 h-4" /><span>保存配置</span>
         </button>

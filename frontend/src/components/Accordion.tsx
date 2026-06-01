@@ -14,6 +14,7 @@ export const Accordion: React.FC<AccordionProps> = ({ title, children }) => {
     <div className={`border rounded-xl bg-white overflow-hidden transition-all duration-200 ${isOpen ? 'border-accent/30' : 'border-border'}`}>
       <button
         onClick={() => setIsOpen(!isOpen)}
+        aria-expanded={isOpen}
         className="w-full flex items-center justify-between px-5 py-3.5 cursor-pointer text-left text-fg-dim hover:text-fg hover:bg-surface-2 select-none transition-colors border-none bg-transparent"
       >
         <span className="text-[13px] font-semibold">{title}</span>
