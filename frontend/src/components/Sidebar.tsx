@@ -37,7 +37,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
         <div>
           <div className="font-title font-bold text-[15px] text-fg tracking-tight">AudioFlow ASR</div>
-          <div className="text-[10px] text-muted font-mono">语音转写控制台 v1.2.0</div>
+          <div className="text-[10px] text-muted font-mono">语音转写控制台 v1.3.0</div>
         </div>
       </div>
 

@@ -217,10 +217,10 @@ button:disabled {
 @keyframes bounce { 0% { height: 8px; } 100% { height: 30px; } }
 
 /* ---------------- Progress bar ---------------- */
-.bar {
+.progress {
   @apply h-2 bg-surface-3 rounded-full overflow-hidden flex-1 min-w-[180px] border border-border;
 }
-.bar > div {
+.progress > div {
   @apply h-full bg-gradient-to-r from-accent to-accent-2 rounded-full transition-all duration-300 ease-out;
 }
 

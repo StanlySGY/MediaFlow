@@ -539,7 +539,7 @@ export default function App() {
                         <span className="text-fg-dim font-semibold">正在上传…</span>
                         <span className="font-mono text-accent">{uploadProgress}%</span>
                       </div>
-                      <div className="bar"><div style={{ width: `${uploadProgress}%` }} /></div>
+                      <div className="progress"><div style={{ width: `${uploadProgress}%` }} /></div>
                       <p className="hint mt-1.5">大文件上传可能需要一些时间，请不要关闭页面。</p>
                     </div>
                   )}
@@ -626,7 +626,7 @@ export default function App() {
                       <span className="badge">已识别分片 <b className="text-fg ml-1 font-mono">{taskFinSegs}/{taskTotalSegs}</b></span>
                       <span className="badge">音频时长 <b className="text-fg ml-1 font-mono">{taskDuration}</b></span>
 
-                      <div className="bar flex-1 min-w-[200px]">
+                      <div className="progress flex-1 min-w-[200px]">
                         <div style={{ width: `${taskProgress * 100}%` }} />
                       </div>
 
