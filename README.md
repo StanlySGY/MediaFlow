@@ -1,6 +1,6 @@
-# AudioFlow-ASR
+# MediaFlow
 
-长音频切分 + 流式 ASR 转写服务。基于 FastAPI / asyncio / FFmpeg，调用 OpenAI 兼容格式的 ASR 接口（默认阿里云 DashScope 的 Qwen ASR），支持：
+音视频处理工具箱。基于 FastAPI / asyncio / FFmpeg，三大能力合一：长音频切分、流式 ASR 转写（调用 OpenAI 兼容 ASR 接口，默认阿里云 DashScope 的 Qwen ASR）、音视频无损合并。支持：
 
 - 多格式输入（mp3/wav/m4a/flac/aac/ogg/pcm/mp4/mov/mkv）
 - FFmpeg 自动标准化为 16k mono pcm_s16le
@@ -15,6 +15,7 @@
 - 任务结果持久化到 `outputs/`，进程重启后 `/result` 仍可用
 - Docker 一键部署（内置 ffmpeg）
 - 内置 Web UI（侧边栏多 tab：文件任务 / 实时识别 / 服务配置 / 历史任务；拖拽上传 + 真实上传进度 + 实时分片进度 + 音视频播放联动校对 + 分片双击校对并前端导出精修字幕 + 完整文本/字幕复制下载 + 配置面板**可在线编辑保存** + 上游连通测试 + 单分片原始响应查看；移动端响应式抽屉布局）
+- **音视频无损合并**（`POST /media/concat`：同格式多文件按上传顺序拼接，FFmpeg concat demuxer + `-c copy`，不转码、输出格式 = 输入格式，音频/视频通用）
 - **实时识别 pipeline**（POST /asr/realtime/session → POST audio base64 chunks → SSE events → POST end）
 
 ## 快速开始
@@ -150,7 +151,7 @@ GET    {base}/session/{id}/events       SSE: event=online|final|error|done
 POST   {base}/session/{id}/end
 ```
 
-非标准 WebSocket 模型（如 FunASR runtime）**不要**直接接入 AudioFlow-ASR；先在模型服务旁边做一个 shim 把它包成上面这套 HTTP+SSE 协议，再让 `realtime_http` 对接 shim。
+非标准 WebSocket 模型（如 FunASR runtime）**不要**直接接入 MediaFlow；先在模型服务旁边做一个 shim 把它包成上面这套 HTTP+SSE 协议，再让 `realtime_http` 对接 shim。
 
 ### curl 示例
 
@@ -213,6 +214,24 @@ async function pushChunk(b64, isFinal=false) {
 3. 事件流面板里看 online/final/done 实时滚动；右上角统计 chunks/bytes/events
 4. 也可以手动粘贴一段 base64 单包测试，或直接点「发送 end」
 
+## 音视频合并 (Concat)
+
+把多段**同格式**音频或视频按上传顺序无损拼接成一个长文件：走 FFmpeg concat demuxer + `-c copy`，不转码、不重编码——输出格式与输入一致，耗时只受磁盘 IO 限制。
+
+所有输入需共用同一容器 / 编码 / 采样率 / 分辨率等参数（同一设备录制的连续片段天然满足）；参数不一致时 FFmpeg 报错，接口返回 400。混格式或少于 2 个文件同样返回 400。
+
+```bash
+# 音频：多段录音拼成一条
+curl -X POST http://localhost:8999/media/concat \
+  -F "files=@part1.mp3" -F "files=@part2.mp3" -F "files=@part3.mp3" \
+  -o merged.mp3
+
+# 视频：同编码的多段 mp4 无损拼接（秒级）
+curl -X POST http://localhost:8999/media/concat \
+  -F "files=@clip1.mp4" -F "files=@clip2.mp4" \
+  -o merged.mp4
+```
+
 ## API
 
 > 提交任务后，直接打开根路径 `/` 用 Web UI 查看实时进度也可。下面是程序化调用示例。
@@ -239,9 +258,10 @@ async function pushChunk(b64, isFinal=false) {
 | GET  | `/asr/realtime/{session_id}/events` | SSE 持续推送 online/final/done/error |
 | POST | `/asr/realtime/{session_id}/end` | 结束会话 |
 | DELETE | `/asr/realtime/{session_id}` | 删除会话 |
+| POST | `/media/concat` | `multipart/form-data` 上传 ≥2 个**同格式**音/视频文件，按上传顺序无损拼接（`-c copy`），返回合并文件；混格式 / 单文件 → 400 |
 | GET  | `/health` | 健康检查 |
 
-> 启用鉴权时（`ACCESS_TOKENS=...`），所有 `/asr/*` 请求需附带 `Authorization: Bearer <token>`；SSE 用 `?token=<token>` 查询串。`/`、`/auth/info`、`/health` 不受影响。
+> 启用鉴权时（`ACCESS_TOKENS=...`），所有 `/asr/*`、`/media/*` 请求需附带 `Authorization: Bearer <token>`；SSE 用 `?token=<token>` 查询串。`/`、`/auth/info`、`/health` 不受影响。
 
 ### 提交任务
 
@@ -303,9 +323,9 @@ curl http://localhost:8999/asr/task/ab12.../result
 
 ```
 app/
-├── api/              FastAPI 路由 (含 SSE / realtime)
+├── api/              FastAPI 路由 (含 SSE / realtime / media concat)
 ├── services/
-│   ├── ffmpeg_service.py    标准化 / 探测时长 / 静音检测 / 精确切片
+│   ├── ffmpeg_service.py    标准化 / 探测时长 / 静音检测 / 精确切片 / 无损合并
 │   ├── splitter.py          切分策略
 │   ├── asr/                 ASR Provider 抽象层
 │   │   ├── base.py          ASRProvider / ASRResult / WordTime

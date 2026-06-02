@@ -36,8 +36,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <AudioLines className="w-5 h-5 text-white" />
         </div>
         <div>
-          <div className="font-title font-bold text-[15px] text-fg tracking-tight">AudioFlow ASR</div>
-          <div className="text-[10px] text-muted font-mono">语音转写控制台 v1.3.0</div>
+          <div className="font-title font-bold text-[15px] text-fg tracking-tight">MediaFlow</div>
+          <div className="text-[10px] text-muted font-mono">音视频处理控制台 v1.4.0</div>
         </div>
       </div>
 
@@ -72,7 +72,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <BookOpen className="w-[18px] h-[18px] text-muted" />
           <span>接口文档 (Swagger)</span>
         </a>
-        <a href="https://github.com/StanlySGY/AudioFlow-ASR" target="_blank" rel="noreferrer"
+        <a href="https://github.com/StanlySGY/MediaFlow" target="_blank" rel="noreferrer"
           className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold text-fg-dim hover:bg-surface-3 transition-all">
           <Star className="w-[18px] h-[18px] text-muted" />
           <span>GitHub 项目</span>

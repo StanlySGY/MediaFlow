@@ -1,8 +1,8 @@
 services:
-  audioflow-asr:
+  mediaflow:
     build: .
-    image: audioflow-asr:latest
-    container_name: audioflow-asr
+    image: mediaflow:latest
+    container_name: mediaflow
     restart: unless-stopped
     ports:
       - "8999:8999"

@@ -140,8 +140,8 @@ def _concat_quote(path: Path) -> str:
     return str(path.resolve()).replace("'", "'\\''")
 
 
-async def concat_audio(parts: list[Path], dst: Path) -> None:
-    """Concatenate same-codec files in order, no re-encode (stream copy).
+async def concat_media(parts: list[Path], dst: Path) -> None:
+    """Concatenate same-codec audio/video files in order, no re-encode (stream copy).
 
     Inputs must share one container/codec/sample rate/channel layout (the caller
     guarantees this); ffmpeg fails loudly otherwise.

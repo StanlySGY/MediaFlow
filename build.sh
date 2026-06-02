@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# AudioFlow-ASR — one-shot Docker image builder.
+# MediaFlow — one-shot Docker image builder.
 # Usage:
-#   ./build.sh              build audioflow-asr:1.2.0 + :latest
+#   ./build.sh              build mediaflow:1.4.0 + :latest
 #   ./build.sh --no-cache   skip layer cache
 #   ./build.sh --pull       pull fresh base images first
 #   ./build.sh --test       run backend pytest before building (requires .venv)
 #   ./build.sh --tag x.y.z  override image version tag
 #   ./build.sh --up         start `docker compose up -d` after a successful build
-#   ./build.sh --push REG   docker push REG/audioflow-asr:<tag> after build
+#   ./build.sh --push REG   docker push REG/mediaflow:<tag> after build
 #
 # After build, run `docker compose up -d` (or pass --up).
 
 set -euo pipefail
 
 # ---- defaults ----
-IMAGE_NAME="audioflow-asr"
-DEFAULT_TAG="1.2.0"
+IMAGE_NAME="mediaflow"
+DEFAULT_TAG="1.4.0"
 TAG="$DEFAULT_TAG"
 NO_CACHE=""
 PULL=""

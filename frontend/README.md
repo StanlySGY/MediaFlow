@@ -1,6 +1,6 @@
-# AudioFlow-ASR · 前端
+# MediaFlow · 前端
 
-AudioFlow-ASR 的 Web UI：React 19 + TypeScript + Vite + Tailwind CSS。提供文件转写、实时识别、服务配置、历史记录四个 tab，以及拖拽上传、实时分片进度、播放联动校对、字幕导出等交互。
+MediaFlow 的 Web UI：React 19 + TypeScript + Vite + Tailwind CSS。提供文件转写、实时识别、服务配置、历史记录四个 tab，以及拖拽上传、实时分片进度、播放联动校对、字幕导出等交互。
 
 ## 与后端的关系
 

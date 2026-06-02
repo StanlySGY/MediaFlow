@@ -36,7 +36,7 @@ from app.services.asr import (
     list_realtime_providers,
 )
 from app.services.asr.realtime_base import RealtimeASRError
-from app.services.ffmpeg_service import FFmpegError, concat_audio
+from app.services.ffmpeg_service import FFmpegError, concat_media
 from app.services.realtime_manager import RealtimeManager
 from app.services.stream_manager import TaskManager
 from app.services.subtitles import to_srt, to_vtt
@@ -44,6 +44,9 @@ from app.services.subtitles import to_srt, to_vtt
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/asr", tags=["asr"], dependencies=[Depends(require_token)])
 meta_router = APIRouter(tags=["meta"])
+media_router = APIRouter(
+    prefix="/media", tags=["media"], dependencies=[Depends(require_token)]
+)
 
 
 def get_manager(request: Request) -> TaskManager:
@@ -136,9 +139,9 @@ def _unlink_all(paths: list[Path]) -> None:
         p.unlink(missing_ok=True)
 
 
-@router.post("/concat")
-async def concat_files(files: list[UploadFile] = File(...)) -> FileResponse:
-    """Merge same-format audio files in upload order without re-encoding.
+@media_router.post("/concat")
+async def concat_media_files(files: list[UploadFile] = File(...)) -> FileResponse:
+    """Merge same-format audio/video files in upload order without re-encoding.
 
     Stream-copy concat (ffmpeg concat demuxer): the output format equals the
     input format. All inputs must share one container/codec; mixing is rejected.
@@ -174,7 +177,7 @@ async def concat_files(files: list[UploadFile] = File(...)) -> FileResponse:
                     if written > limit:
                         raise HTTPException(413, f"upload exceeds {limit} bytes")
                     await out.write(chunk)
-        await concat_audio(parts, dst)
+        await concat_media(parts, dst)
     except HTTPException:
         _unlink_all(parts + [dst])
         raise

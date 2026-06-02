@@ -17,10 +17,10 @@
 # External access still depends on the host firewall allowing that port.
 
 services:
-  audioflow-asr:
+  mediaflow:
     build: .
-    image: audioflow-asr:latest
-    container_name: audioflow-asr
+    image: mediaflow:latest
+    container_name: mediaflow
     restart: unless-stopped
     network_mode: host
     env_file:
