@@ -177,7 +177,7 @@ async def concat_media_files(files: list[UploadFile] = File(...)) -> FileRespons
                     if written > limit:
                         raise HTTPException(413, f"upload exceeds {limit} bytes")
                     await out.write(chunk)
-        await concat_media(parts, dst)
+        await concat_media(parts, dst, timeout=settings.ffmpeg_timeout)
     except HTTPException:
         _unlink_all(parts + [dst])
         raise
@@ -285,6 +285,8 @@ async def get_config() -> dict:
         "concurrency": s.asr_concurrency,
         "max_retries": s.asr_max_retries,
         "retry_backoff": s.asr_retry_backoff,
+        "ffmpeg_timeout": s.ffmpeg_timeout,
+        "ffmpeg_concurrency": s.ffmpeg_concurrency,
         "max_upload_bytes": s.max_upload_bytes,
         "api_key_set": bool(s.asr_api_key),
         "access_tokens_count": len(s.access_tokens_list),

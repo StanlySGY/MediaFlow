@@ -24,13 +24,23 @@ class SilenceRange:
         return (self.start + self.end) / 2
 
 
-async def _run(cmd: list[str], *, capture_stderr: bool = True) -> tuple[int, str, str]:
+async def _run(
+    cmd: list[str], *, capture_stderr: bool = True, timeout: float | None = None
+) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE if capture_stderr else None,
     )
-    stdout_b, stderr_b = await proc.communicate()
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        try:
+            await proc.communicate()  # reap the killed process; don't leave a zombie
+        except Exception:  # noqa: BLE001
+            pass
+        raise FFmpegError(f"ffmpeg timed out after {timeout:.0f}s: {cmd[0]}")
     return (
         proc.returncode or 0,
         stdout_b.decode("utf-8", "replace"),
@@ -38,7 +48,7 @@ async def _run(cmd: list[str], *, capture_stderr: bool = True) -> tuple[int, str
     )
 
 
-async def probe_duration(path: Path) -> float:
+async def probe_duration(path: Path, *, timeout: float | None = None) -> float:
     cmd = [
         "ffprobe",
         "-v",
@@ -49,13 +59,15 @@ async def probe_duration(path: Path) -> float:
         "json",
         str(path),
     ]
-    rc, out, err = await _run(cmd)
+    rc, out, err = await _run(cmd, timeout=timeout)
     if rc != 0:
         raise FFmpegError(f"ffprobe failed: {err.strip()}")
     return float(json.loads(out)["format"]["duration"])
 
 
-async def normalize_to_wav(src: Path, dst: Path) -> None:
+async def normalize_to_wav(
+    src: Path, dst: Path, *, timeout: float | None = None
+) -> None:
     """Convert any input → 16kHz mono pcm_s16le wav."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -72,7 +84,7 @@ async def normalize_to_wav(src: Path, dst: Path) -> None:
         "pcm_s16le",
         str(dst),
     ]
-    rc, _, err = await _run(cmd)
+    rc, _, err = await _run(cmd, timeout=timeout)
     if rc != 0:
         raise FFmpegError(f"ffmpeg convert failed: {err.strip()[-400:]}")
 
@@ -81,7 +93,7 @@ _SILENCE_RE = re.compile(r"silence_(start|end):\s*(-?\d+(?:\.\d+)?)")
 
 
 async def detect_silence(
-    path: Path, noise_db: float, min_duration: float
+    path: Path, noise_db: float, min_duration: float, *, timeout: float | None = None
 ) -> list[SilenceRange]:
     """Return silence ranges. Uses ffmpeg silencedetect filter."""
     cmd = [
@@ -96,7 +108,7 @@ async def detect_silence(
         "null",
         "-",
     ]
-    rc, _, err = await _run(cmd)
+    rc, _, err = await _run(cmd, timeout=timeout)
     if rc != 0:
         raise FFmpegError(f"silencedetect failed: {err.strip()[-400:]}")
 
@@ -108,7 +120,9 @@ async def detect_silence(
     return [SilenceRange(s, e) for s, e in zip(starts, ends) if e > s]
 
 
-async def slice_segment(src: Path, dst: Path, start: float, end: float) -> None:
+async def slice_segment(
+    src: Path, dst: Path, start: float, end: float, *, timeout: float | None = None
+) -> None:
     """Cut a precise segment (re-encode for sample-accurate cut)."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     duration = max(end - start, 0.01)
@@ -129,7 +143,7 @@ async def slice_segment(src: Path, dst: Path, start: float, end: float) -> None:
         "pcm_s16le",
         str(dst),
     ]
-    rc, _, err = await _run(cmd)
+    rc, _, err = await _run(cmd, timeout=timeout)
     if rc != 0:
         raise FFmpegError(f"slice failed: {err.strip()[-400:]}")
 
@@ -140,7 +154,9 @@ def _concat_quote(path: Path) -> str:
     return str(path.resolve()).replace("'", "'\\''")
 
 
-async def concat_media(parts: list[Path], dst: Path) -> None:
+async def concat_media(
+    parts: list[Path], dst: Path, *, timeout: float | None = None
+) -> None:
     """Concatenate same-codec audio/video files in order, no re-encode (stream copy).
 
     Inputs must share one container/codec/sample rate/channel layout (the caller
@@ -168,7 +184,7 @@ async def concat_media(parts: list[Path], dst: Path) -> None:
             "copy",
             str(dst),
         ]
-        rc, _, err = await _run(cmd)
+        rc, _, err = await _run(cmd, timeout=timeout)
         if rc != 0:
             raise FFmpegError(f"concat failed: {err.strip()[-400:]}")
     finally:

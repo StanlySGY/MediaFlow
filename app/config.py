@@ -12,7 +12,9 @@ log = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     asr_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     asr_api_key: str = ""
@@ -33,6 +35,9 @@ class Settings(BaseSettings):
     asr_concurrency: int = 4
     asr_max_retries: int = 3
     asr_retry_backoff: float = 1.5
+
+    ffmpeg_timeout: float = 1800.0  # per-ffmpeg-process wall-clock cap (anti-hang)
+    ffmpeg_concurrency: int = 4  # max concurrent ffmpeg slice processes
 
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GiB
     max_tasks_in_memory: int = 100
@@ -69,26 +74,43 @@ class Settings(BaseSettings):
 # Fields the UI / API is allowed to change at runtime. Operational and dir
 # fields stay env-only because changing them mid-flight is meaningless or
 # dangerous.
-WRITABLE_FIELDS: frozenset[str] = frozenset({
-    "asr_provider", "asr_base_url", "asr_api_key", "asr_model",
-    "asr_language", "asr_timeout", "asr_timestamps",
-    "asr_hotwords", "asr_prompt_hints",
-    "asr_concurrency", "asr_max_retries", "asr_retry_backoff",
-    "split_strategy", "split_chunk_seconds", "split_overlap_seconds",
-    "silence_noise_db", "silence_min_duration",
-    "max_upload_bytes",
-    "access_tokens",
-    "realtime_asr_provider",
-    "realtime_asr_base_url",
-    "realtime_asr_api_key",
-    "realtime_asr_model",
-    "realtime_session_ttl_seconds",
-    "realtime_max_sessions",
-    "realtime_max_chunk_bytes",
-})
+WRITABLE_FIELDS: frozenset[str] = frozenset(
+    {
+        "asr_provider",
+        "asr_base_url",
+        "asr_api_key",
+        "asr_model",
+        "asr_language",
+        "asr_timeout",
+        "asr_timestamps",
+        "asr_hotwords",
+        "asr_prompt_hints",
+        "asr_concurrency",
+        "asr_max_retries",
+        "asr_retry_backoff",
+        "ffmpeg_timeout",
+        "ffmpeg_concurrency",
+        "split_strategy",
+        "split_chunk_seconds",
+        "split_overlap_seconds",
+        "silence_noise_db",
+        "silence_min_duration",
+        "max_upload_bytes",
+        "access_tokens",
+        "realtime_asr_provider",
+        "realtime_asr_base_url",
+        "realtime_asr_api_key",
+        "realtime_asr_model",
+        "realtime_session_ttl_seconds",
+        "realtime_max_sessions",
+        "realtime_max_chunk_bytes",
+    }
+)
 
 # Never returned by GET /asr/config in cleartext. Only a `*_set` boolean.
-SENSITIVE_FIELDS: frozenset[str] = frozenset({"asr_api_key", "access_tokens", "realtime_asr_api_key"})
+SENSITIVE_FIELDS: frozenset[str] = frozenset(
+    {"asr_api_key", "access_tokens", "realtime_asr_api_key"}
+)
 
 
 def _load_runtime_overrides(path: Path) -> dict:
@@ -111,7 +133,9 @@ def _apply_to(settings: Settings, overrides: dict) -> None:
             try:
                 setattr(settings, k, v)
             except Exception:  # noqa: BLE001
-                log.warning("failed to apply runtime override %s=%r", k, v, exc_info=True)
+                log.warning(
+                    "failed to apply runtime override %s=%r", k, v, exc_info=True
+                )
 
 
 @lru_cache
@@ -142,7 +166,8 @@ def update_runtime_overrides(updates: dict) -> dict:
     existing.update(updates)
     s.runtime_config_path.parent.mkdir(parents=True, exist_ok=True)
     s.runtime_config_path.write_text(
-        json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8",
+        json.dumps(existing, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
 
     _apply_to(s, updates)

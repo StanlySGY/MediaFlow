@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from app.config import Settings
-from app.models.schemas import Segment, SegmentEvent, TaskInfo, TaskResult, TaskStatus, Word
+from app.models.schemas import (
+    Segment,
+    SegmentEvent,
+    TaskInfo,
+    TaskResult,
+    TaskStatus,
+    Word,
+)
 from app.services import splitter
 from app.services.asr import ASRError, create_provider
 from app.services.ffmpeg_service import FFmpegError, normalize_to_wav, probe_duration
@@ -24,7 +31,15 @@ _TERMINAL = {TaskStatus.done, TaskStatus.failed}
 class _Task:
     """Per-task state: events history + subscriber fan-out + termination signal."""
 
-    __slots__ = ("info", "result", "events", "subscribers", "done", "completed_at", "settings")
+    __slots__ = (
+        "info",
+        "result",
+        "events",
+        "subscribers",
+        "done",
+        "completed_at",
+        "settings",
+    )
 
     def __init__(self, task_id: str, settings: Settings) -> None:
         self.info = TaskInfo(task_id=task_id, status=TaskStatus.pending)
@@ -77,10 +92,14 @@ class TaskManager:
 
     # ---- lifecycle ----
 
-    async def submit(self, source_path: Path, original_name: str, *, overrides: dict | None = None) -> str:
+    async def submit(
+        self, source_path: Path, original_name: str, *, overrides: dict | None = None
+    ) -> str:
         self._evict_if_needed()
         task_id = uuid.uuid4().hex
-        task_settings = self._settings.model_copy(update=overrides) if overrides else self._settings
+        task_settings = (
+            self._settings.model_copy(update=overrides) if overrides else self._settings
+        )
         task = _Task(task_id, task_settings)
         async with self._lock:
             self._tasks[task_id] = task
@@ -111,8 +130,10 @@ class TaskManager:
         s = self._settings
         now = time.monotonic()
         expired = [
-            tid for tid, t in self._tasks.items()
-            if t.completed_at is not None and (now - t.completed_at) > s.task_ttl_seconds
+            tid
+            for tid, t in self._tasks.items()
+            if t.completed_at is not None
+            and (now - t.completed_at) > s.task_ttl_seconds
         ]
         for tid in expired:
             self._tasks.pop(tid, None)
@@ -120,7 +141,11 @@ class TaskManager:
         # Bound memory: keep newest by completion time; never evict in-flight tasks.
         if len(self._tasks) > s.max_tasks_in_memory:
             completed = sorted(
-                ((tid, t.completed_at) for tid, t in self._tasks.items() if t.completed_at is not None),
+                (
+                    (tid, t.completed_at)
+                    for tid, t in self._tasks.items()
+                    if t.completed_at is not None
+                ),
                 key=lambda x: x[1] or 0.0,
             )
             overflow = len(self._tasks) - s.max_tasks_in_memory
@@ -165,8 +190,8 @@ class TaskManager:
         try:
             task.info.status = TaskStatus.preprocessing
             normalized = work_dir / "input.wav"
-            await normalize_to_wav(source_path, normalized)
-            duration = await probe_duration(normalized)
+            await normalize_to_wav(source_path, normalized, timeout=s.ffmpeg_timeout)
+            duration = await probe_duration(normalized, timeout=s.ffmpeg_timeout)
             task.result.duration = duration
 
             task.info.status = TaskStatus.splitting
@@ -178,6 +203,8 @@ class TaskManager:
                 overlap=s.split_overlap_seconds,
                 silence_noise_db=s.silence_noise_db,
                 silence_min_duration=s.silence_min_duration,
+                ffmpeg_timeout=s.ffmpeg_timeout,
+                ffmpeg_concurrency=s.ffmpeg_concurrency,
             )
             task.info.total_segments = len(segments)
             task.result.segments = segments
@@ -204,7 +231,8 @@ class TaskManager:
             # Persist failure too, so /result survives restart.
             try:
                 (s.output_dir / f"{task_id}.json").write_text(
-                    task.result.model_dump_json(indent=2), encoding="utf-8",
+                    task.result.model_dump_json(indent=2),
+                    encoding="utf-8",
                 )
             except Exception:  # noqa: BLE001
                 log.warning("failed to persist failure for %s", task_id, exc_info=True)
@@ -230,7 +258,11 @@ class TaskManager:
                         res = await provider.transcribe(seg.file_path)
                         seg.text = res.text
                         seg.words = [
-                            Word(word=w.word, start=w.start + seg.start, end=w.end + seg.start)
+                            Word(
+                                word=w.word,
+                                start=w.start + seg.start,
+                                end=w.end + seg.start,
+                            )
                             for w in res.words
                         ]
                         seg.raw = res.raw
@@ -243,16 +275,20 @@ class TaskManager:
                         seg.elapsed_ms = (time.perf_counter() - t0) * 1000.0
                         task.info.finished_segments += 1
                         if task.info.total_segments:
-                            task.info.progress = task.info.finished_segments / task.info.total_segments
-                        task.publish(SegmentEvent(
-                            task_id=task.info.task_id,
-                            segment_id=seg.segment_id,
-                            start=seg.start,
-                            end=seg.end,
-                            text=seg.text,
-                            is_final=seg.is_final,
-                            elapsed_ms=seg.elapsed_ms,
-                            error=seg.error,
-                        ))
+                            task.info.progress = (
+                                task.info.finished_segments / task.info.total_segments
+                            )
+                        task.publish(
+                            SegmentEvent(
+                                task_id=task.info.task_id,
+                                segment_id=seg.segment_id,
+                                start=seg.start,
+                                end=seg.end,
+                                text=seg.text,
+                                is_final=seg.is_final,
+                                elapsed_ms=seg.elapsed_ms,
+                                error=seg.error,
+                            )
+                        )
 
             await asyncio.gather(*(worker(seg) for seg in segments))
