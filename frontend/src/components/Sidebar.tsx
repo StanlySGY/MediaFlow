@@ -1,5 +1,5 @@
 import React from 'react';
-import { UploadCloud, Mic, Settings, FolderArchive, BookOpen, Star, AudioLines } from 'lucide-react';
+import { UploadCloud, Mic, Settings, FolderArchive, BookOpen, AudioLines } from 'lucide-react';
 import { SystemConfig } from '../types';
 
 interface SidebarProps {
@@ -71,11 +71,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold text-fg-dim hover:bg-surface-3 transition-all">
           <BookOpen className="w-[18px] h-[18px] text-muted" />
           <span>接口文档 (Swagger)</span>
-        </a>
-        <a href="https://github.com/StanlySGY/MediaFlow" target="_blank" rel="noreferrer"
-          className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold text-fg-dim hover:bg-surface-3 transition-all">
-          <Star className="w-[18px] h-[18px] text-muted" />
-          <span>GitHub 项目</span>
         </a>
       </nav>
 
