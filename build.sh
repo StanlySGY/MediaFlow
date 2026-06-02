@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # MediaFlow — one-shot Docker image builder.
 # Usage:
-#   ./build.sh              build mediaflow:1.4.0 + :latest
-#   ./build.sh --no-cache   skip layer cache
-#   ./build.sh --pull       pull fresh base images first
-#   ./build.sh --test       run backend pytest before building (requires .venv)
-#   ./build.sh --tag x.y.z  override image version tag
-#   ./build.sh --up         start `docker compose up -d` after a successful build
-#   ./build.sh --push REG   docker push REG/mediaflow:<tag> after build
+#   ./build.sh                build mediaflow:1.4.0 + :latest (linux/amd64)
+#   ./build.sh --platform P   target platform (default linux/amd64; e.g. linux/arm64)
+#   ./build.sh --save [FILE]  docker save image to a gzipped tar for offline transfer
+#   ./build.sh --no-cache     skip layer cache
+#   ./build.sh --pull         pull fresh base images first
+#   ./build.sh --test         run backend pytest before building (requires .venv)
+#   ./build.sh --tag x.y.z    override image version tag
+#   ./build.sh --up           start `docker compose up -d` after a successful build
+#   ./build.sh --push REG     docker push REG/mediaflow:<tag> after build
 #
-# After build, run `docker compose up -d` (or pass --up).
+# Offline delivery: ./build.sh --save → copy .tar.gz → docker load -i → compose -f docker-compose.prod.yml up -d
 
 set -euo pipefail
 
@@ -17,11 +19,14 @@ set -euo pipefail
 IMAGE_NAME="mediaflow"
 DEFAULT_TAG="1.4.0"
 TAG="$DEFAULT_TAG"
+PLATFORM="linux/amd64"
 NO_CACHE=""
 PULL=""
 RUN_TESTS=0
 RUN_UP=0
 PUSH_REG=""
+SAVE=0
+SAVE_FILE=""
 
 # ---- color helpers ----
 if [[ -t 1 ]]; then
@@ -43,8 +48,11 @@ while [[ $# -gt 0 ]]; do
         --test)     RUN_TESTS=1;          shift ;;
         --up)       RUN_UP=1;             shift ;;
         --tag)      TAG="${2:?--tag needs a value}"; shift 2 ;;
+        --platform) PLATFORM="${2:?--platform needs a value}"; shift 2 ;;
+        --save)     SAVE=1
+                    if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_FILE="$2"; shift 2; else shift; fi ;;
         --push)     PUSH_REG="${2:?--push needs a registry}"; shift 2 ;;
-        -h|--help)  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)          die "unknown argument: $1 (use --help)" ;;
     esac
 done
@@ -74,12 +82,14 @@ IMG_VER="${IMAGE_NAME}:${TAG}"
 IMG_LAT="${IMAGE_NAME}:latest"
 
 info "Building ${C_DIM}${IMG_VER}${C_RST} (also tagging ${C_DIM}${IMG_LAT}${C_RST})…"
-echo "  context : $(pwd)"
-echo "  flags   : ${NO_CACHE:-} ${PULL:-}"
+echo "  context  : $(pwd)"
+echo "  platform : ${PLATFORM}"
+echo "  flags    : ${NO_CACHE:-} ${PULL:-}"
 echo
 
 # shellcheck disable=SC2086
 docker build $NO_CACHE $PULL \
+    --platform "$PLATFORM" \
     -t "$IMG_VER" \
     -t "$IMG_LAT" \
     -f Dockerfile \
@@ -97,10 +107,30 @@ HUMAN_SIZE="$(awk -v s="$SIZE" 'BEGIN{
 IMG_ID="$(docker image inspect "$IMG_VER" --format '{{.Id}}' 2>/dev/null | sed 's/^sha256://;s/\(.\{12\}\).*/\1/')"
 
 echo
-echo "  ${C_DIM}image${C_RST}  $IMG_VER  (also tagged :latest)"
-echo "  ${C_DIM}id${C_RST}     $IMG_ID"
-echo "  ${C_DIM}size${C_RST}   $HUMAN_SIZE"
+echo "  ${C_DIM}image${C_RST}     $IMG_VER  (also tagged :latest)"
+echo "  ${C_DIM}platform${C_RST}  $PLATFORM"
+echo "  ${C_DIM}id${C_RST}        $IMG_ID"
+echo "  ${C_DIM}size${C_RST}      $HUMAN_SIZE"
 echo
+
+# ---- optional save (offline transfer) ----
+if [[ "$SAVE" -eq 1 ]]; then
+    ARCH="${PLATFORM##*/}"
+    SAVE_FILE="${SAVE_FILE:-${IMAGE_NAME}-${TAG}-${ARCH}.tar.gz}"
+    info "Saving ${C_DIM}${IMG_VER}${C_RST} → ${C_DIM}${SAVE_FILE}${C_RST} (gzip)…"
+    docker save "$IMG_VER" | gzip > "$SAVE_FILE"
+    SAVED_BYTES="$(wc -c < "$SAVE_FILE")"
+    SAVED_SIZE="$(awk -v b="$SAVED_BYTES" 'BEGIN{
+        split("B KB MB GB TB",u," "); i=1;
+        while(b>=1024 && i<5){ b/=1024; i++ }
+        printf "%.1f %s", b, u[i]
+    }')"
+    ok "Saved ${SAVE_FILE} (${SAVED_SIZE})"
+    echo "  ${C_DIM}offline next:${C_RST} copy ${SAVE_FILE} to the site, then:"
+    echo "    docker load -i ${SAVE_FILE}"
+    echo "    docker compose -f docker-compose.prod.yml up -d"
+    echo
+fi
 
 # ---- optional push ----
 if [[ -n "$PUSH_REG" ]]; then

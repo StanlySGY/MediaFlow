@@ -55,6 +55,34 @@ docker compose up -d --build
 
   外网访问仍需宿主机防火墙放行该端口；若无权限，可把 `.env` 的 `PORT` 改成一个已放行的端口。
 
+### 离线现场部署（air-gapped）
+
+现场内网无法联网构建或拉取镜像时，在**有网的构建机**上打包好镜像，拷到现场加载运行：
+
+```bash
+# 1. 构建机（有网）：构建并导出镜像（默认 linux/amd64，匹配现场 x86 服务器）
+./build.sh --save
+#    产物：mediaflow-1.4.0-amd64.tar.gz
+#    现场是 arm 服务器时：./build.sh --platform linux/arm64 --save
+
+# 2. 把 .tar.gz、docker-compose.prod.yml、.env.example 拷到现场（U 盘 / 内网盘）
+
+# 3. 现场服务器（离线）：加载镜像
+docker load -i mediaflow-1.4.0-amd64.tar.gz
+
+# 4. 准备配置：ASR_BASE_URL 指向内网已部署的 ASR（无鉴权可留空 ASR_API_KEY）
+cp .env.example .env
+
+# 5. 启动（prod compose 只跑现成镜像，绝不在现场构建）
+docker compose -f docker-compose.prod.yml up -d
+```
+
+`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.4.0`，多次交付时现场版本可追溯。`./outputs`、`./temp` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果。
+
+> 现场宿主机防火墙挡端口（RHEL/Rocky firewalld、OpenStack/MAAS 节点常见）时，删掉 `docker-compose.prod.yml` 的 `ports` 段、改用 `network_mode: host`。
+
+> ⚠️ **单 worker 运行**：任务状态、SSE 订阅、实时会话都在单进程内存中，请勿给 uvicorn 加 `--workers`，多进程间状态不共享会导致任务与事件错乱。镜像默认即单 worker。
+
 ## 对接自部署 ASR
 
 提供两种 OpenAI 兼容协议，按上游服务暴露的端点二选一：
