@@ -57,6 +57,8 @@ docker compose up -d --build
 
 ### 离线现场部署（air-gapped）
 
+> 📋 给现场运维的完整操作手册见 **[DEPLOY_ONSITE.md](DEPLOY_ONSITE.md)**（部署 / 配置 / 验证 / 排错，可随交付包一起发给现场）。
+
 现场内网无法联网构建或拉取镜像时，在**有网的构建机**上打包好镜像，拷到现场加载运行：
 
 ```bash
