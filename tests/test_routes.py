@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import wave
 from pathlib import Path
 
 import pytest
@@ -13,8 +14,10 @@ def client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
     monkeypatch.setenv("MAX_UPLOAD_BYTES", "1024")  # 1 KiB ceiling for tests
     from app.config import get_settings
+
     get_settings.cache_clear()
     from app.main import create_app
+
     app = create_app()
     return TestClient(app)
 
@@ -50,3 +53,71 @@ def test_ui_served_at_root(client: TestClient):
     r = client.get("/")
     assert r.status_code == 200
     assert "AudioFlow-ASR" in r.text
+
+
+def _wav_bytes(seconds: float = 0.5) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * int(16000 * seconds))
+    return buf.getvalue()
+
+
+@pytest.fixture
+def concat_client(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("TEMP_DIR", str(tmp_path / "tmp"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    from app.main import create_app
+
+    return TestClient(create_app())
+
+
+def test_concat_merges_same_format(concat_client: TestClient):
+    a, b = _wav_bytes(0.5), _wav_bytes(0.5)
+    r = concat_client.post(
+        "/asr/concat",
+        files=[
+            ("files", ("a.wav", io.BytesIO(a), "audio/wav")),
+            ("files", ("b.wav", io.BytesIO(b), "audio/wav")),
+        ],
+    )
+    assert r.status_code == 200
+    with wave.open(io.BytesIO(r.content), "rb") as wf:
+        seconds = wf.getnframes() / wf.getframerate()
+    assert seconds > 0.8  # two 0.5s clips merged end to end
+
+
+def test_concat_rejects_single_file(client: TestClient):
+    r = client.post(
+        "/asr/concat",
+        files=[("files", ("a.wav", io.BytesIO(b"x"), "audio/wav"))],
+    )
+    assert r.status_code == 400
+
+
+def test_concat_rejects_mixed_formats(client: TestClient):
+    r = client.post(
+        "/asr/concat",
+        files=[
+            ("files", ("a.wav", io.BytesIO(b"x"), "audio/wav")),
+            ("files", ("b.mp3", io.BytesIO(b"y"), "audio/mpeg")),
+        ],
+    )
+    assert r.status_code == 400
+
+
+def test_concat_rejects_unsupported_ext(client: TestClient):
+    r = client.post(
+        "/asr/concat",
+        files=[
+            ("files", ("a.exe", io.BytesIO(b"x"), "application/octet-stream")),
+            ("files", ("b.exe", io.BytesIO(b"y"), "application/octet-stream")),
+        ],
+    )
+    assert r.status_code == 400

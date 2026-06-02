@@ -54,7 +54,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="AudioFlow-ASR",
         description="Long-audio splitting + streaming ASR transcription service.",
-        version="1.3.0",
+        version="1.4.0",
         lifespan=_lifespan,
     )
     app.state.manager = TaskManager(settings)

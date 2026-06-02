@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import logging
-import tempfile
 import time
 import uuid
 import wave
@@ -10,8 +9,9 @@ from pathlib import Path
 
 import aiofiles
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from sse_starlette.sse import EventSourceResponse
+from starlette.background import BackgroundTask
 
 from app.config import (
     SENSITIVE_FIELDS,
@@ -29,8 +29,14 @@ from app.models.schemas import (
     TaskStatus,
 )
 from app.security import require_token
-from app.services.asr import ASRError, create_provider, list_providers, list_realtime_providers
+from app.services.asr import (
+    ASRError,
+    create_provider,
+    list_providers,
+    list_realtime_providers,
+)
 from app.services.asr.realtime_base import RealtimeASRError
+from app.services.ffmpeg_service import FFmpegError, concat_audio
 from app.services.realtime_manager import RealtimeManager
 from app.services.stream_manager import TaskManager
 from app.services.subtitles import to_srt, to_vtt
@@ -49,8 +55,16 @@ def get_realtime_manager(request: Request) -> RealtimeManager:
 
 
 ALLOWED_EXTS = {
-    ".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg", ".pcm",
-    ".mp4", ".mov", ".mkv",
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".flac",
+    ".aac",
+    ".ogg",
+    ".pcm",
+    ".mp4",
+    ".mov",
+    ".mkv",
 }
 
 
@@ -93,25 +107,95 @@ async def create_task(
         raise
 
     overrides: dict = {}
-    if model is not None: overrides["asr_model"] = model
-    if language is not None: overrides["asr_language"] = language or None
+    if model is not None:
+        overrides["asr_model"] = model
+    if language is not None:
+        overrides["asr_language"] = language or None
     if split_strategy is not None:
         if split_strategy not in {"fixed", "silence", "overlap"}:
             dst.unlink(missing_ok=True)
             raise HTTPException(400, "split_strategy must be fixed|silence|overlap")
         overrides["split_strategy"] = split_strategy
-    if chunk_seconds is not None: overrides["split_chunk_seconds"] = chunk_seconds
-    if overlap_seconds is not None: overrides["split_overlap_seconds"] = overlap_seconds
-    if hotwords is not None: overrides["asr_hotwords"] = hotwords
-    if prompt_hints is not None: overrides["asr_prompt_hints"] = prompt_hints
-    if timestamps is not None: overrides["asr_timestamps"] = timestamps
+    if chunk_seconds is not None:
+        overrides["split_chunk_seconds"] = chunk_seconds
+    if overlap_seconds is not None:
+        overrides["split_overlap_seconds"] = overlap_seconds
+    if hotwords is not None:
+        overrides["asr_hotwords"] = hotwords
+    if prompt_hints is not None:
+        overrides["asr_prompt_hints"] = prompt_hints
+    if timestamps is not None:
+        overrides["asr_timestamps"] = timestamps
 
     task_id = await manager.submit(dst, file.filename, overrides=overrides or None)
     return {"task_id": task_id}
 
 
+def _unlink_all(paths: list[Path]) -> None:
+    for p in paths:
+        p.unlink(missing_ok=True)
+
+
+@router.post("/concat")
+async def concat_files(files: list[UploadFile] = File(...)) -> FileResponse:
+    """Merge same-format audio files in upload order without re-encoding.
+
+    Stream-copy concat (ffmpeg concat demuxer): the output format equals the
+    input format. All inputs must share one container/codec; mixing is rejected.
+    """
+    settings = get_settings()
+    if len(files) < 2:
+        raise HTTPException(400, "concat needs at least two files")
+
+    suffixes = set()
+    for f in files:
+        if not f.filename:
+            raise HTTPException(400, "missing filename")
+        suffix = Path(f.filename).suffix.lower()
+        if suffix not in ALLOWED_EXTS:
+            raise HTTPException(400, f"unsupported file type: {suffix}")
+        suffixes.add(suffix)
+    if len(suffixes) != 1:
+        raise HTTPException(400, "all files must share the same format")
+    suffix = suffixes.pop()
+
+    job_id = uuid.uuid4().hex
+    limit = settings.max_upload_bytes
+    parts = [
+        settings.temp_dir / f"concat_{job_id}_{i}{suffix}" for i in range(len(files))
+    ]
+    dst = settings.temp_dir / f"concat_{job_id}{suffix}"
+    written = 0
+    try:
+        for f, part in zip(files, parts):
+            async with aiofiles.open(part, "wb") as out:
+                while chunk := await f.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > limit:
+                        raise HTTPException(413, f"upload exceeds {limit} bytes")
+                    await out.write(chunk)
+        await concat_audio(parts, dst)
+    except HTTPException:
+        _unlink_all(parts + [dst])
+        raise
+    except FFmpegError as e:
+        _unlink_all(parts + [dst])
+        raise HTTPException(400, f"concat failed: {e}") from e
+    except Exception:
+        _unlink_all(parts + [dst])
+        raise
+
+    return FileResponse(
+        dst,
+        filename=f"concat{suffix}",
+        background=BackgroundTask(_unlink_all, parts + [dst]),
+    )
+
+
 @router.get("/task/{task_id}", response_model=TaskInfo)
-async def get_status(task_id: str, manager: TaskManager = Depends(get_manager)) -> TaskInfo:
+async def get_status(
+    task_id: str, manager: TaskManager = Depends(get_manager)
+) -> TaskInfo:
     info = manager.get_info(task_id)
     if info is None:
         raise HTTPException(404, "task not found")
@@ -119,7 +203,9 @@ async def get_status(task_id: str, manager: TaskManager = Depends(get_manager)) 
 
 
 @router.get("/task/{task_id}/stream")
-async def stream_task(task_id: str, manager: TaskManager = Depends(get_manager)) -> EventSourceResponse:
+async def stream_task(
+    task_id: str, manager: TaskManager = Depends(get_manager)
+) -> EventSourceResponse:
     if manager.get_info(task_id) is None:
         raise HTTPException(404, "task not found")
 
@@ -134,7 +220,9 @@ async def stream_task(task_id: str, manager: TaskManager = Depends(get_manager))
 
 
 @router.get("/task/{task_id}/result", response_model=TaskResult)
-async def get_result(task_id: str, manager: TaskManager = Depends(get_manager)) -> TaskResult | Response:
+async def get_result(
+    task_id: str, manager: TaskManager = Depends(get_manager)
+) -> TaskResult | Response:
     result = manager.get_result(task_id)
     if result is None:
         raise HTTPException(404, "task not found")
@@ -215,8 +303,15 @@ async def post_config(body: dict) -> dict:
     updates = {k: v for k, v in body.items() if v is not None}
 
     if "asr_provider" in updates and updates["asr_provider"] not in list_providers():
-        raise HTTPException(400, f"unknown provider: {updates['asr_provider']}; available: {list_providers()}")
-    if "split_strategy" in updates and updates["split_strategy"] not in {"fixed", "silence", "overlap"}:
+        raise HTTPException(
+            400,
+            f"unknown provider: {updates['asr_provider']}; available: {list_providers()}",
+        )
+    if "split_strategy" in updates and updates["split_strategy"] not in {
+        "fixed",
+        "silence",
+        "overlap",
+    }:
         raise HTTPException(400, "split_strategy must be fixed|silence|overlap")
 
     try:
@@ -295,23 +390,28 @@ async def list_tasks(
     # In-memory tasks (active + recently completed)
     for tid, t in list(manager._tasks.items()):  # noqa: SLF001
         seen.add(tid)
-        items.append({
-            "task_id": tid,
-            "status": t.info.status.value,
-            "progress": t.info.progress,
-            "total_segments": t.info.total_segments,
-            "finished_segments": t.info.finished_segments,
-            "duration": t.result.duration,
-            "text_preview": (t.result.text or "")[:120],
-            "error": t.info.error,
-            "in_memory": True,
-        })
+        items.append(
+            {
+                "task_id": tid,
+                "status": t.info.status.value,
+                "progress": t.info.progress,
+                "total_segments": t.info.total_segments,
+                "finished_segments": t.info.finished_segments,
+                "duration": t.result.duration,
+                "text_preview": (t.result.text or "")[:120],
+                "error": t.info.error,
+                "in_memory": True,
+            }
+        )
 
     # Persisted task results
     out_dir = s.output_dir
     if out_dir.is_dir():
         import json as _json
-        for path in sorted(out_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+
+        for path in sorted(
+            out_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        ):
             tid = path.stem
             if tid in seen:
                 continue
@@ -319,25 +419,28 @@ async def list_tasks(
                 data = _json.loads(path.read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001
                 continue
-            items.append({
-                "task_id": tid,
-                "status": data.get("status", "done"),
-                "progress": 1.0,
-                "total_segments": len(data.get("segments", [])),
-                "finished_segments": len(data.get("segments", [])),
-                "duration": data.get("duration", 0.0),
-                "text_preview": (data.get("text") or "")[:120],
-                "error": data.get("error"),
-                "in_memory": False,
-                "mtime": path.stat().st_mtime,
-            })
+            items.append(
+                {
+                    "task_id": tid,
+                    "status": data.get("status", "done"),
+                    "progress": 1.0,
+                    "total_segments": len(data.get("segments", [])),
+                    "finished_segments": len(data.get("segments", [])),
+                    "duration": data.get("duration", 0.0),
+                    "text_preview": (data.get("text") or "")[:120],
+                    "error": data.get("error"),
+                    "in_memory": False,
+                    "mtime": path.stat().st_mtime,
+                }
+            )
 
     return {"tasks": items[:limit], "total": len(items)}
 
 
 @router.get("/task/{task_id}/segments/{segment_id}/raw")
 async def get_segment_raw(
-    task_id: str, segment_id: int,
+    task_id: str,
+    segment_id: int,
     manager: TaskManager = Depends(get_manager),
 ) -> dict:
     """Return the raw upstream ASR payload for a single segment (debug aid)."""
@@ -357,6 +460,7 @@ async def get_segment_raw(
 
 
 # -------------------- Realtime --------------------
+
 
 @router.post("/realtime/session", response_model=RealtimeSessionInfo)
 async def create_realtime_session(
@@ -423,7 +527,10 @@ async def stream_realtime_session(
         if info is not None and info.status.value not in {"done", "failed", "closed"}:
             # safety fallback if the stream ended without a terminal event
             from app.models.schemas import RealtimeASREvent
-            terminal = RealtimeASREvent(type="done", session_id=session_id, is_final=True)
+
+            terminal = RealtimeASREvent(
+                type="done", session_id=session_id, is_final=True
+            )
             yield {"event": "done", "data": terminal.model_dump_json()}
 
     return EventSourceResponse(event_gen())
