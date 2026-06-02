@@ -5,12 +5,14 @@ export function useEventSource(
   listeners: { [event: string]: (e: MessageEvent) => void },
   onError?: (e: Event) => void
 ) {
-  // Use refs to avoid re-triggering the useEffect subscription when handlers change
+  // Keep the latest handlers in refs so the subscription effect (keyed on url)
+  // doesn't tear down and rebuild when handler identities change.
   const listenersRef = useRef(listeners);
-  listenersRef.current = listeners;
-  
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+  useEffect(() => {
+    listenersRef.current = listeners;
+    onErrorRef.current = onError;
+  });
 
   useEffect(() => {
     if (!url) return;
@@ -18,7 +20,7 @@ export function useEventSource(
     const es = new EventSource(url);
 
     // Add all event type listeners
-    const activeListeners = Object.entries(listenersRef.current).map(([evtType, handler]) => {
+    const activeListeners = Object.keys(listenersRef.current).map((evtType) => {
       const wrappedHandler = (e: MessageEvent) => {
         // Retrieve the freshest handler reference
         if (listenersRef.current[evtType]) {

@@ -1,20 +1,9 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Play, 
-  Trash2, 
-  FileText, 
-  FolderDown, 
-  Settings, 
-  Radio, 
-  Activity, 
-  Loader2, 
-  Check, 
-  Download,
-  Copy
-} from 'lucide-react';
+import { Trash2, FileText, FolderDown, Check, Download, Copy } from 'lucide-react';
 
 import { useAuth } from './hooks/useAuth';
+import { useFileTask } from './hooks/useFileTask';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { Dropzone } from './components/Dropzone';
@@ -23,44 +12,25 @@ import { SegmentList } from './components/SegmentList';
 import { RealtimeView } from './components/RealtimeView';
 import { ConfigView } from './components/ConfigView';
 import { HistoryView } from './components/HistoryView';
-
-import { ASRSegment, ASRTask, SystemConfig } from './types';
-
-// Mirror the backend's segment-level subtitle output (app/services/subtitles.py) so locally
-// proofread segment text can be exported to SRT/VTT without a server round-trip.
-const fmtSubtitleTime = (sec: number, comma: boolean): string => {
-  if (sec < 0) sec = 0;
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  let s = Math.floor(sec % 60);
-  let ms = Math.round((sec - Math.floor(sec)) * 1000);
-  if (ms === 1000) { ms = 0; s += 1; }
-  const p = (n: number, l = 2) => String(n).padStart(l, '0');
-  return `${p(h)}:${p(m)}:${p(s)}${comma ? ',' : '.'}${p(ms, 3)}`;
-};
-
-const subtitleEntries = (segs: ASRSegment[]) =>
-  [...segs]
-    .sort((a, b) => a.segment_id - b.segment_id)
-    .filter((s) => s.text && s.text.trim() && !s.error)
-    .map((s) => ({ start: s.start, end: s.end <= s.start ? s.start + 0.1 : s.end, text: s.text.trim() }));
-
-const buildSrt = (segs: ASRSegment[]): string =>
-  subtitleEntries(segs)
-    .map((e, i) => `${i + 1}\n${fmtSubtitleTime(e.start, true)} --> ${fmtSubtitleTime(e.end, true)}\n${e.text}\n`)
-    .join('\n');
-
-const buildVtt = (segs: ASRSegment[]): string => {
-  const body = ['WEBVTT', ''];
-  subtitleEntries(segs).forEach((e, i) => {
-    body.push(String(i + 1), `${fmtSubtitleTime(e.start, false)} --> ${fmtSubtitleTime(e.end, false)}`, e.text, '');
-  });
-  return body.join('\n');
-};
+import { downloadFile } from './lib/download';
+import { SystemConfig } from './types';
 
 export default function App() {
   const { token, setToken, authedFetch, sseUrl } = useAuth();
-  
+
+  // File-transcription lifecycle (upload / SSE / polling / proofreading / export).
+  const {
+    segments, taskId, taskStatus, taskTotalSegs, taskFinSegs, taskDuration, taskProgress,
+    fullText, setFullText,
+    ovModel, setOvModel, ovLanguage, setOvLanguage, ovSplit, setOvSplit,
+    ovChunk, setOvChunk, ovOverlap, setOvOverlap, ovHotwords, setOvHotwords,
+    ovHints, setOvHints, ovTimestamps, setOvTimestamps, setOvTimestampsTouched,
+    activePane, setActivePane, copied,
+    uploadProgress, mediaUrl, mediaIsVideo, segmentsEdited, mediaRef,
+    resetTask, handleSeek, handleEditSegment, handleFileSelect,
+    loadHistoricalTask, statusLabel, downloadSubtitle, handleCopy,
+  } = useFileTask(authedFetch, sseUrl);
+
   // Views Router State
   const [currentView, setCurrentView] = useState<string>('tasks');
   const [viewTitle, setViewTitle] = useState('文件转写');
@@ -70,45 +40,8 @@ export default function App() {
   const [config, setConfig] = useState<SystemConfig | null>(null);
   const [footStatus, setFootStatus] = useState<{ text: string; status: 'ok' | 'err' | 'warn' | '' }>({ text: '未测试', status: '' });
 
-  // Task View State
-  const [segments, setSegments] = useState<ASRSegment[]>([]);
-  const [taskId, setTaskId] = useState<string | null>(null);
-  const [taskStatus, setTaskStatus] = useState<string>('—');
-  const [taskTotalSegs, setTaskTotalSegs] = useState<number | string>('—');
-  const [taskFinSegs, setTaskFinSegs] = useState<number>(0);
-  const [taskDuration, setTaskDuration] = useState<string>('—');
-  const [taskProgress, setTaskProgress] = useState<number>(0);
-  const [fullText, setFullText] = useState<string>('');
-  
-  // Accordion parameters overrides
-  const [ovModel, setOvModel] = useState('');
-  const [ovLanguage, setOvLanguage] = useState('');
-  const [ovSplit, setOvSplit] = useState('');
-  const [ovChunk, setOvChunk] = useState('');
-  const [ovOverlap, setOvOverlap] = useState('');
-  const [ovHotwords, setOvHotwords] = useState('');
-  const [ovHints, setOvHints] = useState('');
-  const [ovTimestamps, setOvTimestamps] = useState(true);
-  const [ovTimestampsTouched, setOvTimestampsTouched] = useState(false);
-
-  // Tabs pane selection
-  const [activePane, setActivePane] = useState<'live' | 'final'>('live');
-  const [copied, setCopied] = useState(false);
-
   // Responsive sidebar (mobile drawer)
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  // Real upload progress (0-100, -1 = not uploading)
-  const [uploadProgress, setUploadProgress] = useState(-1);
-  // Local media for click-to-seek playback proofreading
-  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
-  const [mediaIsVideo, setMediaIsVideo] = useState(false);
-  // Whether any segment text was locally edited (drives front-end subtitle export)
-  const [segmentsEdited, setSegmentsEdited] = useState(false);
-
-  const esRef = useRef<EventSource | null>(null);
-  const pollTimerRef = useRef<any>(null);
-  const mediaRef = useRef<HTMLAudioElement & HTMLVideoElement | null>(null);
-  const xhrRef = useRef<XMLHttpRequest | null>(null);
 
   // Load backend provider and health status on load
   const refreshTopbar = useCallback(async () => {
@@ -117,27 +50,18 @@ export default function App() {
       if (r.ok) {
         const data = await r.json();
         setConfig(data);
-        
+
         // Connectivity probe
         const pingResponse = await authedFetch('/asr/ping', { method: 'POST' });
         const pingData = await pingResponse.json();
         if (pingData.ok) {
-          setFootStatus({
-            text: '在线',
-            status: 'ok',
-          });
+          setFootStatus({ text: '在线', status: 'ok' });
         } else {
-          setFootStatus({
-            text: '连接断开',
-            status: 'err',
-          });
+          setFootStatus({ text: '连接断开', status: 'err' });
         }
       }
-    } catch (e) {
-      setFootStatus({
-        text: '连接异常',
-        status: 'err',
-      });
+    } catch {
+      setFootStatus({ text: '连接异常', status: 'err' });
     }
   }, [authedFetch]);
 
@@ -151,7 +75,7 @@ export default function App() {
           const tok = prompt('需要访问令牌（已启用鉴权）');
           if (tok) setToken(tok.trim());
         }
-      } catch (e) {}
+      } catch {}
       refreshTopbar();
     })();
   }, [token, setToken, refreshTopbar]);
@@ -165,7 +89,7 @@ export default function App() {
       config: { title: '服务配置', crumb: '填写并测试 ASR 接口，所有修改即时生效、无需重启' },
       history: { title: '历史记录', crumb: '查看以往已完成的转写任务，点击可重新打开' },
     };
-    
+
     if (routerMeta[view]) {
       setViewTitle(routerMeta[view].title);
       setViewCrumb(routerMeta[view].crumb);
@@ -180,273 +104,7 @@ export default function App() {
     }
   };
 
-  // ------------------------- FILE ASYNC ASR TASK LOOPS -------------------------
-  const collectOverrides = () => {
-    const o: { [key: string]: string } = {};
-    if (ovModel.trim()) o.model = ovModel.trim();
-    if (ovLanguage.trim()) o.language = ovLanguage.trim();
-    if (ovSplit) o.split_strategy = ovSplit;
-    if (ovChunk.trim()) o.chunk_seconds = ovChunk.trim();
-    if (ovOverlap.trim()) o.overlap_seconds = ovOverlap.trim();
-    if (ovHotwords.trim()) o.hotwords = ovHotwords.trim();
-    if (ovHints.trim()) o.prompt_hints = ovHints.trim();
-    if (ovTimestampsTouched) o.timestamps = ovTimestamps ? 'true' : 'false';
-    return o;
-  };
-
-  const resetTask = () => {
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
-    if (pollTimerRef.current) {
-      clearTimeout(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
-    if (xhrRef.current) {
-      xhrRef.current.abort();
-      xhrRef.current = null;
-    }
-    setMediaUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
-    setMediaIsVideo(false);
-    setUploadProgress(-1);
-    setSegments([]);
-    setSegmentsEdited(false);
-    setTaskId(null);
-    setTaskStatus('—');
-    setTaskTotalSegs('—');
-    setTaskFinSegs(0);
-    setTaskDuration('—');
-    setTaskProgress(0);
-    setFullText('');
-    setActivePane('live');
-  };
-
-  // Seek the local media player to a segment's start time (proofreading aid).
-  const handleSeek = (start: number) => {
-    const el = mediaRef.current;
-    if (!el) return;
-    el.currentTime = start;
-    el.play().catch(() => {});
-  };
-
-  // Inline proofreading: update a segment's text so SRT/VTT exports reflect the edit.
-  const handleEditSegment = (segId: number, text: string) => {
-    setSegments((prev) => prev.map((s) => (s.segment_id === segId ? { ...s, text } : s)));
-    setSegmentsEdited(true);
-  };
-
-  const handleFileSelect = async (file: File) => {
-    resetTask();
-    setTaskStatus('uploading');
-    setUploadProgress(0);
-
-    // Keep a local object URL so the user can listen back and proofread.
-    const url = URL.createObjectURL(file);
-    setMediaUrl(url);
-    setMediaIsVideo(file.type.startsWith('video/'));
-
-    const fd = new FormData();
-    fd.append('file', file);
-    Object.entries(collectOverrides()).forEach(([k, v]) => fd.append(k, v));
-
-    // Use XHR (not fetch) so we get real upload progress events.
-    const tok = localStorage.getItem('asr_token') || '';
-    try {
-      const data = await new Promise<{ task_id: string }>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhrRef.current = xhr;
-        xhr.open('POST', '/asr/task');
-        if (tok) xhr.setRequestHeader('Authorization', `Bearer ${tok}`);
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
-        };
-        xhr.onload = () => {
-          xhrRef.current = null;
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try { resolve(JSON.parse(xhr.responseText)); }
-            catch { reject(new Error('返回解析失败')); }
-          } else {
-            reject(new Error(xhr.responseText || `HTTP ${xhr.status}`));
-          }
-        };
-        xhr.onerror = () => { xhrRef.current = null; reject(new Error('网络错误')); };
-        xhr.onabort = () => { xhrRef.current = null; reject(new Error('已取消')); };
-        xhr.send(fd);
-      });
-
-      setUploadProgress(-1);
-      setTaskId(data.task_id);
-      startTaskStream(data.task_id);
-    } catch (e: any) {
-      setUploadProgress(-1);
-      if (e.message === '已取消') return;
-      setTaskStatus('failed');
-      alert('上传音频或发起切分任务失败: ' + e.message);
-    }
-  };
-
-  const startTaskStream = (id: string) => {
-    pollTask(id);
-    
-    if (esRef.current) esRef.current.close();
-    
-    const es = new EventSource(sseUrl(`/asr/task/${id}/stream`));
-    esRef.current = es;
-
-    const segmentHandler = (e: MessageEvent) => {
-      const seg = JSON.parse(e.data);
-      setSegments((prev) => {
-        const nextMap = new Map(prev.map(s => [s.segment_id, s]));
-        nextMap.set(seg.segment_id, seg);
-        const nextList = [...nextMap.values()];
-        setTaskFinSegs(nextList.filter(s => s.is_final).length);
-        return nextList;
-      });
-    };
-
-    const doneHandler = async () => {
-      es.close();
-      esRef.current = null;
-      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-      
-      const infoResponse = await authedFetch(`/asr/task/${id}`);
-      if (infoResponse.ok) {
-        const info = await infoResponse.json();
-        setTaskStatus(info.status);
-        setTaskProgress(1);
-      }
-      
-      // Fetch full transcript details
-      const resultResponse = await authedFetch(`/asr/task/${id}/result`);
-      if (resultResponse.ok) {
-        const res = await resultResponse.json();
-        setFullText(res.text || '');
-        setTaskDuration(res.duration ? formatDur(res.duration) : '—');
-        setActivePane('final');
-      }
-    };
-
-    es.addEventListener('segment', segmentHandler);
-    es.addEventListener('done', doneHandler);
-    
-    es.onerror = () => {
-      es.close();
-      esRef.current = null;
-    };
-  };
-
-  const pollTask = async (id: string) => {
-    if (!id) return;
-    try {
-      const r = await authedFetch(`/asr/task/${id}`);
-      if (r.ok) {
-        const info = await r.json();
-        setTaskStatus(info.status);
-        if (info.total_segments > 0) {
-          setTaskTotalSegs(info.total_segments);
-        }
-        setTaskProgress(info.progress || 0);
-        
-        if (info.status !== 'done' && info.status !== 'failed') {
-          pollTimerRef.current = setTimeout(() => pollTask(id), 1000);
-        }
-      }
-    } catch (e) {
-      pollTimerRef.current = setTimeout(() => pollTask(id), 2000);
-    }
-  };
-
-  const loadHistoricalTask = async (tid: string) => {
-    try {
-      const r = await authedFetch(`/asr/task/${tid}/result`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const res = await r.json();
-
-      // No local media for historical tasks — clear any lingering player.
-      setMediaUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
-      setMediaIsVideo(false);
-      setSegmentsEdited(false);
-
-      setSegments(
-        (res.segments || []).map((s: any) => ({
-          segment_id: s.segment_id,
-          start: s.start,
-          end: s.end,
-          text: s.text,
-          error: s.error,
-          is_final: true,
-          elapsed_ms: s.elapsed_ms || 0,
-        }))
-      );
-      
-      setTaskId(tid);
-      setTaskTotalSegs(res.segments?.length || 0);
-      setTaskFinSegs(res.segments?.length || 0);
-      setTaskProgress(1);
-      setTaskDuration(res.duration ? formatDur(res.duration) : '—');
-      setTaskStatus(res.status);
-      setFullText(res.text || '');
-      
-      setCurrentView('tasks');
-      setViewTitle('文件转写');
-      setViewCrumb('上传音频或视频，自动切分识别，导出完整文本与字幕');
-    } catch (e: any) {
-      alert('加载历史记录失败: ' + e.message);
-    }
-  };
-
-  // Helper formats
-  const formatDur = (s: number) => {
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = Math.floor(s % 60);
-    return h ? `${h}h${m}m` : `${m}m${sec}s`;
-  };
-
-  const STATUS_LABEL: { [k: string]: string } = {
-    'uploading': '上传中', 'pending': '排队中', 'preprocessing': '预处理',
-    'splitting': '切分中', 'transcribing': '识别中', 'merging': '合并中',
-    'done': '已完成', 'failed': '失败', '—': '—',
-  };
-  const statusLabel = (s: string) => STATUS_LABEL[s] || s;
   const isReady = !!(config && config.api_key_set) || footStatus.status === 'ok';
-
-  const downloadFile = (name: string, content: string, type: string) => {
-    const blob = new Blob([content], { type });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  };
-
-  const downloadSubtitle = async (fmt: 'srt' | 'vtt') => {
-    if (!taskId) return;
-    const mime = fmt === 'srt' ? 'application/x-subrip' : 'text/vtt';
-    // Locally proofread? Build from edited segments. Otherwise use the backend, which
-    // keeps word-level grouping and overlap de-duplication.
-    if (segmentsEdited) {
-      downloadFile(`${taskId}.${fmt}`, fmt === 'srt' ? buildSrt(segments) : buildVtt(segments), mime);
-      return;
-    }
-    try {
-      const r = await authedFetch(`/asr/task/${taskId}/subtitle?format=${fmt}`);
-      if (!r.ok) {
-        alert(`导出字幕失败: HTTP ${r.status}`);
-        return;
-      }
-      downloadFile(`${taskId}.${fmt}`, await r.text(), mime);
-    } catch (e: any) {
-      alert(`网络异常: ${e.message}`);
-    }
-  };
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(fullText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   return (
     <div className="app font-sans flex min-h-screen bg-bg text-fg">
@@ -568,10 +226,6 @@ export default function App() {
                       <label className="field">
                         <span>每片时长（秒）</span>
                         <input type="number" value={ovChunk} onChange={e=>setOvChunk(e.target.value)} placeholder="30" min="5" step="5" />
-                      </label>
-                      <label className="field">
-                        <span>Overlap seconds</span>
-                        <input type="number" value={ovOverlap} onChange={e=>setOvOverlap(e.target.value)} placeholder="2" min="0" step="0.5" />
                       </label>
                       <label className="field">
                         <span>重叠时长（秒）</span>
@@ -768,7 +422,10 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
               >
-                <HistoryView authedFetch={authedFetch} onLoadTask={loadHistoricalTask} />
+                <HistoryView
+                  authedFetch={authedFetch}
+                  onLoadTask={async (tid) => { if (await loadHistoricalTask(tid)) handleViewChange('tasks'); }}
+                />
               </motion.div>
             )}
 

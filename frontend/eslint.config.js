@@ -18,5 +18,9 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser,
     },
+    rules: {
+      // Silent catches are intentional in a few best-effort UI paths.
+      'no-empty': ['error', { allowEmptyCatch: true }],
+    },
   },
 ])

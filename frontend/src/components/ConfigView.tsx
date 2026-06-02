@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Save, RotateCcw, Activity, Eye, EyeOff, Server, Scissors, Radio, ShieldCheck } from 'lucide-react';
 import { SystemConfig } from '../types';
+import { errorMessage } from '../lib/errors';
 
 interface ConfigViewProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
@@ -10,7 +11,7 @@ interface ConfigViewProps {
 // [apiKey, 中文标签, 类型, 提示]
 type FieldType = 'select' | 'select-split' | 'select-realtime' | 'text' | 'secret' | 'bool' | 'int' | 'float';
 interface FieldDef { key: string; label: string; type: FieldType; hint?: string; }
-interface FieldGroup { title: string; icon: any; desc: string; fields: FieldDef[]; }
+interface FieldGroup { title: string; icon: React.ComponentType<{ className?: string }>; desc: string; fields: FieldDef[]; }
 
 const GROUPS: FieldGroup[] = [
   {
@@ -76,7 +77,7 @@ const ALL_FIELDS = GROUPS.flatMap(g => g.fields);
 export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopbar }) => {
   const [config, setConfig] = useState<SystemConfig | null>(null);
   const [realtimeProviders, setRealtimeProviders] = useState<string[]>(['realtime_mock', 'realtime_http']);
-  const [formState, setFormState] = useState<{ [key: string]: any }>({});
+  const [formState, setFormState] = useState<Record<string, string | number | boolean>>({});
   const [dirtyFields, setDirtyFields] = useState<{ [key: string]: boolean }>({});
   const [showSecrets, setShowSecrets] = useState<{ [key: string]: boolean }>({});
 
@@ -91,7 +92,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       if (r.ok) {
         const cfg = await r.json();
         setConfig(cfg);
-        const initialForm: { [key: string]: any } = {};
+        const initialForm: Record<string, string | number | boolean> = {};
         for (const f of ALL_FIELDS) {
           const apiKey = CFG_KEY_TO_API[f.key];
           if (f.type === 'bool') initialForm[f.key] = !!cfg[apiKey];
@@ -106,25 +107,27 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         const rt = await rtRes.json();
         if (rt.providers) setRealtimeProviders(rt.providers);
       }
-    } catch (e) {}
+    } catch {}
   };
 
+  // Load once on mount; loadConfig is stable for this view's lifetime.
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
   useEffect(() => { loadConfig(); }, []);
 
-  const handleChange = (key: string, value: any) => {
+  const handleChange = (key: string, value: string | number | boolean) => {
     setFormState(prev => ({ ...prev, [key]: value }));
     setDirtyFields(prev => ({ ...prev, [key]: true }));
   };
 
   const collectDiff = () => {
-    const out: { [key: string]: any } = {};
+    const out: Record<string, string | number | boolean> = {};
     for (const f of ALL_FIELDS) {
       if (!dirtyFields[f.key]) continue;
       const val = formState[f.key];
       if (f.type === 'secret') { if (val !== '') out[f.key] = val; }
       else if (f.type === 'bool') out[f.key] = !!val;
-      else if (f.type === 'int') { const n = parseInt(val, 10); if (Number.isFinite(n)) out[f.key] = n; }
-      else if (f.type === 'float') { const fl = parseFloat(val); if (Number.isFinite(fl)) out[f.key] = fl; }
+      else if (f.type === 'int') { const n = parseInt(String(val), 10); if (Number.isFinite(n)) out[f.key] = n; }
+      else if (f.type === 'float') { const fl = parseFloat(String(val)); if (Number.isFinite(fl)) out[f.key] = fl; }
       else out[f.key] = val;
     }
     return out;
@@ -147,8 +150,8 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       await refreshTopbar();
       setSaveStatus(`✓ 已保存 ${Object.keys(diff).length} 项，立即生效`);
       setTimeout(() => setSaveStatus(null), 4000);
-    } catch (e: any) {
-      setSaveStatus(`✗ 保存失败：${e.message}`);
+    } catch (e) {
+      setSaveStatus(`✗ 保存失败：${errorMessage(e)}`);
       setTimeout(() => setSaveStatus(null), 5000);
     }
   };
@@ -163,8 +166,8 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       await refreshTopbar();
       setSaveStatus('✓ 已恢复为默认值');
       setTimeout(() => setSaveStatus(null), 4000);
-    } catch (e: any) {
-      setSaveStatus(`✗ 恢复失败：${e.message}`);
+    } catch (e) {
+      setSaveStatus(`✗ 恢复失败：${errorMessage(e)}`);
       setTimeout(() => setSaveStatus(null), 5000);
     }
   };
@@ -183,8 +186,8 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         setPingStatus(`✗ 连接失败 · ${d.error || '未知错误'}`);
         setPingClass('err');
       }
-    } catch (e: any) {
-      setPingStatus(`✗ 网络错误：${e.message}`);
+    } catch (e) {
+      setPingStatus(`✗ 网络错误：${errorMessage(e)}`);
       setPingClass('err');
     } finally {
       setIsTesting(false);
@@ -202,6 +205,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const renderField = (f: FieldDef) => {
     const isDirty = !!dirtyFields[f.key];
     const val = formState[f.key];
+    const sval = (val ?? '') as string | number;
     return (
       <div key={f.key} className={`flex flex-col gap-1.5 p-3.5 rounded-xl border transition-colors ${isDirty ? 'border-accent/40 bg-accent-soft/50' : 'border-border bg-white'}`}>
         {f.type !== 'bool' && (
@@ -212,17 +216,17 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         )}
 
         {f.type === 'select' && (
-          <select value={val} onChange={e => handleChange(f.key, e.target.value)}>
+          <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
             {(config?.available_providers || []).map(p => <option key={p} value={p}>{p}</option>)}
           </select>
         )}
         {f.type === 'select-split' && (
-          <select value={val} onChange={e => handleChange(f.key, e.target.value)}>
+          <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
             {['fixed', 'silence', 'overlap'].map(v => <option key={v} value={v}>{v}</option>)}
           </select>
         )}
         {f.type === 'select-realtime' && (
-          <select value={val} onChange={e => handleChange(f.key, e.target.value)}>
+          <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
             {realtimeProviders.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
         )}
@@ -235,7 +239,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         )}
         {f.type === 'secret' && (
           <div className="relative flex items-center">
-            <input type={showSecrets[f.key] ? 'text' : 'password'} value={val}
+            <input type={showSecrets[f.key] ? 'text' : 'password'} value={sval}
               onChange={e => handleChange(f.key, e.target.value)}
               placeholder="输入新值以覆盖，留空表示不修改" className="pr-10" />
             <button onClick={() => setShowSecrets(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
@@ -245,11 +249,11 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
           </div>
         )}
         {(f.type === 'int' || f.type === 'float') && (
-          <input type="number" step={f.type === 'float' ? '0.1' : '1'} value={val}
+          <input type="number" step={f.type === 'float' ? '0.1' : '1'} value={sval}
             onChange={e => handleChange(f.key, e.target.value)} />
         )}
         {f.type === 'text' && (
-          <input type="text" value={val} onChange={e => handleChange(f.key, e.target.value)} />
+          <input type="text" value={sval} onChange={e => handleChange(f.key, e.target.value)} />
         )}
 
         {f.hint && <span className="text-[11px] text-muted font-normal leading-snug">{f.hint}</span>}

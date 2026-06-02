@@ -40,7 +40,7 @@ export interface RealtimeEvent {
   is_final?: boolean;
   elapsed_ms?: number;
   error?: string;
-  raw?: any;
+  raw?: unknown;
 }
 
 export interface SystemConfig {
@@ -70,5 +70,5 @@ export interface SystemConfig {
   realtime_session_ttl_seconds?: number;
   access_tokens_count?: number;
   available_providers?: string[];
-  [key: string]: any;
+  [key: string]: unknown;
 }

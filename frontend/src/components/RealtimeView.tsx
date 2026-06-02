@@ -1,12 +1,19 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Play, Square, Trash2, Mic, Terminal, Info, RefreshCw } from 'lucide-react';
+import { Play, Square, Trash2, Mic, Terminal, Info } from 'lucide-react';
 import { RealtimeEvent, RealtimeSession } from '../types';
+import { errorMessage } from '../lib/errors';
 
 interface RealtimeViewProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
   sseUrl: (path: string) => string;
 }
+
+// Shape of a raw SSE event payload from the realtime endpoint.
+type RawRtEvent = {
+  session_id?: string; seq?: number; text?: string;
+  is_final?: boolean; elapsed_ms?: number; error?: string;
+};
 
 export const RealtimeView: React.FC<RealtimeViewProps> = ({
   authedFetch,
@@ -101,8 +108,8 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
 
       // Subscribe to SSE
       subscribeToSessionEvents(data.session_id);
-    } catch (e: any) {
-      setRtStatus(`✗ 创建失败: ${e.message}`);
+    } catch (e) {
+      setRtStatus(`✗ 创建失败: ${errorMessage(e)}`);
       setToastClass('err');
       setSession(null);
     }
@@ -114,11 +121,11 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
     const es = new EventSource(sseUrl(`/asr/realtime/${sessId}/events`));
     sseRef.current = es;
 
-    const eventTypes = ['online', 'final', 'done', 'error'];
+    const eventTypes = ['online', 'final', 'done', 'error'] as const;
     eventTypes.forEach(ty => {
       es.addEventListener(ty, (e: MessageEvent) => {
         const ev = JSON.parse(e.data);
-        addEventLog(ty as any, ev);
+        addEventLog(ty, ev);
         
         if (ty === 'done' || ty === 'error') {
           es.close();
@@ -135,7 +142,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
     };
   };
 
-  const addEventLog = (type: 'online' | 'final' | 'done' | 'error', ev: any) => {
+  const addEventLog = (type: 'online' | 'final' | 'done' | 'error', ev: RawRtEvent) => {
     setRtEventCount(prev => prev + 1);
     const newEv: RealtimeEvent = {
       type,
@@ -175,8 +182,8 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
         setFedBytes(info.bytes_received || 0);
       }
       return true;
-    } catch (e: any) {
-      addEventLog('error', { error: `推送异常: ${e.message}` });
+    } catch (e) {
+      addEventLog('error', { error: `推送异常: ${errorMessage(e)}` });
       return false;
     }
   };
@@ -238,7 +245,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
     if (!session) return;
     try {
       await authedFetch(`/asr/realtime/${session.session_id}/end`, { method: 'POST' });
-    } catch (e) {}
+    } catch {}
   };
 
   const handleDeleteSession = async () => {
@@ -250,7 +257,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
     
     try {
       await authedFetch(`/asr/realtime/${session.session_id}`, { method: 'DELETE' });
-    } catch (e) {}
+    } catch {}
 
     if (sseRef.current) {
       sseRef.current.close();

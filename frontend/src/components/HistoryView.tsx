@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Clock, RefreshCw, FolderClosed, Layers, Eye } from 'lucide-react';
+import { Clock, RefreshCw, FolderClosed, Layers } from 'lucide-react';
 import { ASRTask } from '../types';
+import { errorMessage } from '../lib/errors';
 
 interface HistoryViewProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
@@ -29,16 +30,16 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       } else {
         throw new Error(`HTTP ${r.status}`);
       }
-    } catch (e: any) {
-      setError(`拉取历史归档失败: ${e.message}`);
+    } catch (e) {
+      setError(`拉取历史归档失败: ${errorMessage(e)}`);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    loadHistory();
-  }, []);
+  // Load once on mount; loadHistory is stable for this view's lifetime.
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
+  useEffect(() => { loadHistory(); }, []);
 
   const formatDur = (s: number) => {
     const h = Math.floor(s / 3600);

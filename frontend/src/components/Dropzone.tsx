@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { UploadCloud, FileAudio, AlertCircle } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { UploadCloud } from 'lucide-react';
 
 interface DropzoneProps {
   onFileSelect: (file: File) => void;

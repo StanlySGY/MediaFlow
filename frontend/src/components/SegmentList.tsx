@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Clock, Timer, Eye, AlertTriangle, Play, Copy, Check } from 'lucide-react';
 import { ASRSegment } from '../types';
+import { errorMessage } from '../lib/errors';
 
 interface SegmentListProps {
   segments: ASRSegment[];
@@ -80,8 +81,8 @@ export const SegmentList: React.FC<SegmentListProps> = ({
       } else {
         setRawData((prev) => ({ ...prev, [segId]: `加载失败: HTTP ${r.status}` }));
       }
-    } catch (e: any) {
-      setRawData((prev) => ({ ...prev, [segId]: `加载失败: ${e.message}` }));
+    } catch (e) {
+      setRawData((prev) => ({ ...prev, [segId]: `加载失败: ${errorMessage(e)}` }));
     } finally {
       setLoadingId(null);
     }
