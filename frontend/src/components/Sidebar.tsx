@@ -1,5 +1,5 @@
 import React from 'react';
-import { UploadCloud, Mic, Settings, FolderArchive, BookOpen, AudioLines } from 'lucide-react';
+import { UploadCloud, Mic, Settings, FolderArchive, BookOpen, AudioLines, Combine } from 'lucide-react';
 import { SystemConfig } from '../types';
 
 interface SidebarProps {
@@ -19,6 +19,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const menuItems = [
     { id: 'tasks', label: '文件转写', desc: '上传音频出文本', icon: UploadCloud },
+    { id: 'concat', label: '音视频合并', desc: '多文件无损拼接', icon: Combine },
     { id: 'realtime', label: '实时识别', desc: '边说边出字', icon: Mic },
     { id: 'config', label: '服务配置', desc: '连接 ASR 接口', icon: Settings },
     { id: 'history', label: '历史记录', desc: '查看过往任务', icon: FolderArchive },

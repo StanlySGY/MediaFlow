@@ -12,6 +12,7 @@ import { SegmentList } from './components/SegmentList';
 import { RealtimeView } from './components/RealtimeView';
 import { ConfigView } from './components/ConfigView';
 import { HistoryView } from './components/HistoryView';
+import { ConcatView } from './components/ConcatView';
 import { downloadFile } from './lib/download';
 import { SystemConfig } from './types';
 
@@ -85,6 +86,7 @@ export default function App() {
     setCurrentView(view);
     const routerMeta: { [key: string]: { title: string; crumb: string } } = {
       tasks: { title: '文件转写', crumb: '上传音频或视频，自动切分识别，导出完整文本与字幕' },
+      concat: { title: '音视频合并', crumb: '多个同格式音频或视频按顺序无损合并，不重新编码' },
       realtime: { title: '实时识别', crumb: '创建会话后边发音频边出结果，适合直播、会议等实时场景' },
       config: { title: '服务配置', crumb: '填写并测试 ASR 接口，所有修改即时生效、无需重启' },
       history: { title: '历史记录', crumb: '查看以往已完成的转写任务，点击可重新打开' },
@@ -426,6 +428,18 @@ export default function App() {
                   authedFetch={authedFetch}
                   onLoadTask={async (tid) => { if (await loadHistoricalTask(tid)) handleViewChange('tasks'); }}
                 />
+              </motion.div>
+            )}
+
+            {/* 5. CONCAT ROUTE — audio/video lossless merge */}
+            {currentView === 'concat' && (
+              <motion.div
+                key="concat"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+              >
+                <ConcatView authedFetch={authedFetch} />
               </motion.div>
             )}
 
