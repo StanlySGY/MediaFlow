@@ -1,9 +1,9 @@
 # Production / air-gapped deployment — runs a pre-loaded image, never builds.
 #
 # Workflow (see README "离线现场部署"):
-#   build host (online):  ./build.sh --save        → mediaflow-1.4.0-amd64.tar.gz
+#   build host (online):  ./build.sh --save        → mediaflow-1.4.0-arm64.tar.gz
 #   copy the .tar.gz to the air-gapped site
-#   site (offline):       docker load -i mediaflow-1.4.0-amd64.tar.gz
+#   site (offline):       docker load -i mediaflow-1.4.0-arm64.tar.gz
 #                         cp .env.example .env   # set ASR_BASE_URL to the in-network ASR
 #                         docker compose -f docker-compose.prod.yml up -d
 #
@@ -11,15 +11,17 @@
 # ("image not found") instead of silently trying to build offline. The image
 # tag is pinned so the running version is traceable across deliveries.
 #
-# Firewall note: on hosts where bridge port publishing is blocked (RHEL/Rocky
-# firewalld, OpenStack/MAAS), drop the `ports:` block and add `network_mode: host`.
+# Networking: host mode — MAAS/OpenStack & firewalld hosts drop traffic to the
+# docker bridge, so published ports silently fail; binding the host port direct
+# works everywhere. A plain Docker host may instead drop `network_mode: host`
+# and use `ports: ["8999:8999"]`. Either way the host firewall must allow 8999
+# (ufw allow 8999/tcp · firewall-cmd · OpenStack security group).
 services:
   mediaflow:
     image: mediaflow:1.4.0
     container_name: mediaflow
     restart: unless-stopped
-    ports:
-      - "8999:8999"
+    network_mode: host
     env_file:
       - .env
     volumes:
