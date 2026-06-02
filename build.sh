@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # MediaFlow — one-shot Docker image builder.
 # Usage:
-#   ./build.sh                build mediaflow:1.4.0 + :latest (linux/amd64)
-#   ./build.sh --platform P   target platform (default linux/amd64; e.g. linux/arm64)
+#   ./build.sh                build mediaflow:1.4.0 + :latest (defaults to host arch)
+#   ./build.sh --platform P   override target platform (e.g. linux/amd64, linux/arm64)
 #   ./build.sh --save [FILE]  docker save image to a gzipped tar for offline transfer
 #   ./build.sh --no-cache     skip layer cache
 #   ./build.sh --pull         pull fresh base images first
@@ -19,7 +19,12 @@ set -euo pipefail
 IMAGE_NAME="mediaflow"
 DEFAULT_TAG="1.4.0"
 TAG="$DEFAULT_TAG"
-PLATFORM="linux/amd64"
+# Default to the host arch: legacy `docker build` can't cross-build, so the
+# only platform that succeeds without buildx + QEMU is the machine's own.
+case "$(uname -m)" in
+    aarch64|arm64) PLATFORM="linux/arm64" ;;
+    *)             PLATFORM="linux/amd64" ;;
+esac
 NO_CACHE=""
 PULL=""
 RUN_TESTS=0
