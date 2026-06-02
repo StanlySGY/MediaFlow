@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.models.schemas import Segment, Word
-from app.services.merger import _is_cjk, _join_words, merged_words
+from app.services.merger import _join_words, merged_words
 
 
 def _fmt_time(seconds: float, *, comma: bool = True) -> str:
