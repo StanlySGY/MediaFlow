@@ -362,3 +362,7 @@ def _funasr(settings):
 - **说话人分离**：在 ASR 阶段返回 speaker 标签后合并到 `Word`
 - **翻译 / 摘要**：拿到完整文本后接 LLM
 - **任务队列**：当前任务在进程内 `asyncio.create_task` 调度；横向扩展可替换为 Celery / RQ + Redis
+
+## License
+
+[MIT](LICENSE) © 2026 shigy
