@@ -39,6 +39,7 @@ from app.services.asr.realtime_base import RealtimeASRError
 from app.services.ffmpeg_service import FFmpegError, concat_media
 from app.services.realtime_manager import RealtimeManager
 from app.services.stream_manager import TaskManager
+from app.services.stream_transcribe_manager import StreamTranscribeManager
 from app.services.subtitles import to_srt, to_vtt
 
 log = logging.getLogger(__name__)
@@ -55,6 +56,10 @@ def get_manager(request: Request) -> TaskManager:
 
 def get_realtime_manager(request: Request) -> RealtimeManager:
     return request.app.state.realtime_manager
+
+
+def get_stream_transcribe_manager(request: Request) -> StreamTranscribeManager:
+    return request.app.state.stream_transcribe_manager
 
 
 ALLOWED_EXTS = {
@@ -562,3 +567,59 @@ async def delete_realtime_session(
     if not removed:
         raise HTTPException(404, "session not found")
     return {"ok": True}
+
+
+@router.post("/transcribe-stream")
+async def create_transcribe_stream(
+    file: UploadFile = File(...),
+    model: str | None = Form(default=None),
+    language: str | None = Form(default=None),
+    stm: StreamTranscribeManager = Depends(get_stream_transcribe_manager),
+) -> dict:
+    """上传音频文件并创建流式转录会话"""
+    settings = get_settings()
+    if not file.filename:
+        raise HTTPException(400, "missing filename")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix and suffix not in ALLOWED_EXTS:
+        raise HTTPException(400, f"unsupported file type: {suffix}")
+
+    upload_id = uuid.uuid4().hex
+    dst = settings.temp_dir / f"stream_{upload_id}{suffix or '.bin'}"
+    limit = settings.max_upload_bytes
+    written = 0
+    try:
+        async with aiofiles.open(dst, "wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if written > limit:
+                    raise HTTPException(413, f"upload exceeds {limit} bytes")
+                await out.write(chunk)
+    except HTTPException:
+        dst.unlink(missing_ok=True)
+        raise
+    except Exception:
+        dst.unlink(missing_ok=True)
+        raise
+
+    config = RealtimeSessionCreate(
+        model=model or settings.asr_model,
+        language=language or settings.asr_language,
+    )
+    session_id = await stm.create_session(dst, config)
+    return {
+        "session_id": session_id,
+        "events_url": f"/asr/transcribe-stream/{session_id}/events",
+    }
+
+
+@router.get("/transcribe-stream/{session_id}/events")
+async def stream_transcribe_events(
+    session_id: str,
+    stm: StreamTranscribeManager = Depends(get_stream_transcribe_manager),
+) -> EventSourceResponse:
+    async def event_gen():
+        async for evt in stm.stream_events(session_id):
+            yield {"event": evt.type, "data": evt.model_dump_json()}
+
+    return EventSourceResponse(event_gen())

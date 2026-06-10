@@ -12,6 +12,7 @@ from app.api.routes import media_router, meta_router, router as asr_router
 from app.config import get_settings
 from app.services.realtime_manager import RealtimeManager
 from app.services.stream_manager import TaskManager
+from app.services.stream_transcribe_manager import StreamTranscribeManager
 
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     )
     app.state.manager = TaskManager(settings)
     app.state.realtime_manager = RealtimeManager(settings)
+    app.state.stream_transcribe_manager = StreamTranscribeManager(settings)
     app.include_router(asr_router)
     app.include_router(media_router)
     app.include_router(meta_router)
