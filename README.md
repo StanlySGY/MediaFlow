@@ -120,7 +120,7 @@ ASR_API_KEY=                       # 内网无鉴权可留空
 ASR_MODEL=Qwen/Qwen3-ASR-Flash     # 与 vllm serve --served-model-name 对齐
 ```
 
-热词偏置：`ASR_HOTWORDS=Qwen,vLLM,LoRA` 会拼成 system 消息「热词：Qwen、vLLM、LoRA」一并发出。
+`openai_chat_audio` 按 DashScope/Qwen3-ASR 的 ASR 专用任务格式只发送 `input_audio`；热词、上下文提示和语言不会拼成 system 消息。
 
 ### 公网 DashScope Qwen ASR
 
@@ -340,8 +340,8 @@ curl http://localhost:8999/asr/task/ab12.../result
 | `ASR_API_KEY` | API Key | *(必填)* |
 | `ASR_MODEL` | 模型名 | `qwen3-asr-flash` |
 | `ASR_TIMESTAMPS` | 请求 word 级时间戳（用于时间轴拼接 + 字幕） | `true` |
-| `ASR_HOTWORDS` | 热词偏置，逗号分隔（拼到 OpenAI `prompt` 字段一并发出） | *(空 = 关)* |
-| `ASR_PROMPT_HINTS` | 自由文本上下文提示（同上拼接） | *(空 = 关)* |
+| `ASR_HOTWORDS` | 热词偏置，逗号分隔；`openai_compat` 会拼到 OpenAI `prompt` 字段，`openai_chat_audio` 不发送 | *(空 = 关)* |
+| `ASR_PROMPT_HINTS` | 自由文本上下文提示；`openai_compat` 会拼到 OpenAI `prompt` 字段，`openai_chat_audio` 不发送 | *(空 = 关)* |
 | `SPLIT_STRATEGY` | `fixed` / `silence` / `overlap` | `silence` |
 | `SPLIT_CHUNK_SECONDS` | 分片目标长度 | `30` |
 | `SPLIT_OVERLAP_SECONDS` | 重叠秒数（仅 overlap 策略） | `2` |

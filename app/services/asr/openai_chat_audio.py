@@ -68,24 +68,9 @@ class OpenAIChatAudioProvider:
             await self._client.aclose()
             self._client = None
 
-    def _build_system_content(self, per_call_prompt: str | None) -> str | None:
-        parts: list[str] = []
-        if self._hotwords:
-            parts.append("热词：" + "、".join(self._hotwords))
-        if self._prompt_hints:
-            parts.append(self._prompt_hints)
-        if per_call_prompt:
-            parts.append(per_call_prompt)
-        if self._language:
-            parts.append(f"音频语言：{self._language}")
-        return "\n".join(parts) if parts else None
-
     def _build_body(self, audio_b64: str, per_call_prompt: str | None) -> dict:
-        messages: list[dict] = []
-        sys_content = self._build_system_content(per_call_prompt)
-        if sys_content:
-            messages.append({"role": "system", "content": sys_content})
-        messages.append({
+        # DashScope's dedicated ASR task rejects system/text side-channel input.
+        messages: list[dict] = [{
             "role": "user",
             "content": [
                 {
@@ -93,7 +78,7 @@ class OpenAIChatAudioProvider:
                     "input_audio": {"data": f"data:audio/wav;base64,{audio_b64}"},
                 },
             ],
-        })
+        }]
         return {
             "model": self._model,
             "messages": messages,

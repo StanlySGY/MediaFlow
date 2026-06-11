@@ -71,7 +71,7 @@ async def test_request_body_has_input_audio_data_uri(wav_file: Path):
 
 
 @respx.mock
-async def test_system_message_includes_hotwords_hints_and_language(wav_file: Path):
+async def test_does_not_send_system_message_for_asr_task(wav_file: Path):
     captured = {}
 
     def _handler(request: httpx.Request) -> httpx.Response:
@@ -88,13 +88,10 @@ async def test_system_message_includes_hotwords_hints_and_language(wav_file: Pat
     ) as p:
         await p.transcribe(wav_file, prompt="说话人A正在讲解")
 
-    sys_msg = captured["body"]["messages"][0]
-    assert sys_msg["role"] == "system"
-    content = sys_msg["content"]
-    assert "千问" in content and "ASR" in content
-    assert "人工智能技术讨论" in content
-    assert "说话人A正在讲解" in content
-    assert "zh" in content
+    msgs = captured["body"]["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "user"
+    assert msgs[0]["content"][0]["type"] == "input_audio"
 
 
 @respx.mock
