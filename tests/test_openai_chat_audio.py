@@ -39,7 +39,7 @@ async def test_transcribe_extracts_text_from_choices(wav_file: Path):
 
 
 @respx.mock
-async def test_request_body_has_base64_audio_url(wav_file: Path):
+async def test_request_body_has_input_audio_data_uri(wav_file: Path):
     captured = {}
 
     def _handler(request: httpx.Request) -> httpx.Response:
@@ -61,9 +61,10 @@ async def test_request_body_has_base64_audio_url(wav_file: Path):
     user_msg = body["messages"][-1]
     assert user_msg["role"] == "user"
     content = user_msg["content"][0]
-    assert content["type"] == "audio_url"
-    url = content["audio_url"]["url"]
+    assert content["type"] == "input_audio"
+    url = content["input_audio"]["data"]
     assert url.startswith("data:audio/wav;base64,")
+    assert body["asr_options"]["enable_itn"] is False
 
     encoded = url.split(",", 1)[1]
     assert base64.b64decode(encoded) == wav_file.read_bytes()

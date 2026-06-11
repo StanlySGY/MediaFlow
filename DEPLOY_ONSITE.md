@@ -74,7 +74,7 @@ curl -sf http://localhost:8999/health && echo "  ← 服务已启动"
 | 取值 | 上游端点 | 适用 | Word 时间戳 |
 |---|---|---|---|
 | `openai_compat` | `POST /v1/audio/transcriptions`（multipart） | Whisper API、faster-whisper-server、DashScope compat transcriptions、FunASR/SenseVoice 的 OpenAI 网关 | ✅ 字幕更精准 |
-| `openai_chat_audio` | `POST /v1/chat/completions`（JSON + base64） | vLLM Qwen3-ASR-Flash、把音频模型当多模态 LLM 的部署 | ❌ 字幕按分片粒度 |
+| `openai_chat_audio` | `POST /v1/chat/completions`（JSON + base64 input_audio） | vLLM Qwen3-ASR-Flash、把音频模型当多模态 LLM 的部署 | ❌ 字幕按分片粒度 |
 
 > 能用 `openai_compat` 就优先用它（有词级时间戳，字幕质量更好）。具体取决于内网 ASR 暴露的是哪种端点。
 

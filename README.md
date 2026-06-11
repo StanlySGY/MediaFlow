@@ -92,7 +92,7 @@ docker compose -f docker-compose.prod.yml up -d
 | `ASR_PROVIDER` | 上游端点 | 适用 | Word 时间戳 |
 |---|---|---|---|
 | `openai_compat` | `POST /v1/audio/transcriptions`（multipart） | OpenAI Whisper、faster-whisper-server、DashScope compat 的 transcriptions、FunASR/SenseVoice OpenAI 网关 | ✅（若上游支持 `timestamp_granularities[]`） |
-| `openai_chat_audio` | `POST /v1/chat/completions`（JSON + base64 audio_url） | vLLM Qwen3-ASR-Flash、DashScope compat 的 chat 多模态、任何把音频模型当多模态 LLM 服务的部署 | ❌（拼接自动回落 LCS，字幕按分片粒度） |
+| `openai_chat_audio` | `POST /v1/chat/completions`（JSON + base64 input_audio） | vLLM Qwen3-ASR-Flash、DashScope compat 的 chat 多模态、任何把音频模型当多模态 LLM 服务的部署 | ❌（拼接自动回落 LCS，字幕按分片粒度） |
 
 判断方法很简单：拿一条 curl 试一下上游：
 
@@ -102,9 +102,10 @@ curl -X POST $ASR_BASE_URL/audio/transcriptions \
   -F "file=@any.wav" -F "model=$ASR_MODEL" -H "Authorization: Bearer $ASR_API_KEY"
 
 # 若 200/OK → openai_chat_audio（你同事的那条曲线）
+DATA_URI="data:audio/wav;base64,$(base64 -w0 any.wav)"
 curl -X POST $ASR_BASE_URL/chat/completions \
   -H "Content-Type: application/json" -H "Authorization: Bearer $ASR_API_KEY" \
-  -d '{"model":"'$ASR_MODEL'","messages":[{"role":"user","content":[{"type":"audio_url","audio_url":{"url":"https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-ASR-Repo/asr_en.wav"}}]}]}'
+  -d '{"model":"'$ASR_MODEL'","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"'$DATA_URI'"}}]}],"asr_options":{"enable_itn":false}}'
 ```
 
 或者打开 Web UI 顶部的「服务配置」，点「测试连接」——服务端用 1s 静音 WAV 试探当前 provider，返回 200/4xx 直接显示在面板上，不通就切 `ASR_PROVIDER` 再点一次。

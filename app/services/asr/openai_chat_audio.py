@@ -18,11 +18,11 @@ log = logging.getLogger(__name__)
 
 
 class OpenAIChatAudioProvider:
-    """ASR via OpenAI-compatible /v1/chat/completions with audio_url content.
+    """ASR via OpenAI-compatible /v1/chat/completions with input_audio content.
 
     Targets multimodal LLMs serving as ASR (vLLM Qwen3-ASR-Flash, DashScope
     compat-mode chat with audio models). Audio is inlined as a base64
-    `data:audio/wav;base64,...` URL.
+    `input_audio.data` data URI (`data:audio/wav;base64,...`).
 
     No word-level timestamps are returned in this surface; the merger falls
     back to LCS overlap dedupe and subtitles are per-chunk granularity.
@@ -89,12 +89,16 @@ class OpenAIChatAudioProvider:
             "role": "user",
             "content": [
                 {
-                    "type": "audio_url",
-                    "audio_url": {"url": f"data:audio/wav;base64,{audio_b64}"},
+                    "type": "input_audio",
+                    "input_audio": {"data": f"data:audio/wav;base64,{audio_b64}"},
                 },
             ],
         })
-        return {"model": self._model, "messages": messages}
+        return {
+            "model": self._model,
+            "messages": messages,
+            "asr_options": {"enable_itn": False},
+        }
 
     async def transcribe(self, file_path: Path, *, prompt: str | None = None) -> ASRResult:
         if self._client is None:
