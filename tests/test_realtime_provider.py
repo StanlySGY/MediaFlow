@@ -54,11 +54,12 @@ def test_realtime_registry_resolves_mock_and_http():
     from app.config import Settings
     from app.services.asr import (
         create_realtime_provider, list_realtime_providers,
-        RealtimeMockProvider, RealtimeHTTPProvider,
+        RealtimeMockProvider, RealtimeHTTPProvider, RealtimeOfflineProvider,
     )
     providers = list_realtime_providers()
     assert "realtime_mock" in providers
     assert "realtime_http" in providers
+    assert "realtime_offline" in providers
 
     mock = create_realtime_provider(Settings(realtime_asr_provider="realtime_mock"))
     assert isinstance(mock, RealtimeMockProvider)
@@ -67,6 +68,11 @@ def test_realtime_registry_resolves_mock_and_http():
         realtime_asr_base_url="http://x/y",
     ))
     assert isinstance(http, RealtimeHTTPProvider)
+    offline = create_realtime_provider(Settings(
+        realtime_asr_provider="realtime_offline",
+        asr_api_key="x",
+    ))
+    assert isinstance(offline, RealtimeOfflineProvider)
 
 
 def test_unknown_realtime_provider_raises():

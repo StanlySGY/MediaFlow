@@ -134,6 +134,7 @@ class RealtimeHTTPProvider:
                             text=payload.get("text", ""),
                             is_final=bool(payload.get("is_final")),
                             elapsed_ms=float(payload.get("elapsed_ms", 0.0) or 0.0),
+                            mode=payload.get("mode"),
                             error=payload.get("error"),
                             raw=payload,
                         ))

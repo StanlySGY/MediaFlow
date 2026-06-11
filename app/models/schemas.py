@@ -122,5 +122,6 @@ class RealtimeASREvent(BaseModel):
     text: str = ""
     is_final: bool = False
     elapsed_ms: float = 0.0
+    mode: str | None = None
     error: str | None = None
     raw: dict | None = None

@@ -139,6 +139,45 @@ async def create_task(
     return {"task_id": task_id}
 
 
+@router.post("/file")
+async def create_file_transcription(
+    file: UploadFile = File(...),
+    model: str | None = Form(default=None),
+    language: str | None = Form(default=None),
+    split_strategy: str | None = Form(default=None),
+    chunk_seconds: float | None = Form(default=None),
+    overlap_seconds: float | None = Form(default=None),
+    hotwords: str | None = Form(default=None),
+    prompt_hints: str | None = Form(default=None),
+    timestamps: bool | None = Form(default=None),
+    manager: TaskManager = Depends(get_manager),
+) -> dict[str, str]:
+    """Standard file-ASR entrypoint.
+
+    Internally this is the same durable task pipeline as `/asr/task`, but the
+    response advertises the stable stream/result URLs expected by ASR clients.
+    """
+    task = await create_task(
+        file=file,
+        model=model,
+        language=language,
+        split_strategy=split_strategy,
+        chunk_seconds=chunk_seconds,
+        overlap_seconds=overlap_seconds,
+        hotwords=hotwords,
+        prompt_hints=prompt_hints,
+        timestamps=timestamps,
+        manager=manager,
+    )
+    task_id = task["task_id"]
+    return {
+        "task_id": task_id,
+        "status_url": f"/asr/file/{task_id}",
+        "events_url": f"/asr/file/{task_id}/events",
+        "result_url": f"/asr/file/{task_id}/result",
+    }
+
+
 def _unlink_all(paths: list[Path]) -> None:
     for p in paths:
         p.unlink(missing_ok=True)
@@ -210,6 +249,13 @@ async def get_status(
     return info
 
 
+@router.get("/file/{task_id}", response_model=TaskInfo)
+async def get_file_status(
+    task_id: str, manager: TaskManager = Depends(get_manager)
+) -> TaskInfo:
+    return await get_status(task_id=task_id, manager=manager)
+
+
 @router.get("/task/{task_id}/stream")
 async def stream_task(
     task_id: str, manager: TaskManager = Depends(get_manager)
@@ -227,6 +273,13 @@ async def stream_task(
     return EventSourceResponse(event_gen())
 
 
+@router.get("/file/{task_id}/events")
+async def stream_file_transcription(
+    task_id: str, manager: TaskManager = Depends(get_manager)
+) -> EventSourceResponse:
+    return await stream_task(task_id=task_id, manager=manager)
+
+
 @router.get("/task/{task_id}/result", response_model=TaskResult)
 async def get_result(
     task_id: str, manager: TaskManager = Depends(get_manager)
@@ -237,6 +290,13 @@ async def get_result(
     if result.status not in {TaskStatus.done, TaskStatus.failed}:
         return JSONResponse(status_code=202, content=result.model_dump(mode="json"))
     return result
+
+
+@router.get("/file/{task_id}/result", response_model=TaskResult)
+async def get_file_result(
+    task_id: str, manager: TaskManager = Depends(get_manager)
+) -> TaskResult | Response:
+    return await get_result(task_id=task_id, manager=manager)
 
 
 @router.get("/task/{task_id}/subtitle", response_class=PlainTextResponse)
@@ -261,6 +321,15 @@ async def get_subtitle(
         media_type=media,
         headers={"Content-Disposition": f'attachment; filename="{task_id}.{fmt}"'},
     )
+
+
+@router.get("/file/{task_id}/subtitle", response_class=PlainTextResponse)
+async def get_file_subtitle(
+    task_id: str,
+    format: str = "srt",
+    manager: TaskManager = Depends(get_manager),
+) -> Response:
+    return await get_subtitle(task_id=task_id, format=format, manager=manager)
 
 
 @meta_router.get("/auth/info")
@@ -293,6 +362,13 @@ async def get_config() -> dict:
         "ffmpeg_timeout": s.ffmpeg_timeout,
         "ffmpeg_concurrency": s.ffmpeg_concurrency,
         "max_upload_bytes": s.max_upload_bytes,
+        "realtime_asr_provider": s.realtime_asr_provider,
+        "realtime_asr_base_url": s.realtime_asr_base_url,
+        "realtime_asr_model": s.realtime_asr_model,
+        "realtime_session_ttl_seconds": s.realtime_session_ttl_seconds,
+        "realtime_max_sessions": s.realtime_max_sessions,
+        "realtime_max_chunk_bytes": s.realtime_max_chunk_bytes,
+        "realtime_api_key_set": bool(s.realtime_asr_api_key),
         "api_key_set": bool(s.asr_api_key),
         "access_tokens_count": len(s.access_tokens_list),
         "writable_fields": sorted(WRITABLE_FIELDS),
@@ -316,6 +392,15 @@ async def post_config(body: dict) -> dict:
         raise HTTPException(
             400,
             f"unknown provider: {updates['asr_provider']}; available: {list_providers()}",
+        )
+    if (
+        "realtime_asr_provider" in updates
+        and updates["realtime_asr_provider"] not in list_realtime_providers()
+    ):
+        raise HTTPException(
+            400,
+            f"unknown realtime provider: {updates['realtime_asr_provider']}; "
+            f"available: {list_realtime_providers()}",
         )
     if "split_strategy" in updates and updates["split_strategy"] not in {
         "fixed",

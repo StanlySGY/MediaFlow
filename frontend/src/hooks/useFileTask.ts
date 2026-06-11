@@ -128,7 +128,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
       const data = await new Promise<{ task_id: string }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhrRef.current = xhr;
-        xhr.open('POST', '/asr/task');
+        xhr.open('POST', '/asr/file');
         if (tok) xhr.setRequestHeader('Authorization', `Bearer ${tok}`);
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
@@ -164,7 +164,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
 
     if (esRef.current) esRef.current.close();
 
-    const es = new EventSource(sseUrl(`/asr/task/${id}/stream`));
+    const es = new EventSource(sseUrl(`/asr/file/${id}/events`));
     esRef.current = es;
 
     const segmentHandler = (e: MessageEvent) => {
@@ -183,7 +183,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
       esRef.current = null;
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
 
-      const infoResponse = await authedFetch(`/asr/task/${id}`);
+      const infoResponse = await authedFetch(`/asr/file/${id}`);
       if (infoResponse.ok) {
         const info = await infoResponse.json();
         setTaskStatus(info.status);
@@ -191,7 +191,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
       }
 
       // Fetch full transcript details
-      const resultResponse = await authedFetch(`/asr/task/${id}/result`);
+      const resultResponse = await authedFetch(`/asr/file/${id}/result`);
       if (resultResponse.ok) {
         const res = await resultResponse.json();
         setFullText(res.text || '');
@@ -212,7 +212,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
   const pollTask = async (id: string) => {
     if (!id) return;
     try {
-      const r = await authedFetch(`/asr/task/${id}`);
+      const r = await authedFetch(`/asr/file/${id}`);
       if (r.ok) {
         const info = await r.json();
         setTaskStatus(info.status);
@@ -280,7 +280,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
       return;
     }
     try {
-      const r = await authedFetch(`/asr/task/${taskId}/subtitle?format=${fmt}`);
+      const r = await authedFetch(`/asr/file/${taskId}/subtitle?format=${fmt}`);
       if (!r.ok) {
         alert(`导出字幕失败: HTTP ${r.status}`);
         return;

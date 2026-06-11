@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Trash2, FileText, FolderDown, Check, Download, Copy } from 'lucide-react';
 
@@ -18,6 +18,7 @@ import { SystemConfig } from './types';
 
 export default function App() {
   const { token, setToken, authedFetch, sseUrl } = useAuth();
+  const standardWavInputRef = useRef<HTMLInputElement>(null);
 
   // File-transcription lifecycle (upload / SSE / polling / proofreading / export).
   const {
@@ -191,6 +192,32 @@ export default function App() {
                 {/* Upload drag drop panel */}
                 <div className="card p-6">
                   <Dropzone onFileSelect={handleFileSelect} disabled={taskStatus === 'uploading' || taskStatus === 'processing'} />
+
+                  <div className="panel p-3 mt-4 flex items-center justify-between gap-3 flex-wrap">
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-semibold text-fg">标准文件流式转写</div>
+                      <div className="text-[11.5px] text-muted mt-0.5">POST /asr/file · SSE /asr/file/&lt;task_id&gt;/events</div>
+                    </div>
+                    <input
+                      ref={standardWavInputRef}
+                      type="file"
+                      accept=".wav,audio/wav,audio/x-wav"
+                      hidden
+                      onChange={(e) => {
+                        const file = e.currentTarget.files?.[0];
+                        if (file) void handleFileSelect(file);
+                        e.currentTarget.value = '';
+                      }}
+                    />
+                    <button
+                      onClick={() => standardWavInputRef.current?.click()}
+                      disabled={taskStatus === 'uploading' || taskStatus === 'processing'}
+                      className="primary"
+                    >
+                      <FileText className="w-4 h-4" />
+                      <span>标准上传 WAV 流式接口</span>
+                    </button>
+                  </div>
 
                   {/* Real upload progress */}
                   {uploadProgress >= 0 && (
@@ -367,7 +394,7 @@ export default function App() {
                             </button>
 
                             <button onClick={async () => {
-                              const r = await authedFetch(`/asr/task/${taskId}/result`);
+                              const r = await authedFetch(`/asr/file/${taskId}/result`);
                               if (r.ok) downloadFile(`${taskId}.json`, await r.text(), 'application/json');
                             }}>
                               <FileText className="w-4 h-4" />

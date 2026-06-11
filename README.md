@@ -172,6 +172,7 @@ class RealtimeASRProvider(Protocol):
 | --- | --- |
 | `realtime_mock` | 测试用，按规则产出 online/final/done，无真实模型依赖 |
 | `realtime_http` | 通用 HTTP+SSE 客户端，对接「标准下层 ASR 服务」 |
+| `realtime_offline` | 把离线文件 ASR 包成实时接口：接收 base64 chunks，结束后调用 `ASR_PROVIDER`，再以 SSE 模拟 online/final/done |
 
 **标准下层 ASR 协议**（下层模型方需实现）：
 
@@ -235,7 +236,7 @@ async function pushChunk(b64, isFinal=false) {
 
 ### 音频格式约定
 
-建议 PCM s16le mono 16kHz（chunks 之间无重叠）。其他格式（带 wav header 的整段 wav、webm/opus 等）也能跑通，但下层 provider 自己负责解码——只对 `realtime_mock` 来说音频内容不参与识别。
+建议 PCM s16le mono 16kHz（chunks 之间无重叠）。`realtime_offline` 也支持把一段 WAV 文件切成 base64 chunks 上传，服务端会在结束后还原完整 WAV 并调用当前文件 ASR；返回事件带 `mode=simulated_streaming`。其他格式（webm/opus 等）需要 FFmpeg 可解码；只对 `realtime_mock` 来说音频内容不参与识别。
 
 ### Web UI
 
@@ -281,6 +282,9 @@ curl -X POST http://localhost:8999/media/concat \
 | GET  | `/asr/task/{task_id}/result` | 任务最终 JSON 结果（含 segments、word 时间戳、每片耗时与上游 raw） |
 | GET  | `/asr/task/{task_id}/segments/{segment_id}/raw` | 单个分片的 ASR 原始返回（调试用） |
 | GET  | `/asr/task/{task_id}/subtitle?format=srt\|vtt` | 字幕下载 |
+| POST | `/asr/file` | 标准文件 ASR 入口，上传 WAV/音视频文件并返回 `status_url`、`events_url`、`result_url` |
+| GET  | `/asr/file/{task_id}/events` | 标准文件 ASR SSE 流式结果（内部复用 `/asr/task/{task_id}/stream`） |
+| GET  | `/asr/file/{task_id}/result` | 标准文件 ASR 最终 JSON 结果 |
 | GET  | `/asr/tasks` | 历史任务列表（内存中 + outputs/ 持久化） |
 | POST | `/asr/realtime/session` | 创建实时会话（body：`RealtimeSessionCreate`） |
 | GET  | `/asr/realtime/sessions` | 当前活跃会话与可用 realtime providers |
@@ -294,18 +298,18 @@ curl -X POST http://localhost:8999/media/concat \
 
 > 启用鉴权时（`ACCESS_TOKENS=...`），所有 `/asr/*`、`/media/*` 请求需附带 `Authorization: Bearer <token>`；SSE 用 `?token=<token>` 查询串。`/`、`/auth/info`、`/health` 不受影响。
 
-### 提交任务
+### 标准文件转写
 
 ```bash
-curl -X POST http://localhost:8999/asr/task \
-  -F "file=@long_meeting.mp3"
-# => {"task_id": "ab12..."}
+curl -X POST http://localhost:8999/asr/file \
+  -F "file=@long_meeting.wav"
+# => {"task_id":"ab12...","events_url":"/asr/file/ab12.../events","result_url":"/asr/file/ab12.../result"}
 ```
 
 ### 订阅流式结果
 
 ```bash
-curl -N http://localhost:8999/asr/task/ab12.../stream
+curl -N http://localhost:8999/asr/file/ab12.../events
 # event: segment
 # data: {"task_id":"ab12...","segment_id":1,"start":0.0,"end":30.0,"text":"……","is_final":true}
 ```
@@ -313,7 +317,7 @@ curl -N http://localhost:8999/asr/task/ab12.../stream
 ### 取最终结果
 
 ```bash
-curl http://localhost:8999/asr/task/ab12.../result
+curl http://localhost:8999/asr/file/ab12.../result
 ```
 
 ```json
@@ -348,6 +352,7 @@ curl http://localhost:8999/asr/task/ab12.../result
 | `ASR_CONCURRENCY` | 并发分片数 | `4` |
 | `ASR_MAX_RETRIES` | 单分片最大重试次数 | `3` |
 | `MAX_UPLOAD_BYTES` | 单次上传上限 | 2 GiB |
+| `REALTIME_ASR_PROVIDER` | 实时后端：`realtime_mock` / `realtime_http` / `realtime_offline` | `realtime_mock` |
 | `ACCESS_TOKENS` | 逗号分隔的访问令牌，空 = 关闭鉴权 | *(空)* |
 
 ## 目录结构
@@ -365,6 +370,7 @@ app/
 │   │   ├── realtime_base.py     RealtimeASRProvider 协议
 │   │   ├── realtime_mock.py     测试用 mock realtime provider
 │   │   ├── realtime_http.py     标准下层 HTTP+SSE realtime provider
+│   │   ├── realtime_offline.py  离线 ASR 模拟 realtime provider
 │   │   ├── realtime_registry.py realtime provider 注册表
 │   │   └── registry.py      batch provider 注册表
 │   ├── merger.py            时间轴优先 + LCS 回退的去重拼接

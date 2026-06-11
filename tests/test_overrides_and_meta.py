@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import tempfile
 import wave
 from pathlib import Path
 
 import httpx
 import pytest
 import respx
-from fastapi.testclient import TestClient
+from fastapi import HTTPException, UploadFile
 
 
 def _make_silent_wav(path: Path, seconds: float = 0.5) -> None:
@@ -18,7 +19,7 @@ def _make_silent_wav(path: Path, seconds: float = 0.5) -> None:
 
 
 @pytest.fixture
-def client(tmp_path: Path, monkeypatch):
+async def client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("TEMP_DIR", str(tmp_path / "tmp"))
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
     monkeypatch.setenv("ASR_BASE_URL", "https://example.test/v1")
@@ -28,11 +29,55 @@ def client(tmp_path: Path, monkeypatch):
     from app.config import get_settings
     get_settings.cache_clear()
     from app.main import create_app
-    return TestClient(create_app())
+    transport = httpx.ASGITransport(app=create_app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as c:
+        yield c
 
 
-def test_config_exposes_settings_without_secrets(client):
-    r = client.get("/asr/config")
+class _NoThreadAioFile:
+    async def __aenter__(self) -> "_NoThreadAioFile":
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        pass
+
+    async def write(self, data: bytes) -> int:
+        return len(data)
+
+
+class _CapturingManager:
+    def __init__(self, task_id: str = "id") -> None:
+        self.task_id = task_id
+        self.overrides = None
+
+    async def submit(self, source_path, original_name, *, overrides=None):
+        self.overrides = overrides
+        source_path.unlink(missing_ok=True)
+        return self.task_id
+
+
+def _upload_file(filename: str, data: bytes) -> UploadFile:
+    fp = tempfile.SpooledTemporaryFile(max_size=len(data) + 1)
+    fp.write(data)
+    fp.seek(0)
+    return UploadFile(file=fp, filename=filename)
+
+
+@pytest.fixture
+def no_thread_upload_writer(monkeypatch):
+    from app.api import routes
+
+    monkeypatch.setattr(
+        routes.aiofiles,
+        "open",
+        lambda *args, **kwargs: _NoThreadAioFile(),
+    )
+
+
+async def test_config_exposes_settings_without_secrets(client):
+    r = await client.get("/asr/config")
     assert r.status_code == 200
     data = r.json()
     assert data["provider"] == "openai_compat"
@@ -47,11 +92,17 @@ def test_config_exposes_settings_without_secrets(client):
 
 
 @respx.mock
-def test_ping_ok(client):
+async def test_ping_ok(client):
     respx.post("https://example.test/v1/audio/transcriptions").mock(
-        return_value=httpx.Response(200, json={"text": "silence", "words": [{"word": "_", "start": 0, "end": 1}]}),
+        return_value=httpx.Response(
+            200,
+            json={
+                "text": "silence",
+                "words": [{"word": "_", "start": 0, "end": 1}],
+            },
+        ),
     )
-    r = client.post("/asr/ping")
+    r = await client.post("/asr/ping")
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
@@ -60,47 +111,40 @@ def test_ping_ok(client):
 
 
 @respx.mock
-def test_ping_reports_upstream_error(client):
+async def test_ping_reports_upstream_error(client):
     respx.post("https://example.test/v1/audio/transcriptions").mock(
         return_value=httpx.Response(401, text="bad key"),
     )
-    r = client.post("/asr/ping")
+    r = await client.post("/asr/ping")
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is False
     assert "401" in data["error"] or "bad key" in data["error"]
 
 
-def test_task_overrides_propagate(client, tmp_path: Path, monkeypatch):
-    captured = {}
+async def test_task_overrides_propagate(
+    tmp_path: Path, no_thread_upload_writer
+):
+    from app.api.routes import create_task
 
-    async def fake_submit(self, source_path, original_name, *, overrides=None):
-        captured["overrides"] = overrides
-        # cleanup the uploaded file like the real path would
-        source_path.unlink(missing_ok=True)
-        return "fake-task-id"
-
-    from app.services.stream_manager import TaskManager
-    monkeypatch.setattr(TaskManager, "submit", fake_submit)
-
+    manager = _CapturingManager("fake-task-id")
     wav = tmp_path / "x.wav"
     _make_silent_wav(wav)
 
-    r = client.post(
-        "/asr/task",
-        files={"file": ("x.wav", wav.read_bytes(), "audio/wav")},
-        data={
-            "model": "alt-model",
-            "language": "en",
-            "split_strategy": "fixed",
-            "chunk_seconds": "45",
-            "overlap_seconds": "3",
-            "hotwords": "foo,bar",
-            "timestamps": "false",
-        },
+    r = await create_task(
+        file=_upload_file("x.wav", wav.read_bytes()),
+        model="alt-model",
+        language="en",
+        split_strategy="fixed",
+        chunk_seconds=45,
+        overlap_seconds=3,
+        hotwords="foo,bar",
+        prompt_hints=None,
+        timestamps=False,
+        manager=manager,
     )
-    assert r.status_code == 200
-    ov = captured["overrides"]
+    assert r == {"task_id": "fake-task-id"}
+    ov = manager.overrides
     assert ov["asr_model"] == "alt-model"
     assert ov["asr_language"] == "en"
     assert ov["split_strategy"] == "fixed"
@@ -110,30 +154,78 @@ def test_task_overrides_propagate(client, tmp_path: Path, monkeypatch):
     assert ov["asr_timestamps"] is False
 
 
-def test_task_without_overrides_passes_none(client, tmp_path: Path, monkeypatch):
-    captured = {}
+async def test_file_alias_upload_returns_streaming_urls(
+    tmp_path: Path, no_thread_upload_writer
+):
+    from app.api.routes import create_file_transcription
 
-    async def fake_submit(self, source_path, original_name, *, overrides=None):
-        captured["overrides"] = overrides
-        source_path.unlink(missing_ok=True)
-        return "id"
+    manager = _CapturingManager("file-task-id")
+    wav = tmp_path / "file.wav"
+    _make_silent_wav(wav)
 
-    from app.services.stream_manager import TaskManager
-    monkeypatch.setattr(TaskManager, "submit", fake_submit)
+    r = await create_file_transcription(
+        file=_upload_file("file.wav", wav.read_bytes()),
+        model="file-model",
+        language="zh",
+        split_strategy=None,
+        chunk_seconds=None,
+        overlap_seconds=None,
+        hotwords=None,
+        prompt_hints=None,
+        timestamps=None,
+        manager=manager,
+    )
+    assert r == {
+        "task_id": "file-task-id",
+        "status_url": "/asr/file/file-task-id",
+        "events_url": "/asr/file/file-task-id/events",
+        "result_url": "/asr/file/file-task-id/result",
+    }
+    assert manager.overrides["asr_model"] == "file-model"
+    assert manager.overrides["asr_language"] == "zh"
 
+
+async def test_task_without_overrides_passes_none(
+    tmp_path: Path, no_thread_upload_writer
+):
+    from app.api.routes import create_task
+
+    manager = _CapturingManager()
     wav = tmp_path / "y.wav"
     _make_silent_wav(wav)
-    r = client.post("/asr/task", files={"file": ("y.wav", wav.read_bytes(), "audio/wav")})
-    assert r.status_code == 200
-    assert captured["overrides"] is None
+    r = await create_task(
+        file=_upload_file("y.wav", wav.read_bytes()),
+        model=None,
+        language=None,
+        split_strategy=None,
+        chunk_seconds=None,
+        overlap_seconds=None,
+        hotwords=None,
+        prompt_hints=None,
+        timestamps=None,
+        manager=manager,
+    )
+    assert r == {"task_id": "id"}
+    assert manager.overrides is None
 
 
-def test_invalid_split_strategy_rejected(client, tmp_path: Path):
+async def test_invalid_split_strategy_rejected(tmp_path: Path, no_thread_upload_writer):
+    from app.api.routes import create_task
+
     wav = tmp_path / "z.wav"
     _make_silent_wav(wav)
-    r = client.post(
-        "/asr/task",
-        files={"file": ("z.wav", wav.read_bytes(), "audio/wav")},
-        data={"split_strategy": "garbage"},
-    )
-    assert r.status_code == 400
+    with pytest.raises(HTTPException) as exc_info:
+        await create_task(
+            file=_upload_file("z.wav", wav.read_bytes()),
+            model=None,
+            language=None,
+            split_strategy="garbage",
+            chunk_seconds=None,
+            overlap_seconds=None,
+            hotwords=None,
+            prompt_hints=None,
+            timestamps=None,
+            manager=_CapturingManager(),
+        )
+    assert exc_info.value.status_code == 400
+    assert "split_strategy" in exc_info.value.detail

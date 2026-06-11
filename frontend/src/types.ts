@@ -39,6 +39,7 @@ export interface RealtimeEvent {
   text?: string;
   is_final?: boolean;
   elapsed_ms?: number;
+  mode?: string;
   error?: string;
   raw?: unknown;
 }
@@ -66,8 +67,10 @@ export interface SystemConfig {
   realtime_asr_base_url?: string;
   realtime_asr_api_key?: string;
   realtime_asr_model?: string;
+  realtime_api_key_set?: boolean;
   realtime_max_chunk_bytes?: number;
   realtime_session_ttl_seconds?: number;
+  realtime_max_sessions?: number;
   access_tokens_count?: number;
   available_providers?: string[];
   [key: string]: unknown;

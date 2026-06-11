@@ -27,5 +27,6 @@ describe('<App /> smoke', () => {
     render(<App />);
     expect(await screen.findByText('快速上手')).toBeInTheDocument();
     expect(screen.getByText('上传音频')).toBeInTheDocument();
+    expect(screen.getByText('标准上传 WAV 流式接口')).toBeInTheDocument();
   });
 });

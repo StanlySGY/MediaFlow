@@ -45,7 +45,7 @@ const GROUPS: FieldGroup[] = [
   {
     title: '实时识别', icon: Radio, desc: '「实时识别」页面使用的下游服务',
     fields: [
-      { key: 'realtime_asr_provider', label: '实时接口类型', type: 'select-realtime', hint: 'realtime_mock = 演示用假数据；realtime_http = 对接标准实时服务' },
+      { key: 'realtime_asr_provider', label: '实时接口类型', type: 'select-realtime', hint: 'realtime_mock = 演示用假数据；realtime_http = 对接标准实时服务；realtime_offline = 用文件 ASR 模拟流式' },
       { key: 'realtime_asr_base_url', label: '实时接口地址', type: 'text' },
       { key: 'realtime_asr_api_key', label: '实时接口密钥', type: 'secret' },
       { key: 'realtime_asr_model', label: '实时模型名称', type: 'text' },
@@ -76,7 +76,7 @@ const ALL_FIELDS = GROUPS.flatMap(g => g.fields);
 
 export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopbar }) => {
   const [config, setConfig] = useState<SystemConfig | null>(null);
-  const [realtimeProviders, setRealtimeProviders] = useState<string[]>(['realtime_mock', 'realtime_http']);
+  const [realtimeProviders, setRealtimeProviders] = useState<string[]>(['realtime_mock', 'realtime_http', 'realtime_offline']);
   const [formState, setFormState] = useState<Record<string, string | number | boolean>>({});
   const [dirtyFields, setDirtyFields] = useState<{ [key: string]: boolean }>({});
   const [showSecrets, setShowSecrets] = useState<{ [key: string]: boolean }>({});
@@ -198,7 +198,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
     if (!config) return null;
     if (key === 'asr_api_key') return config.api_key_set ? '已配置' : '未配置';
     if (key === 'access_tokens') return (config.access_tokens_count || 0) > 0 ? `已配置 ${config.access_tokens_count} 个` : '未启用';
-    if (key === 'realtime_asr_api_key') return '已隐藏';
+    if (key === 'realtime_asr_api_key') return config.realtime_api_key_set ? '已配置' : '未配置';
     return null;
   };
 

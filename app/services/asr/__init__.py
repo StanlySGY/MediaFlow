@@ -4,6 +4,7 @@ from app.services.asr.openai_compat import OpenAICompatProvider
 from app.services.asr.realtime_base import RealtimeASRError, RealtimeASRProvider
 from app.services.asr.realtime_http import RealtimeHTTPProvider
 from app.services.asr.realtime_mock import RealtimeMockProvider
+from app.services.asr.realtime_offline import RealtimeOfflineProvider
 from app.services.asr.realtime_registry import (
     create_realtime_provider,
     list_realtime_providers,
@@ -21,6 +22,7 @@ __all__ = [
     "RealtimeASRProvider",
     "RealtimeHTTPProvider",
     "RealtimeMockProvider",
+    "RealtimeOfflineProvider",
     "RetryableASRError",
     "WordTime",
     "create_provider",

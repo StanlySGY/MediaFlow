@@ -12,7 +12,7 @@ interface RealtimeViewProps {
 // Shape of a raw SSE event payload from the realtime endpoint.
 type RawRtEvent = {
   session_id?: string; seq?: number; text?: string;
-  is_final?: boolean; elapsed_ms?: number; error?: string;
+  is_final?: boolean; elapsed_ms?: number; mode?: string; error?: string;
 };
 
 export const RealtimeView: React.FC<RealtimeViewProps> = ({
@@ -151,9 +151,19 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
       text: ev.text,
       is_final: ev.is_final,
       elapsed_ms: ev.elapsed_ms,
+      mode: ev.mode,
       error: ev.error,
     };
     setEvents(prev => [...prev, newEv]);
+  };
+
+  const handleOfflinePreset = () => {
+    setFormat('wav');
+    setMode('offline-simulated');
+    setChunkKB(64);
+    setIntervalMs(80);
+    setRtStatus('已切换为 WAV 文件分包测试参数');
+    setToastClass('warn');
   };
 
   const rtPushChunk = async (b64: string, isFinal = false) => {
@@ -320,6 +330,10 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
             <Play className="w-4 h-4" />
             <span>创建会话</span>
           </button>
+          <button onClick={handleOfflinePreset}>
+            <Info className="w-4 h-4" />
+            <span>离线模拟实时测试</span>
+          </button>
           <span className={`toast ${toastClass}`}>{rtStatus}</span>
         </div>
       </div>
@@ -415,6 +429,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
                   const ts = new Date().toLocaleTimeString();
                   const meta = [
                     ev.seq !== undefined ? `seq=${ev.seq}` : '',
+                    ev.mode ? ev.mode : '',
                     ev.elapsed_ms !== undefined ? `${ev.elapsed_ms.toFixed(0)}ms` : '',
                   ].filter(Boolean).join(' ');
                   const tyText = { online: '识别中', final: '最终', done: '结束', error: '错误' }[ev.type] || ev.type;

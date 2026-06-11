@@ -6,6 +6,7 @@ from app.config import Settings
 from app.services.asr.realtime_base import RealtimeASRProvider
 from app.services.asr.realtime_http import RealtimeHTTPProvider
 from app.services.asr.realtime_mock import RealtimeMockProvider
+from app.services.asr.realtime_offline import RealtimeOfflineProvider
 
 
 _REGISTRY: dict[str, Callable[[Settings], RealtimeASRProvider]] = {}
@@ -31,6 +32,11 @@ def _http(settings: Settings) -> RealtimeASRProvider:
         model=settings.realtime_asr_model,
         timeout=settings.asr_timeout,
     )
+
+
+@register_realtime("realtime_offline")
+def _offline(settings: Settings) -> RealtimeASRProvider:
+    return RealtimeOfflineProvider(settings)
 
 
 def create_realtime_provider(settings: Settings) -> RealtimeASRProvider:
