@@ -17,6 +17,13 @@ def test_standard_asr_openapi_docs_are_actionable(tmp_path: Path, monkeypatch):
     schema = create_app().openapi()
     paths = schema["paths"]
 
+    top_description = schema["info"]["description"]
+    assert "重要接口速览" in top_description
+    assert "实时录音转文字：上传 base64" in top_description
+    assert "上传 WAV 文件转文字：上传文件" in top_description
+    assert "POST /asr/realtime/session" in top_description
+    assert "POST /asr/file" in top_description
+
     file_post = paths["/asr/file"]["post"]
     assert "上传 WAV 文件转文字" in file_post["summary"]
     assert "调用顺序" in file_post["description"]

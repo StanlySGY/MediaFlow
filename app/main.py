@@ -17,6 +17,63 @@ from app.services.stream_transcribe_manager import StreamTranscribeManager
 
 WEB_DIR = Path(__file__).parent / "web"
 
+API_DESCRIPTION = """
+MediaFlow 已封装好语音识别网关，当前重点给第三方调用两类标准接口。
+
+## 重要接口速览
+
+### 1. 实时录音转文字：上传 base64，SSE 流式返回文字
+
+适用场景：浏览器、App、设备端边录音边把音频片段上传给服务端。
+
+调用顺序：
+
+1. `POST /asr/realtime/session` 创建实时会话，拿到 `session_id`。
+2. `GET /asr/realtime/{session_id}/events` 建立 SSE 订阅，接收识别事件。
+3. `POST /asr/realtime/{session_id}/audio` 多次上传 base64 音频 chunk。
+4. 音频结束时，继续调用 `/audio` 并传 `is_final=true`，或调用
+   `POST /asr/realtime/{session_id}/end`。
+
+音频 chunk 请求体核心字段：
+
+- `seq`：客户端递增序号，建议从 1 开始。
+- `audio`：base64 编码的音频片段；最后一个结束包可为空字符串。
+- `is_final`：是否最后一个包。`true` 表示音频已发完，服务端开始输出最终结果。
+
+SSE 事件类型：
+
+- `online`：中间识别结果。
+- `final`：最终识别文本。
+- `done`：会话结束。
+- `error`：识别失败或上游异常。
+
+当前 Qwen ASR 通过 `realtime_offline` 封装时，底层不是原生实时识别：
+服务端会先接收 base64 chunks，结束后调用 Qwen ASR，再用 SSE 模拟流式返回。
+事件里的 `mode=simulated_streaming` 表示这种模拟流式模式。后续如果换成原生
+realtime ASR，调用方仍然使用同一套接口。
+
+### 2. 上传 WAV 文件转文字：上传文件，SSE 流式返回文字
+
+适用场景：调用方已有完整 WAV 或音视频文件，希望上传后持续接收识别进度和文本。
+
+调用顺序：
+
+1. `POST /asr/file` 使用 `multipart/form-data` 上传文件，字段名固定为 `file`。
+2. 从响应中读取 `task_id`、`events_url`、`result_url`。
+3. `GET /asr/file/{task_id}/events` 订阅 SSE，实时接收分片识别结果。
+4. `GET /asr/file/{task_id}/result` 获取最终完整 JSON 结果。
+
+文件接口 SSE 事件：
+
+- `event: segment`：单个分片识别结果，包含 `segment_id`、`start`、`end`、`text`。
+- `event: done`：任务结束，包含最终任务状态。
+
+## 鉴权说明
+
+如果服务启用了 `ACCESS_TOKENS`，普通 HTTP 请求使用
+`Authorization: Bearer <token>`；SSE 场景可使用 `?token=<token>` 查询参数。
+"""
+
 # Shown at "/" when the built frontend is absent (e.g. running the backend
 # directly without `npm run build`; in Docker the multi-stage build always
 # populates app/web, so the SPA is served instead).
@@ -54,7 +111,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="MediaFlow",
-        description="Media toolkit: long-audio splitting, streaming ASR, and lossless audio/video concatenation.",
+        description=API_DESCRIPTION,
         version="1.4.0",
         lifespan=_lifespan,
     )
