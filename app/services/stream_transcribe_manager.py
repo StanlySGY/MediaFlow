@@ -15,6 +15,7 @@ from app.models.schemas import (
     RealtimeSessionCreate,
 )
 from app.services.asr import ASRError, create_provider
+from app.services.asr_monitoring import asr_call_context
 from app.services.asr.realtime_base import RealtimeASRError
 from app.services.ffmpeg_service import normalize_to_wav
 
@@ -72,7 +73,11 @@ class StreamTranscribeManager:
 
             # 调用 ASR
             async with create_provider(self._settings) as provider:
-                result = await provider.transcribe(normalized)
+                with asr_call_context(
+                    source="stream_transcribe",
+                    session_id=session_id,
+                ):
+                    result = await provider.transcribe(normalized)
                 session.publish(
                     RealtimeASREvent(
                         type="final",

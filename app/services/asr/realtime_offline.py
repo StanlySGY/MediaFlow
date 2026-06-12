@@ -25,6 +25,7 @@ from app.models.schemas import (
 from app.services.asr.base import ASRProvider
 from app.services.asr.registry import create_provider
 from app.services.asr.realtime_base import RealtimeASRError
+from app.services.asr_monitoring import asr_call_context
 from app.services.ffmpeg_service import normalize_to_wav
 
 
@@ -87,10 +88,14 @@ class RealtimeOfflineProvider:
         try:
             audio_path = await self._materialize_audio()
             async with self._provider_factory(self._settings) as provider:
-                result = await provider.transcribe(
-                    audio_path,
-                    prompt=self._config.prompt_hints or None,
-                )
+                with asr_call_context(
+                    source="realtime_offline",
+                    session_id=self._session_id,
+                ):
+                    result = await provider.transcribe(
+                        audio_path,
+                        prompt=self._config.prompt_hints or None,
+                    )
             await self._emit_text(result.text)
         except Exception as e:  # noqa: BLE001
             self._queue.put_nowait(

@@ -13,6 +13,7 @@ from app.services.asr.base import (
     ASRResult,
     RetryableASRError,
 )
+from app.services.asr_monitoring import asr_monitor
 
 log = logging.getLogger(__name__)
 
@@ -89,27 +90,42 @@ class OpenAIChatAudioProvider:
         if self._client is None:
             raise RuntimeError("provider must be used as async context manager")
 
-        audio_b64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        content = file_path.read_bytes()
+        audio_b64 = base64.b64encode(content).decode("ascii")
         body = self._build_body(audio_b64, prompt)
+        call_id = asr_monitor.start_call(
+            provider="openai_chat_audio",
+            model=self._model,
+            base_url=self._base_url,
+            request_bytes=len(content),
+        )
 
         last_err: Exception | None = None
-        for attempt in range(self._max_retries + 1):
-            try:
-                resp = await self._client.post("/chat/completions", json=body)
-                if resp.status_code >= 500 or resp.status_code == 429:
-                    raise RetryableASRError(f"upstream {resp.status_code}: {resp.text[:200]}")
-                if resp.status_code >= 400:
-                    raise ASRError(f"client error {resp.status_code}: {resp.text[:200]}")
-                return _parse_response(resp.json())
-            except (httpx.TimeoutException, httpx.TransportError, RetryableASRError) as e:
-                last_err = e
-                if attempt >= self._max_retries:
-                    break
-                delay = self._retry_backoff ** attempt
-                log.warning("asr retry %d/%d after %.1fs: %s", attempt + 1, self._max_retries, delay, e)
-                await asyncio.sleep(delay)
+        try:
+            for attempt in range(self._max_retries + 1):
+                try:
+                    resp = await self._client.post("/chat/completions", json=body)
+                    if resp.status_code >= 500 or resp.status_code == 429:
+                        raise RetryableASRError(f"upstream {resp.status_code}: {resp.text[:200]}")
+                    if resp.status_code >= 400:
+                        raise ASRError(f"client error {resp.status_code}: {resp.text[:200]}")
+                    result = _parse_response(resp.json())
+                    asr_monitor.finish_call(
+                        call_id, ok=True, text_chars=len(result.text)
+                    )
+                    return result
+                except (httpx.TimeoutException, httpx.TransportError, RetryableASRError) as e:
+                    last_err = e
+                    if attempt >= self._max_retries:
+                        break
+                    delay = self._retry_backoff ** attempt
+                    log.warning("asr retry %d/%d after %.1fs: %s", attempt + 1, self._max_retries, delay, e)
+                    await asyncio.sleep(delay)
 
-        raise ASRError(f"transcribe failed after {self._max_retries + 1} attempts: {last_err}")
+            raise ASRError(f"transcribe failed after {self._max_retries + 1} attempts: {last_err}")
+        except Exception as e:
+            asr_monitor.finish_call(call_id, ok=False, error=str(e))
+            raise
 
 
 def _parse_response(payload: dict) -> ASRResult:

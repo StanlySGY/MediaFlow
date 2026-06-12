@@ -94,3 +94,40 @@ export interface SystemConfig {
   available_providers?: string[];
   [key: string]: unknown;
 }
+
+export interface ASRMonitorCall {
+  call_id: string;
+  provider: string;
+  model: string;
+  base_url: string;
+  status: 'running' | 'ok' | 'error';
+  source: string;
+  task_id?: string | null;
+  session_id?: string | null;
+  segment_id?: number | null;
+  request_bytes: number;
+  text_chars: number;
+  error?: string | null;
+  started_at: number;
+  ended_at?: number | null;
+  elapsed_ms: number;
+}
+
+export interface ASRMonitorSnapshot {
+  summary: {
+    total: number;
+    running: number;
+    succeeded: number;
+    failed: number;
+    avg_elapsed_ms: number;
+    window_size: number;
+  };
+  calls: ASRMonitorCall[];
+  config?: {
+    provider: string;
+    model: string;
+    base_url: string;
+    api_key_set: boolean;
+    realtime_asr_provider: string;
+  };
+}

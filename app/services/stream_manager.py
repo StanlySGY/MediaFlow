@@ -20,6 +20,7 @@ from app.models.schemas import (
 )
 from app.services import splitter
 from app.services.asr import ASRError, create_provider
+from app.services.asr_monitoring import asr_call_context
 from app.services.ffmpeg_service import FFmpegError, normalize_to_wav, probe_duration
 from app.services.merger import merge_segments
 
@@ -255,7 +256,12 @@ class TaskManager:
                 async with sem:
                     t0 = time.perf_counter()
                     try:
-                        res = await provider.transcribe(seg.file_path)
+                        with asr_call_context(
+                            source="file_task",
+                            task_id=task.info.task_id,
+                            segment_id=seg.segment_id,
+                        ):
+                            res = await provider.transcribe(seg.file_path)
                         seg.text = res.text
                         seg.words = [
                             Word(

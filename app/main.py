@@ -122,6 +122,23 @@ data: {"type":"done","stream":"file","id":"<task_id>","task_id":"<task_id>","sta
 保存响应里的 `task_id`；页面切走、SSE 断开或用户稍后回来时，用这个 `task_id` 重新订阅
 `/asr/file/{task_id}/events`，或直接查询 `/asr/file/{task_id}/result`。
 
+### 3. ASR 调用监控：确认是否真正调用 Qwen ASR
+
+用于联调和排查“到底有没有打到 Qwen ASR、耗时多少、失败原因是什么”。
+
+- Web 页面左侧菜单「调用监控」会动态显示最近调用。
+- `GET /asr/monitor` 返回当前快照。
+- `GET /asr/monitor/events` 返回 SSE 动态事件；连接后先发 `event: snapshot`，
+  后续推送 `call_started`、`call_finished`。
+
+每条调用记录会包含 `provider`、`model`、`source`、`task_id`、`session_id`、`segment_id`、
+`request_bytes`、`text_chars`、`elapsed_ms`、`status`、`error`。常见 `source`：
+`file_task` 表示文件分片识别，`realtime_offline` 表示实时接口结束后封装调用文件 ASR，
+`ping` 表示「测试连接」。
+
+注意：监控记录是当前服务进程内的内存滚动窗口，默认最近 200 条。服务重启会清空；
+多副本部署时，每个副本只记录自己处理过的调用。
+
 ## 鉴权说明
 
 如果服务启用了 `ACCESS_TOKENS`，普通 HTTP 请求使用

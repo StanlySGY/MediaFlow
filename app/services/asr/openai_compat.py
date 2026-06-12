@@ -13,6 +13,7 @@ from app.services.asr.base import (
     RetryableASRError,
     WordTime,
 )
+from app.services.asr_monitoring import asr_monitor
 
 log = logging.getLogger(__name__)
 
@@ -94,27 +95,41 @@ class OpenAICompatProvider:
 
         form = self._build_form(prompt)
         content = file_path.read_bytes()
+        call_id = asr_monitor.start_call(
+            provider="openai_compat",
+            model=self._model,
+            base_url=self._base_url,
+            request_bytes=len(content),
+        )
         last_err: Exception | None = None
-        for attempt in range(self._max_retries + 1):
-            try:
-                files = {"file": (file_path.name, content, "audio/wav")}
-                resp = await self._client.post(
-                    "/audio/transcriptions", data=form, files=files,
-                )
-                if resp.status_code >= 500 or resp.status_code == 429:
-                    raise RetryableASRError(f"upstream {resp.status_code}: {resp.text[:200]}")
-                if resp.status_code >= 400:
-                    raise ASRError(f"client error {resp.status_code}: {resp.text[:200]}")
-                return _parse_response(resp.json())
-            except (httpx.TimeoutException, httpx.TransportError, RetryableASRError) as e:
-                last_err = e
-                if attempt >= self._max_retries:
-                    break
-                delay = self._retry_backoff ** attempt
-                log.warning("asr retry %d/%d after %.1fs: %s", attempt + 1, self._max_retries, delay, e)
-                await asyncio.sleep(delay)
+        try:
+            for attempt in range(self._max_retries + 1):
+                try:
+                    files = {"file": (file_path.name, content, "audio/wav")}
+                    resp = await self._client.post(
+                        "/audio/transcriptions", data=form, files=files,
+                    )
+                    if resp.status_code >= 500 or resp.status_code == 429:
+                        raise RetryableASRError(f"upstream {resp.status_code}: {resp.text[:200]}")
+                    if resp.status_code >= 400:
+                        raise ASRError(f"client error {resp.status_code}: {resp.text[:200]}")
+                    result = _parse_response(resp.json())
+                    asr_monitor.finish_call(
+                        call_id, ok=True, text_chars=len(result.text)
+                    )
+                    return result
+                except (httpx.TimeoutException, httpx.TransportError, RetryableASRError) as e:
+                    last_err = e
+                    if attempt >= self._max_retries:
+                        break
+                    delay = self._retry_backoff ** attempt
+                    log.warning("asr retry %d/%d after %.1fs: %s", attempt + 1, self._max_retries, delay, e)
+                    await asyncio.sleep(delay)
 
-        raise ASRError(f"transcribe failed after {self._max_retries + 1} attempts: {last_err}")
+            raise ASRError(f"transcribe failed after {self._max_retries + 1} attempts: {last_err}")
+        except Exception as e:
+            asr_monitor.finish_call(call_id, ok=False, error=str(e))
+            raise
 
 
 def _parse_response(payload: dict) -> ASRResult:

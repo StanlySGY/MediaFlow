@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import time
 import uuid
@@ -38,6 +39,7 @@ from app.services.asr import (
     list_providers,
     list_realtime_providers,
 )
+from app.services.asr_monitoring import asr_call_context, asr_monitor
 from app.services.asr.realtime_base import RealtimeASRError
 from app.services.ffmpeg_service import FFmpegError, concat_media
 from app.services.realtime_manager import RealtimeManager
@@ -307,6 +309,54 @@ REALTIME_END_DOC = """
 
 等价于发送 `{"audio":"","is_final":true}` 的结束包。服务端收到结束信号后会触发
 最终识别，并通过 `/asr/realtime/{session_id}/events` 输出统一的 `message` 事件。
+"""
+
+ASR_MONITOR_DOC = """
+查看当前服务进程内的 ASR 上游调用快照。
+
+这个接口用于确认本项目是否真正调用了 Qwen ASR 或其他上游 ASR，以及每次调用的来源、
+模型、耗时、请求音频大小、返回文本长度和错误信息。监控记录保存在内存滚动窗口里，
+默认最近 200 条；服务重启后会清空，多副本部署时每个副本各自记录。
+
+返回字段：
+
+- `summary.total`：当前窗口内调用数。
+- `summary.running`：仍在等待上游返回的调用数。
+- `summary.succeeded` / `summary.failed`：成功和失败调用数。
+- `summary.avg_elapsed_ms`：已结束调用的平均耗时。
+- `calls[]`：调用明细，包含 `source`、`task_id`、`session_id`、`segment_id`、
+  `provider`、`model`、`status`、`request_bytes`、`text_chars`、`elapsed_ms`、`error`。
+- `config`：当前 ASR 配置摘要，不返回明文 API Key。
+
+常见 `source`：
+
+- `file_task`：`POST /asr/file` 或旧版 `/asr/task` 创建的文件分片识别。
+- `realtime_offline`：实时接口结束后，用文件 ASR 封装调用 Qwen ASR。
+- `stream_transcribe`：旧版流式转写入口。
+- `ping`：服务配置页「测试连接」或 `POST /asr/ping`。
+"""
+
+ASR_MONITOR_EVENTS_DOC = """
+订阅 ASR 上游调用监控的 SSE 事件流。
+
+页面可先调用 `GET /asr/monitor` 获取快照，也可以直接订阅本接口。本接口建立连接后
+会先发送一条 `event: snapshot`，之后每次上游调用开始和结束都会推送增量事件。
+
+事件格式：
+
+```text
+event: snapshot
+data: {"summary":{...},"calls":[...],"config":{...}}
+
+event: call_started
+data: {"type":"call_started","call":{"call_id":"...","status":"running",...}}
+
+event: call_finished
+data: {"type":"call_finished","call":{"call_id":"...","status":"ok","elapsed_ms":320.1,...}}
+```
+
+如果调用失败，`call.status=error`，`call.error` 中会包含上游 HTTP 状态、超时或协议错误摘要。
+如果启用了访问令牌，浏览器 `EventSource` 可使用 `?token=你的token` 查询参数。
 """
 
 
@@ -781,6 +831,47 @@ async def post_config_reset() -> dict:
     return await get_config()
 
 
+@router.get(
+    "/monitor",
+    summary="3. 查看 ASR 上游调用监控快照",
+    description=ASR_MONITOR_DOC,
+)
+async def get_asr_monitor() -> dict:
+    """Return in-memory ASR upstream call metrics."""
+    settings = get_settings()
+    snapshot = asr_monitor.snapshot()
+    snapshot["config"] = {
+        "provider": settings.asr_provider,
+        "model": settings.asr_model,
+        "base_url": settings.asr_base_url,
+        "api_key_set": bool(settings.asr_api_key),
+        "realtime_asr_provider": settings.realtime_asr_provider,
+    }
+    return snapshot
+
+
+@router.get(
+    "/monitor/events",
+    summary="3.1 订阅 ASR 上游调用监控事件（SSE）",
+    description=ASR_MONITOR_EVENTS_DOC,
+)
+async def stream_asr_monitor_events() -> EventSourceResponse:
+    """SSE stream of ASR upstream call metric updates."""
+
+    async def event_gen():
+        yield {
+            "event": "snapshot",
+            "data": json.dumps(await get_asr_monitor(), ensure_ascii=False),
+        }
+        async for event in asr_monitor.subscribe():
+            yield {
+                "event": event["type"],
+                "data": json.dumps(event, ensure_ascii=False),
+            }
+
+    return EventSourceResponse(event_gen())
+
+
 def _silent_wav_bytes(duration: float = 1.0, sample_rate: int = 16000) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -802,7 +893,8 @@ async def ping_upstream() -> dict:
     t0 = time.perf_counter()
     try:
         async with create_provider(settings) as provider:
-            res = await provider.transcribe(tmp)
+            with asr_call_context(source="ping"):
+                res = await provider.transcribe(tmp)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return {
             "ok": True,
