@@ -28,6 +28,11 @@ def test_standard_asr_openapi_docs_are_actionable(tmp_path: Path, monkeypatch):
     assert "event: message" in top_description
     assert '"type":"text"' in top_description
     assert "不要等第一条 `type=text` 事件才保存 `task_id`" in top_description
+    assert "REALTIME_ASR_PROVIDER=realtime_mock" in top_description
+    assert "REALTIME_ASR_PROVIDER=realtime_offline" in top_description
+    assert "ASR_PROVIDER=openai_chat_audio" in top_description
+    assert "Mock final transcription." in top_description
+    assert "POST /asr/ping" in top_description
 
     file_post = paths["/asr/file"]["post"]
     assert "上传 WAV 文件转文字" in file_post["summary"]
@@ -37,6 +42,8 @@ def test_standard_asr_openapi_docs_are_actionable(tmp_path: Path, monkeypatch):
     assert "所有事件名统一为 `event: message`" in file_post["description"]
     assert "`data.stream=file`" in file_post["description"]
     assert "页面切走或 SSE 断开后" in file_post["description"]
+    assert "文件接口使用 `ASR_PROVIDER`" in file_post["description"]
+    assert "文件接口不使用 `REALTIME_ASR_PROVIDER`" in file_post["description"]
 
     file_events = paths["/asr/file/{task_id}/events"]["get"]
     assert "SSE" in file_events["summary"]
@@ -48,6 +55,9 @@ def test_standard_asr_openapi_docs_are_actionable(tmp_path: Path, monkeypatch):
     realtime_session = paths["/asr/realtime/session"]["post"]
     assert "实时录音转文字" in realtime_session["summary"]
     assert "realtime_offline" in realtime_session["description"]
+    assert "REALTIME_ASR_PROVIDER=realtime_mock" in realtime_session["description"]
+    assert "ASR_PROVIDER=openai_chat_audio" in realtime_session["description"]
+    assert "Mock final transcription." in realtime_session["description"]
 
     realtime_audio = paths["/asr/realtime/{session_id}/audio"]["post"]
     assert "上传 base64 音频 chunk" in realtime_audio["summary"]
@@ -57,6 +67,8 @@ def test_standard_asr_openapi_docs_are_actionable(tmp_path: Path, monkeypatch):
     assert "event: message" in realtime_events["description"]
     assert "stream=realtime" in realtime_events["description"]
     assert "source_event" in realtime_events["description"]
+    assert "默认 `REALTIME_ASR_PROVIDER=realtime_mock`" in realtime_events["description"]
+    assert "`{\"audio\":\"\",\"is_final\":true}`" in realtime_events["description"]
     assert (
         '"stream":"realtime"'
         in realtime_events["responses"]["200"]["content"]["text/event-stream"]["example"]

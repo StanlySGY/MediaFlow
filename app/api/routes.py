@@ -109,6 +109,14 @@ STANDARD_FILE_ASR_DOC = """
 
 当前服务端已经接入 Qwen ASR；这个接口屏蔽了底层 provider 差异，调用方只需要按
 标准上传文件和订阅 SSE。
+
+真实数据配置：
+
+- 文件接口使用 `ASR_PROVIDER`、`ASR_BASE_URL`、`ASR_API_KEY`、`ASR_MODEL`。
+- Qwen3-ASR-Flash 走 DashScope chat/audio 兼容接口时，`ASR_PROVIDER` 应设置为
+  `openai_chat_audio`，`ASR_MODEL=qwen3-asr-flash`。
+- 文件接口不使用 `REALTIME_ASR_PROVIDER`；如果文件接口返回异常，应优先检查
+  `POST /asr/ping` 和文件 ASR 配置。
 """
 
 STANDARD_FILE_EVENTS_DOC = """
@@ -189,6 +197,24 @@ REALTIME_SESSION_DOC = """
 当前 Qwen ASR 通过 `realtime_offline` 封装时，不是底层模型原生实时识别：
 服务端会先接收 base64 chunks，收到结束信号后调用 Qwen ASR，再用统一 SSE 输出
 `type=text` 和 `type=done`。后续切换到原生实时 ASR 时，客户端接口不需要改。
+
+如果 SSE 里看到 `...mock partial...` 或 `Mock final transcription.`，说明当前仍是
+`REALTIME_ASR_PROVIDER=realtime_mock`。要让实时接口返回真实 Qwen 识别文本，请把配置改为：
+
+```env
+ASR_PROVIDER=openai_chat_audio
+ASR_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+ASR_API_KEY=<你的 DashScope API Key>
+ASR_MODEL=qwen3-asr-flash
+REALTIME_ASR_PROVIDER=realtime_offline
+```
+
+在 Web 页面「服务配置」里对应设置为：接口类型 `openai_chat_audio`，实时接口类型
+`realtime_offline`。设置后先点「测试连接」或调用 `POST /asr/ping`，确认 `ok=true`。
+
+`realtime_offline` 会先缓存 base64 音频，收到 `is_final=true` 或 `/end` 后才调用真实 ASR；
+它返回的流是模拟流式，不是模型原生低延迟实时。需要原生实时时，请使用 `realtime_http`
+并接入符合本项目实时协议的下游服务。
 """
 
 REALTIME_AUDIO_DOC = """
@@ -238,6 +264,14 @@ data: {"type":"done","stream":"realtime","id":"...","text":"","is_final":true,"s
 - `type=error`：识别失败或上游异常。
 - `stream=realtime`，`id=session_id`。
 - `source_event` 保留底层事件名，例如 `online`、`final`、`done`、`error`，用于调试。
+
+真实数据配置：
+
+- 默认 `REALTIME_ASR_PROVIDER=realtime_mock` 只返回演示文本，例如 `...mock partial...`。
+- 使用 Qwen3-ASR-Flash 时，把 `REALTIME_ASR_PROVIDER` 改成 `realtime_offline`，并同时配置
+  `ASR_PROVIDER=openai_chat_audio`、`ASR_BASE_URL`、`ASR_API_KEY`、`ASR_MODEL=qwen3-asr-flash`。
+- `realtime_offline` 只有在收到结束信号后才调用真实 ASR；调用方必须发送
+  `{"audio":"","is_final":true}` 或调用 `POST /asr/realtime/{session_id}/end`。
 
 如果启用了访问令牌，浏览器 `EventSource` 不能加 Header，可使用
 `?token=你的token` 查询参数。
