@@ -81,14 +81,25 @@ STANDARD_FILE_ASR_DOC = """
 调用顺序：
 
 1. `POST /asr/file` 上传 `multipart/form-data` 文件，字段名必须是 `file`。
-2. 从返回值里取 `task_id` 或 `events_url`。
+2. 从返回值里立即取出并保存 `task_id`、`events_url`、`result_url`。
+   `task_id` 是本次文件转写任务的唯一主键；切页面、SSE 断线或稍后查询时，都用它找回任务。
 3. `GET /asr/file/{task_id}/events` 订阅 SSE，实时接收分片识别事件。
 4. 任务完成后可 `GET /asr/file/{task_id}/result` 获取完整 JSON 结果。
 
 返回事件说明：
 
-- `event: segment`：单个分片识别结果，`data` 是 `SegmentEvent` JSON。
+- `event: segment`：单个分片识别结果，`data` 是 `SegmentEvent` JSON；
+  每条 `data` 都包含 `task_id`，用于把分片事件归属到对应任务。
 - `event: done`：任务结束，`data` 是最终任务状态。
+
+重要约定：
+
+- 调用方应以 `POST /asr/file` 的响应作为 `task_id` 的可靠来源，并立刻保存。
+- `event: segment` 里的 `data.task_id` 是冗余带出，方便事件关联和日志排查；不要等第一条
+  `segment` 到达后才保存任务 ID，因为切分、排队、上游识别或失败场景可能导致分片延迟或不存在。
+- 页面切走或 SSE 断开后，用已保存的 `task_id` 重新请求
+  `/asr/file/{task_id}/events`；如果任务已经结束，使用 `/asr/file/{task_id}/result`
+  取最终结果。
 
 当前服务端已经接入 Qwen ASR；这个接口屏蔽了底层 provider 差异，调用方只需要按
 标准上传文件和订阅 SSE。
@@ -109,6 +120,15 @@ data: {"task_id":"...","segment_id":1,"start":0.0,"end":30.0,"text":"...","is_fi
 event: done
 data: {"task_id":"...","status":"done","progress":1.0}
 ```
+
+`segment.data.task_id` 会在每条分片事件中返回，用于前端多任务并行、页面切换后的事件归属、
+日志排查和断线恢复。但任务 ID 的可靠来源仍然是 `POST /asr/file` 的响应；客户端应在上传
+成功后立即保存它。不要依赖第一条 `segment` 才拿 `task_id`，因为第一条分片可能在切分、
+排队或上游识别完成后才出现，失败时也可能不会出现。
+
+页面切走或 SSE 断开后，用保存的 `task_id` 重新连接
+`/asr/file/{task_id}/events`。如果任务已经完成，建议直接请求
+`/asr/file/{task_id}/result` 获取最终结果。
 
 如果启用了访问令牌，浏览器 `EventSource` 不能加 Header，可使用
 `?token=你的token` 查询参数。

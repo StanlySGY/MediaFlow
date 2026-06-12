@@ -59,14 +59,21 @@ realtime ASR，调用方仍然使用同一套接口。
 调用顺序：
 
 1. `POST /asr/file` 使用 `multipart/form-data` 上传文件，字段名固定为 `file`。
-2. 从响应中读取 `task_id`、`events_url`、`result_url`。
+2. 从响应中立即读取并保存 `task_id`、`events_url`、`result_url`。
+   `task_id` 是本次文件转写任务的唯一主键，也是切页面、断线或稍后查询时找回任务的依据。
 3. `GET /asr/file/{task_id}/events` 订阅 SSE，实时接收分片识别结果。
 4. `GET /asr/file/{task_id}/result` 获取最终完整 JSON 结果。
 
 文件接口 SSE 事件：
 
-- `event: segment`：单个分片识别结果，包含 `segment_id`、`start`、`end`、`text`。
+- `event: segment`：单个分片识别结果，`data.task_id` 会随每条分片事件返回，
+  便于调用方把事件归属到对应任务；同时包含 `segment_id`、`start`、`end`、`text`。
 - `event: done`：任务结束，包含最终任务状态。
+
+注意：不要等第一个 `segment` 才保存 `task_id`。有些文件需要等待切分或上游识别后才会
+产生第一条分片事件，失败场景也可能没有分片。可靠做法是在 `POST /asr/file` 成功后立刻
+保存响应里的 `task_id`；页面切走、SSE 断开或用户稍后回来时，用这个 `task_id` 重新订阅
+`/asr/file/{task_id}/events`，或直接查询 `/asr/file/{task_id}/result`。
 
 ## 鉴权说明
 

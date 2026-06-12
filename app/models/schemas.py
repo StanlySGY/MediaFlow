@@ -41,14 +41,19 @@ class Segment(BaseModel):
 
 class SegmentEvent(BaseModel):
     """SSE payload streamed to clients."""
-    task_id: str
-    segment_id: int
-    start: float
-    end: float
-    text: str
-    is_final: bool
-    elapsed_ms: float = 0.0
-    error: str | None = None
+    task_id: str = Field(
+        description=(
+            "文件转写任务 ID。每条 segment 事件都会带出，便于事件归属、断线恢复"
+            "和切页面后找回任务；可靠来源仍是 POST /asr/file 的响应。"
+        )
+    )
+    segment_id: int = Field(description="分片序号。")
+    start: float = Field(description="分片开始时间，单位秒。")
+    end: float = Field(description="分片结束时间，单位秒。")
+    text: str = Field(description="当前分片识别文本。")
+    is_final: bool = Field(description="当前分片文本是否为最终结果。")
+    elapsed_ms: float = Field(default=0.0, description="当前分片识别耗时，单位毫秒。")
+    error: str | None = Field(default=None, description="当前分片错误信息；正常时为空。")
 
 
 class TaskResult(BaseModel):
