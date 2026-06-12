@@ -1,7 +1,7 @@
 import React from 'react';
 import { CheckCircle2, Radio, XCircle } from 'lucide-react';
 import { ASRMonitorCall } from '../types';
-import { formatBytes, formatMs, formatTime, sourceLabel } from '../lib/asrMonitor';
+import { formatBytes, formatMs, formatSeconds, formatTime, sourceLabel } from '../lib/asrMonitor';
 
 const statusMeta = (status: ASRMonitorCall['status']) => {
   if (status === 'ok') return { text: '成功', cls: 'ok', icon: CheckCircle2 };
@@ -54,7 +54,32 @@ export const MonitorCallCard: React.FC<{ call: ASRMonitorCall }> = ({ call }) =>
           <div className="text-muted">请求 / 文本</div>
           <div className="font-mono text-fg-dim">{formatBytes(call.request_bytes)} / {call.text_chars} 字</div>
         </div>
+        <div>
+          <div className="text-muted">原始输入</div>
+          <div className="font-mono text-fg-dim">{call.input_bytes ? formatBytes(call.input_bytes) : '-'}</div>
+        </div>
+        <div>
+          <div className="text-muted">声明格式</div>
+          <div className="font-mono text-fg-dim truncate">{call.declared_format || '-'}</div>
+        </div>
+        <div>
+          <div className="text-muted">检测格式</div>
+          <div className="font-mono text-fg-dim truncate">{call.detected_format || '-'}</div>
+        </div>
+        <div>
+          <div className="text-muted">音频时长</div>
+          <div className="font-mono text-fg-dim">
+            {call.audio_duration_ms ? formatSeconds(call.audio_duration_ms / 1000) : '-'}
+          </div>
+        </div>
       </div>
+
+      {call.text_preview && (
+        <div className="mt-3 rounded-lg border border-border bg-white p-3">
+          <div className="text-[11px] text-muted mb-1">返回文本预览</div>
+          <div className="text-[12px] text-fg leading-relaxed break-words">{call.text_preview}</div>
+        </div>
+      )}
 
       {call.error && (
         <div className="toast err mt-3 max-w-full">

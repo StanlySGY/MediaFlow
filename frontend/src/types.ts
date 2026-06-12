@@ -107,6 +107,11 @@ export interface ASRMonitorCall {
   segment_id?: number | null;
   request_bytes: number;
   text_chars: number;
+  text_preview?: string;
+  declared_format?: string;
+  detected_format?: string;
+  input_bytes?: number;
+  audio_duration_ms?: number | null;
   error?: string | null;
   started_at: number;
   ended_at?: number | null;

@@ -111,7 +111,10 @@ class OpenAIChatAudioProvider:
                         raise ASRError(f"client error {resp.status_code}: {resp.text[:200]}")
                     result = _parse_response(resp.json())
                     asr_monitor.finish_call(
-                        call_id, ok=True, text_chars=len(result.text)
+                        call_id,
+                        ok=True,
+                        text_chars=len(result.text),
+                        text_preview=result.text,
                     )
                     return result
                 except (httpx.TimeoutException, httpx.TransportError, RetryableASRError) as e:

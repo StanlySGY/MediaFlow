@@ -132,7 +132,8 @@ data: {"type":"done","stream":"file","id":"<task_id>","task_id":"<task_id>","sta
   后续推送 `call_started`、`call_finished`。
 
 每条调用记录会包含 `provider`、`model`、`source`、`task_id`、`session_id`、`segment_id`、
-`request_bytes`、`text_chars`、`elapsed_ms`、`status`、`error`。常见 `source`：
+`request_bytes`、`text_chars`、`text_preview`、`declared_format`、`detected_format`、
+`input_bytes`、`audio_duration_ms`、`elapsed_ms`、`status`、`error`。常见 `source`：
 `file_task` 表示文件分片识别，`realtime_offline` 表示实时接口结束后封装调用文件 ASR，
 `ping` 表示「测试连接」。
 

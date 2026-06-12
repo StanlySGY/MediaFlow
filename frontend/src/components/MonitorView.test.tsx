@@ -34,6 +34,11 @@ const baseSnapshot = {
       segment_id: 1,
       request_bytes: 2048,
       text_chars: 8,
+      text_preview: '真实识别文本',
+      declared_format: 'wav',
+      detected_format: 'wav',
+      input_bytes: 4096,
+      audio_duration_ms: 1280,
       error: null,
       started_at: 1791770000,
       ended_at: 1791770001,
@@ -88,6 +93,8 @@ describe('<MonitorView />', () => {
     expect(await screen.findByText('上游调用监控')).toBeInTheDocument();
     expect(screen.getByText('qwen3-asr-flash')).toBeInTheDocument();
     expect(screen.getByText('task-123')).toBeInTheDocument();
+    expect(screen.getByText('真实识别文本')).toBeInTheDocument();
+    expect(screen.getAllByText('wav').length).toBeGreaterThan(0);
     expect(screen.getByText('1 / 200')).toBeInTheDocument();
     expect(MockEventSource.instances[0].url).toBe('/asr/monitor/events?token=t');
 
@@ -104,6 +111,11 @@ describe('<MonitorView />', () => {
           segment_id: null,
           request_bytes: 4096,
           text_chars: 0,
+          text_preview: 'oui',
+          declared_format: 'pcm_s16le',
+          detected_format: 'webm',
+          input_bytes: 4096,
+          audio_duration_ms: 900,
           error: 'upstream 500',
           elapsed_ms: 902.1,
         },

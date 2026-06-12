@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator, Iterator
 
 
 _context: ContextVar[dict[str, Any]] = ContextVar("asr_call_context", default={})
+_TEXT_PREVIEW_CHARS = 200
 
 
 @contextmanager
@@ -37,6 +38,11 @@ class ASRCallRecord:
     segment_id: int | None = None
     request_bytes: int = 0
     text_chars: int = 0
+    text_preview: str = ""
+    declared_format: str = ""
+    detected_format: str = ""
+    input_bytes: int = 0
+    audio_duration_ms: float | None = None
     error: str | None = None
     started_at: float = field(default_factory=time.time)
     ended_at: float | None = None
@@ -55,6 +61,15 @@ class ASRCallRecord:
             "segment_id": self.segment_id,
             "request_bytes": self.request_bytes,
             "text_chars": self.text_chars,
+            "text_preview": self.text_preview,
+            "declared_format": self.declared_format,
+            "detected_format": self.detected_format,
+            "input_bytes": self.input_bytes,
+            "audio_duration_ms": (
+                round(self.audio_duration_ms, 1)
+                if self.audio_duration_ms is not None
+                else None
+            ),
             "error": self.error,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
@@ -94,6 +109,10 @@ class ASRMonitor:
             session_id=ctx.get("session_id"),
             segment_id=ctx.get("segment_id"),
             request_bytes=request_bytes,
+            declared_format=str(ctx.get("declared_format") or ""),
+            detected_format=str(ctx.get("detected_format") or ""),
+            input_bytes=int(ctx.get("input_bytes") or 0),
+            audio_duration_ms=ctx.get("audio_duration_ms"),
         )
         if len(self._calls) == self._max_calls:
             evicted = self._calls[-1]
@@ -109,6 +128,7 @@ class ASRMonitor:
         *,
         ok: bool,
         text_chars: int = 0,
+        text_preview: str | None = None,
         error: str | None = None,
     ) -> None:
         call = self._by_id.get(call_id)
@@ -118,6 +138,8 @@ class ASRMonitor:
         call.elapsed_ms = max(0.0, (call.ended_at - call.started_at) * 1000.0)
         call.status = "ok" if ok else "error"
         call.text_chars = text_chars
+        if text_preview:
+            call.text_preview = text_preview[:_TEXT_PREVIEW_CHARS]
         call.error = error
         self._publish({"type": "call_finished", "call": call.to_dict()})
 

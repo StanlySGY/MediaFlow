@@ -35,7 +35,15 @@ async def test_monitor_records_successful_asr_call(tmp_path: Path):
         asr_model="qwen3-asr-flash",
     )
     async with create_provider(settings) as provider:
-        with asr_call_context(source="file_task", task_id="task-1", segment_id=2):
+        with asr_call_context(
+            source="file_task",
+            task_id="task-1",
+            segment_id=2,
+            declared_format="wav",
+            detected_format="wav",
+            input_bytes=4096,
+            audio_duration_ms=1280.0,
+        ):
             result = await provider.transcribe(_wav(tmp_path / "a.wav"))
 
     assert route.called
@@ -54,6 +62,11 @@ async def test_monitor_records_successful_asr_call(tmp_path: Path):
     assert call["segment_id"] == 2
     assert call["source"] == "file_task"
     assert call["text_chars"] == len("真实识别文本")
+    assert call["text_preview"] == "真实识别文本"
+    assert call["declared_format"] == "wav"
+    assert call["detected_format"] == "wav"
+    assert call["input_bytes"] == 4096
+    assert call["audio_duration_ms"] == 1280.0
     assert call["elapsed_ms"] >= 0
 
 

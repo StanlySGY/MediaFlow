@@ -217,6 +217,13 @@ REALTIME_ASR_PROVIDER=realtime_offline
 `realtime_offline` 会先缓存 base64 音频，收到 `is_final=true` 或 `/end` 后才调用真实 ASR；
 它返回的流是模拟流式，不是模型原生低延迟实时。需要原生实时时，请使用 `realtime_http`
 并接入符合本项目实时协议的下游服务。
+
+音频格式说明：
+
+- 实时录音裸流建议使用 `pcm_s16le`，并正确填写 `sample_rate`、`channels`。
+- 浏览器 `MediaRecorder` 常见格式是 `webm` / `ogg`，创建会话时建议把 `format` 填成实际值。
+- `realtime_offline` 会自动检测 WAV/WebM/Ogg/MP3/FLAC/M4A 等常见容器；如果检测到容器音频，
+  会先用 ffmpeg 转成 16k 单声道 WAV，再调用 Qwen ASR。监控页会显示声明格式和检测格式。
 """
 
 REALTIME_AUDIO_DOC = """
@@ -325,7 +332,9 @@ ASR_MONITOR_DOC = """
 - `summary.succeeded` / `summary.failed`：成功和失败调用数。
 - `summary.avg_elapsed_ms`：已结束调用的平均耗时。
 - `calls[]`：调用明细，包含 `source`、`task_id`、`session_id`、`segment_id`、
-  `provider`、`model`、`status`、`request_bytes`、`text_chars`、`elapsed_ms`、`error`。
+  `provider`、`model`、`status`、`request_bytes`、`text_chars`、`text_preview`、
+  `declared_format`、`detected_format`、`input_bytes`、`audio_duration_ms`、
+  `elapsed_ms`、`error`。
 - `config`：当前 ASR 配置摘要，不返回明文 API Key。
 
 常见 `source`：

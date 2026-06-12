@@ -68,6 +68,14 @@ export const formatBytes = (bytes: number) => {
 
 export const formatMs = (value: number) => `${Math.round(value || 0)} ms`;
 
+export const formatSeconds = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '-';
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return `${minutes}m${rest}s`;
+};
+
 export const formatTime = (timestamp: number) => {
   if (!timestamp) return '-';
   return new Date(timestamp * 1000).toLocaleTimeString();

@@ -49,6 +49,10 @@ class RealtimeOfflineProvider:
         self._config = RealtimeSessionCreate()
         self._started_at = 0.0
         self._audio = bytearray()
+        self._chunk_format = ""
+        self._chunk_sample_rate: int | None = None
+        self._chunk_channels: int | None = None
+        self._monitor_audio_context: dict[str, object] = {}
         self._finished = False
         self._work_dir: Path | None = None
 
@@ -78,6 +82,12 @@ class RealtimeOfflineProvider:
                 self._audio.extend(base64.b64decode(chunk.audio, validate=True))
             except Exception as e:
                 raise RealtimeASRError(f"invalid base64 audio: {e}") from e
+        if chunk.format and not self._chunk_format:
+            self._chunk_format = chunk.format
+        if chunk.sample_rate:
+            self._chunk_sample_rate = chunk.sample_rate
+        if chunk.channels:
+            self._chunk_channels = chunk.channels
         if chunk.is_final:
             await self.finish()
 
@@ -91,6 +101,7 @@ class RealtimeOfflineProvider:
                 with asr_call_context(
                     source="realtime_offline",
                     session_id=self._session_id,
+                    **self._monitor_audio_context,
                 ):
                     result = await provider.transcribe(
                         audio_path,
@@ -151,32 +162,110 @@ class RealtimeOfflineProvider:
         assert self._work_dir is not None
 
         data = bytes(self._audio)
-        fmt = (self._config.format or "").lower().strip()
-        if fmt in {"pcm", "pcm_s16le", "s16le", "raw"} and not data.startswith(b"RIFF"):
-            return self._write_pcm_wav(data)
+        fmt = self._declared_format()
+        detected = self._detect_audio_format(data)
 
-        if fmt in {"wav", "wave", "audio/wav", "audio/x-wav"} or data.startswith(
-            b"RIFF"
-        ):
+        if detected == "wav":
             path = self._work_dir / "input.wav"
             path.write_bytes(data)
+            self._set_monitor_audio_context(data, fmt, detected, path)
+            return path
+
+        if detected:
+            src = self._work_dir / f"input{self._extension_for_format(detected)}"
+            dst = self._work_dir / "input.wav"
+            src.write_bytes(data)
+            await normalize_to_wav(src, dst, timeout=self._settings.ffmpeg_timeout)
+            self._set_monitor_audio_context(data, fmt, detected, dst)
+            return dst
+
+        if fmt in {"pcm", "pcm_s16le", "s16le", "raw"}:
+            return self._write_pcm_wav(data)
+
+        if fmt in {"wav", "wave", "audio/wav", "audio/x-wav"}:
+            path = self._work_dir / "input.wav"
+            path.write_bytes(data)
+            self._set_monitor_audio_context(data, fmt, "wav", path)
             return path
 
         src = self._work_dir / f"input{self._extension_for_format(fmt)}"
         dst = self._work_dir / "input.wav"
         src.write_bytes(data)
         await normalize_to_wav(src, dst, timeout=self._settings.ffmpeg_timeout)
+        self._set_monitor_audio_context(data, fmt, fmt, dst)
         return dst
 
     def _write_pcm_wav(self, data: bytes) -> Path:
         assert self._work_dir is not None
         path = self._work_dir / "input.wav"
+        channels = max(1, int(self._chunk_channels or self._config.channels or 1))
+        sample_rate = max(
+            1,
+            int(self._chunk_sample_rate or self._config.sample_rate or 16000),
+        )
         with wave.open(str(path), "wb") as wf:
-            wf.setnchannels(max(1, int(self._config.channels or 1)))
+            wf.setnchannels(channels)
             wf.setsampwidth(2)
-            wf.setframerate(max(1, int(self._config.sample_rate or 16000)))
+            wf.setframerate(sample_rate)
             wf.writeframes(data)
+        self._set_monitor_audio_context(
+            data,
+            self._declared_format(),
+            "pcm_s16le",
+            path,
+            duration_ms=(len(data) / max(1, sample_rate * channels * 2)) * 1000.0,
+        )
         return path
+
+    def _set_monitor_audio_context(
+        self,
+        data: bytes,
+        declared_format: str,
+        detected_format: str,
+        wav_path: Path,
+        *,
+        duration_ms: float | None = None,
+    ) -> None:
+        self._monitor_audio_context = {
+            "declared_format": declared_format,
+            "detected_format": detected_format,
+            "input_bytes": len(data),
+            "audio_duration_ms": (
+                duration_ms if duration_ms is not None else self._wav_duration_ms(wav_path)
+            ),
+        }
+
+    def _declared_format(self) -> str:
+        return (self._chunk_format or self._config.format or "").lower().strip()
+
+    @staticmethod
+    def _detect_audio_format(data: bytes) -> str | None:
+        if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WAVE":
+            return "wav"
+        if data.startswith(b"\x1a\x45\xdf\xa3"):
+            return "webm"
+        if data.startswith(b"OggS"):
+            return "ogg"
+        if data.startswith(b"fLaC"):
+            return "flac"
+        if data.startswith(b"ID3") or (
+            len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0
+        ):
+            return "mp3"
+        if len(data) >= 12 and data[4:8] == b"ftyp":
+            return "m4a"
+        return None
+
+    @staticmethod
+    def _wav_duration_ms(path: Path) -> float | None:
+        try:
+            with wave.open(str(path), "rb") as wf:
+                rate = wf.getframerate()
+                if rate <= 0:
+                    return None
+                return (wf.getnframes() / rate) * 1000.0
+        except Exception:  # noqa: BLE001
+            return None
 
     @staticmethod
     def _extension_for_format(fmt: str) -> str:
