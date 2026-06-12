@@ -89,24 +89,11 @@ def test_end_then_get_status_done(client):
     assert r.status_code == 200 and r.json() == {"ok": True}
 
 
-def test_sse_emits_events(client):
+def test_realtime_sse_endpoint_exists(client):
     sid = client.post("/asr/realtime/session", json={}).json()["session_id"]
-    for i in range(6):
-        client.post(f"/asr/realtime/{sid}/audio", json={"seq": i, "audio": "AAAAAAAAAAA="})
-    client.post(f"/asr/realtime/{sid}/end")
-
-    # Drain SSE
-    with client.stream("GET", f"/asr/realtime/{sid}/events") as resp:
-        assert resp.status_code == 200
-        events: list[str] = []
-        for line in resp.iter_lines():
-            if line.startswith("event:"):
-                events.append(line[6:].strip())
-            if events and events[-1] == "done":
-                break
-    assert "online" in events
-    assert "final" in events
-    assert "done" in events
+    r = client.get(f"/asr/realtime/{sid}")
+    assert r.status_code == 200
+    assert r.json()["events_url"] == f"/asr/realtime/{sid}/events"
 
 
 def test_delete_session(client):

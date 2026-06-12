@@ -21,9 +21,12 @@ from app.config import (
     update_runtime_overrides,
 )
 from app.models.schemas import (
+    ASRStreamEvent,
+    RealtimeASREvent,
     RealtimeAudioChunk,
     RealtimeSessionCreate,
     RealtimeSessionInfo,
+    SegmentEvent,
     TaskInfo,
     TaskResult,
     TaskStatus,
@@ -88,15 +91,18 @@ STANDARD_FILE_ASR_DOC = """
 
 返回事件说明：
 
-- `event: segment`：单个分片识别结果，`data` 是 `SegmentEvent` JSON；
-  每条 `data` 都包含 `task_id`，用于把分片事件归属到对应任务。
-- `event: done`：任务结束，`data` 是最终任务状态。
+- 所有事件名统一为 `event: message`，`data` 是 `ASRStreamEvent` JSON。
+- `data.type=text`：识别文本事件。文件流每个分片都会产生一条 text 事件。
+- `data.type=done`：任务正常结束。
+- `data.type=error`：任务失败。
+- 文件流的 `data.stream=file`，`data.id=data.task_id`；每条 text 事件都包含
+  `task_id`、`segment_id`、`start`、`end`、`text`。
 
 重要约定：
 
 - 调用方应以 `POST /asr/file` 的响应作为 `task_id` 的可靠来源，并立刻保存。
-- `event: segment` 里的 `data.task_id` 是冗余带出，方便事件关联和日志排查；不要等第一条
-  `segment` 到达后才保存任务 ID，因为切分、排队、上游识别或失败场景可能导致分片延迟或不存在。
+- 文件流 `data.task_id` 是冗余带出，方便事件关联和日志排查；不要等第一条 `type=text`
+  到达后才保存任务 ID，因为切分、排队、上游识别或失败场景可能导致分片延迟或不存在。
 - 页面切走或 SSE 断开后，用已保存的 `task_id` 重新请求
   `/asr/file/{task_id}/events`；如果任务已经结束，使用 `/asr/file/{task_id}/result`
   取最终结果。
@@ -114,16 +120,20 @@ STANDARD_FILE_EVENTS_DOC = """
 事件格式：
 
 ```text
-event: segment
-data: {"task_id":"...","segment_id":1,"start":0.0,"end":30.0,"text":"...","is_final":true}
+event: message
+data: {"type":"text","stream":"file","id":"...","text":"...","is_final":true,"seq":1,"task_id":"...","segment_id":1,"start":0.0,"end":30.0}
 
-event: done
-data: {"task_id":"...","status":"done","progress":1.0}
+event: message
+data: {"type":"done","stream":"file","id":"...","text":"","is_final":true,"task_id":"...","status":"done","progress":1.0}
 ```
 
-`segment.data.task_id` 会在每条分片事件中返回，用于前端多任务并行、页面切换后的事件归属、
+这个接口和 `/asr/realtime/{session_id}/events` 的 SSE 格式一致：都监听 `event: message`，
+都解析 `data.type`、`data.stream`、`data.id`、`data.text`、`data.is_final`。文件流额外
+提供 `task_id`、`segment_id`、`start`、`end`。
+
+`data.task_id` 会在每条文件 text 事件中返回，用于前端多任务并行、页面切换后的事件归属、
 日志排查和断线恢复。但任务 ID 的可靠来源仍然是 `POST /asr/file` 的响应；客户端应在上传
-成功后立即保存它。不要依赖第一条 `segment` 才拿 `task_id`，因为第一条分片可能在切分、
+成功后立即保存它。不要依赖第一条 `type=text` 才拿 `task_id`，因为第一条分片可能在切分、
 排队或上游识别完成后才出现，失败时也可能不会出现。
 
 页面切走或 SSE 断开后，用保存的 `task_id` 重新连接
@@ -136,15 +146,23 @@ data: {"task_id":"...","status":"done","progress":1.0}
 
 STANDARD_FILE_EVENTS_RESPONSE = {
     200: {
-        "description": "SSE 事件流；持续返回 segment，结束时返回 done。",
+        "description": "SSE 事件流；统一返回 message，data.type 为 text / done / error。",
         "content": {
             "text/event-stream": {
                 "example": (
-                    'event: segment\n'
-                    'data: {"task_id":"abc","segment_id":1,"start":0.0,'
-                    '"end":30.0,"text":"识别文本","is_final":true}\n\n'
-                    'event: done\n'
-                    'data: {"task_id":"abc","status":"done","progress":1.0}\n\n'
+                    'event: message\n'
+                    'data: {"type":"text","stream":"file","id":"abc",'
+                    '"text":"识别文本","is_final":true,"seq":1,'
+                    '"session_id":null,"task_id":"abc","segment_id":1,'
+                    '"start":0.0,"end":30.0,"elapsed_ms":120.0,'
+                    '"status":null,"progress":null,"error":null,'
+                    '"source_event":"segment"}\n\n'
+                    'event: message\n'
+                    'data: {"type":"done","stream":"file","id":"abc",'
+                    '"text":"","is_final":true,"seq":null,"session_id":null,'
+                    '"task_id":"abc","segment_id":null,"start":null,"end":null,'
+                    '"elapsed_ms":0.0,"status":"done","progress":1.0,'
+                    '"error":null,"source_event":"done"}\n\n'
                 )
             }
         },
@@ -169,8 +187,8 @@ REALTIME_SESSION_DOC = """
 - `end_url`：主动结束会话地址。
 
 当前 Qwen ASR 通过 `realtime_offline` 封装时，不是底层模型原生实时识别：
-服务端会先接收 base64 chunks，收到结束信号后调用 Qwen ASR，再用 SSE 输出
-`online` / `final` / `done`。后续切换到原生实时 ASR 时，客户端接口不需要改。
+服务端会先接收 base64 chunks，收到结束信号后调用 Qwen ASR，再用统一 SSE 输出
+`type=text` 和 `type=done`。后续切换到原生实时 ASR 时，客户端接口不需要改。
 """
 
 REALTIME_AUDIO_DOC = """
@@ -200,15 +218,26 @@ REALTIME_AUDIO_DOC = """
 REALTIME_EVENTS_DOC = """
 订阅实时识别结果的 SSE 事件流。
 
-事件类型：
+事件格式与 `/asr/file/{task_id}/events` 一致，调用方只需要一套 SSE 解析逻辑：
 
-- `online`：中间识别结果。
-- `final`：最终识别文本。
-- `done`：会话结束。
-- `error`：识别失败或上游异常。
+```text
+event: message
+data: {"type":"text","stream":"realtime","id":"...","text":"中间识别结果","is_final":false,"seq":1,"session_id":"...","source_event":"online"}
 
-事件 `data` 是 `RealtimeASREvent` JSON。若 `mode=simulated_streaming`，表示当前
-底层 ASR 是离线识别，由网关模拟成流式返回。
+event: message
+data: {"type":"text","stream":"realtime","id":"...","text":"最终识别文本","is_final":true,"session_id":"...","source_event":"final"}
+
+event: message
+data: {"type":"done","stream":"realtime","id":"...","text":"","is_final":true,"session_id":"...","source_event":"done"}
+```
+
+统一字段：
+
+- `type=text`：识别文本事件。`is_final=false` 表示中间结果，`is_final=true` 表示稳定文本。
+- `type=done`：会话正常结束。
+- `type=error`：识别失败或上游异常。
+- `stream=realtime`，`id=session_id`。
+- `source_event` 保留底层事件名，例如 `online`、`final`、`done`、`error`，用于调试。
 
 如果启用了访问令牌，浏览器 `EventSource` 不能加 Header，可使用
 `?token=你的token` 查询参数。
@@ -216,19 +245,23 @@ REALTIME_EVENTS_DOC = """
 
 REALTIME_EVENTS_RESPONSE = {
     200: {
-        "description": "SSE 事件流；返回 online / final / done / error。",
+        "description": "SSE 事件流；统一返回 message，data.type 为 text / done / error。",
         "content": {
             "text/event-stream": {
                 "example": (
-                    'event: online\n'
-                    'data: {"type":"online","session_id":"abc","seq":1,'
-                    '"text":"中间识别结果","mode":"simulated_streaming"}\n\n'
-                    'event: final\n'
-                    'data: {"type":"final","session_id":"abc",'
-                    '"text":"最终识别文本","is_final":true,'
-                    '"mode":"simulated_streaming"}\n\n'
-                    'event: done\n'
-                    'data: {"type":"done","session_id":"abc","is_final":true}\n\n'
+                    'event: message\n'
+                    'data: {"type":"text","stream":"realtime","id":"abc",'
+                    '"text":"中间识别结果","is_final":false,"seq":1,'
+                    '"session_id":"abc","task_id":null,"segment_id":null,'
+                    '"start":null,"end":null,"elapsed_ms":30.0,'
+                    '"status":null,"progress":null,"error":null,'
+                    '"source_event":"online"}\n\n'
+                    'event: message\n'
+                    'data: {"type":"done","stream":"realtime","id":"abc",'
+                    '"text":"","is_final":true,"seq":null,"session_id":"abc",'
+                    '"task_id":null,"segment_id":null,"start":null,"end":null,'
+                    '"elapsed_ms":0.0,"status":null,"progress":null,'
+                    '"error":null,"source_event":"done"}\n\n'
                 )
             }
         },
@@ -239,8 +272,73 @@ REALTIME_END_DOC = """
 主动结束实时会话。
 
 等价于发送 `{"audio":"","is_final":true}` 的结束包。服务端收到结束信号后会触发
-最终识别，并通过 `/asr/realtime/{session_id}/events` 输出 `final` 和 `done`。
+最终识别，并通过 `/asr/realtime/{session_id}/events` 输出统一的 `message` 事件。
 """
+
+
+def _sse_message(payload: ASRStreamEvent) -> dict[str, str]:
+    return {"event": "message", "data": payload.model_dump_json()}
+
+
+def _standard_file_segment_sse_message(evt: SegmentEvent) -> dict[str, str]:
+    return _sse_message(
+        ASRStreamEvent(
+            type="text",
+            stream="file",
+            id=evt.task_id,
+            text=evt.text,
+            is_final=evt.is_final,
+            seq=evt.segment_id,
+            task_id=evt.task_id,
+            segment_id=evt.segment_id,
+            start=evt.start,
+            end=evt.end,
+            elapsed_ms=evt.elapsed_ms,
+            error=evt.error,
+            source_event="segment",
+        )
+    )
+
+
+def _standard_file_done_sse_message(info: TaskInfo) -> dict[str, str]:
+    event_type = "error" if info.status == TaskStatus.failed else "done"
+    return _sse_message(
+        ASRStreamEvent(
+            type=event_type,
+            stream="file",
+            id=info.task_id,
+            is_final=True,
+            task_id=info.task_id,
+            status=info.status.value,
+            progress=info.progress,
+            error=info.error,
+            source_event="done" if event_type == "done" else "error",
+        )
+    )
+
+
+def _standard_realtime_sse_message(evt: RealtimeASREvent) -> dict[str, str]:
+    if evt.type == "done":
+        event_type = "done"
+    elif evt.type == "error":
+        event_type = "error"
+    else:
+        event_type = "text"
+
+    return _sse_message(
+        ASRStreamEvent(
+            type=event_type,
+            stream="realtime",
+            id=evt.session_id,
+            text=evt.text,
+            is_final=evt.is_final or evt.type in {"final", "done"},
+            seq=evt.seq,
+            session_id=evt.session_id,
+            elapsed_ms=evt.elapsed_ms,
+            error=evt.error,
+            source_event=evt.type,
+        )
+    )
 
 
 @router.post("/task")
@@ -480,7 +578,17 @@ async def stream_task(
 async def stream_file_transcription(
     task_id: str, manager: TaskManager = Depends(get_manager)
 ) -> EventSourceResponse:
-    return await stream_task(task_id=task_id, manager=manager)
+    if manager.get_info(task_id) is None:
+        raise HTTPException(404, "task not found")
+
+    async def event_gen():
+        async for evt in manager.stream(task_id):
+            yield _standard_file_segment_sse_message(evt)
+        info = manager.get_info(task_id)
+        if info is not None:
+            yield _standard_file_done_sse_message(info)
+
+    return EventSourceResponse(event_gen())
 
 
 @router.get("/task/{task_id}/result", response_model=TaskResult)
@@ -855,16 +963,14 @@ async def stream_realtime_session(
 
     async def event_gen():
         async for evt in rm.stream(session_id):
-            yield {"event": evt.type, "data": evt.model_dump_json()}
+            yield _standard_realtime_sse_message(evt)
         info = rm.get(session_id)
         if info is not None and info.status.value not in {"done", "failed", "closed"}:
             # safety fallback if the stream ended without a terminal event
-            from app.models.schemas import RealtimeASREvent
-
             terminal = RealtimeASREvent(
                 type="done", session_id=session_id, is_final=True
             )
-            yield {"event": "done", "data": terminal.model_dump_json()}
+            yield _standard_realtime_sse_message(terminal)
 
     return EventSourceResponse(event_gen())
 

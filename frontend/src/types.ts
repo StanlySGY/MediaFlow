@@ -44,6 +44,25 @@ export interface RealtimeEvent {
   raw?: unknown;
 }
 
+export interface StandardASRStreamEvent {
+  type: 'text' | 'done' | 'error';
+  stream: 'realtime' | 'file';
+  id: string;
+  text: string;
+  is_final: boolean;
+  seq?: number | null;
+  session_id?: string | null;
+  task_id?: string | null;
+  segment_id?: number | null;
+  start?: number | null;
+  end?: number | null;
+  elapsed_ms?: number;
+  status?: string | null;
+  progress?: number | null;
+  error?: string | null;
+  source_event?: string | null;
+}
+
 export interface SystemConfig {
   provider?: string;
   model?: string;

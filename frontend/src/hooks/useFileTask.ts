@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import type { ASRSegment } from '../types';
+import type { ASRSegment, StandardASRStreamEvent } from '../types';
 import { buildSrt, buildVtt } from '../lib/subtitle';
 import { downloadFile, formatDur } from '../lib/download';
 import { errorMessage } from '../lib/errors';
@@ -167,21 +167,14 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
     const es = new EventSource(sseUrl(`/asr/file/${id}/events`));
     esRef.current = es;
 
-    const segmentHandler = (e: MessageEvent) => {
-      const seg = JSON.parse(e.data);
-      setSegments((prev) => {
-        const nextMap = new Map(prev.map(s => [s.segment_id, s]));
-        nextMap.set(seg.segment_id, seg);
-        const nextList = [...nextMap.values()];
-        setTaskFinSegs(nextList.filter(s => s.is_final).length);
-        return nextList;
-      });
-    };
-
-    const doneHandler = async () => {
+    const doneHandler = async (payload?: StandardASRStreamEvent) => {
       es.close();
       esRef.current = null;
       if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+
+      if (payload?.type === 'error') {
+        setTaskStatus('failed');
+      }
 
       const infoResponse = await authedFetch(`/asr/file/${id}`);
       if (infoResponse.ok) {
@@ -200,8 +193,36 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
       }
     };
 
-    es.addEventListener('segment', segmentHandler);
-    es.addEventListener('done', doneHandler);
+    const messageHandler = (e: MessageEvent) => {
+      const payload = JSON.parse(e.data) as StandardASRStreamEvent;
+      if (payload.stream !== 'file') return;
+
+      if (payload.type === 'text') {
+        const seg: ASRSegment = {
+          segment_id: payload.segment_id ?? payload.seq ?? 0,
+          start: payload.start ?? 0,
+          end: payload.end ?? 0,
+          text: payload.text || '',
+          is_final: payload.is_final,
+          elapsed_ms: payload.elapsed_ms || 0,
+          error: payload.error || null,
+        };
+        setSegments((prev) => {
+          const nextMap = new Map(prev.map(s => [s.segment_id, s]));
+          nextMap.set(seg.segment_id, seg);
+          const nextList = [...nextMap.values()];
+          setTaskFinSegs(nextList.filter(s => s.is_final).length);
+          return nextList;
+        });
+        return;
+      }
+
+      if (payload.type === 'done' || payload.type === 'error') {
+        doneHandler(payload);
+      }
+    };
+
+    es.addEventListener('message', messageHandler);
 
     es.onerror = () => {
       es.close();

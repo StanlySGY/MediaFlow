@@ -25,22 +25,25 @@ def test_standard_asr_openapi_docs_are_actionable(tmp_path: Path, monkeypatch):
     assert "POST /asr/file" in top_description
     assert "切页面、断线或稍后查询时找回任务" in top_description
     assert "data.task_id" in top_description
-    assert "不要等第一个 `segment` 才保存 `task_id`" in top_description
+    assert "event: message" in top_description
+    assert '"type":"text"' in top_description
+    assert "不要等第一条 `type=text` 事件才保存 `task_id`" in top_description
 
     file_post = paths["/asr/file"]["post"]
     assert "上传 WAV 文件转文字" in file_post["summary"]
     assert "调用顺序" in file_post["description"]
     assert "events_url" in file_post["description"]
     assert "POST /asr/file` 的响应作为 `task_id` 的可靠来源" in file_post["description"]
-    assert "每条 `data` 都包含 `task_id`" in file_post["description"]
+    assert "所有事件名统一为 `event: message`" in file_post["description"]
+    assert "`data.stream=file`" in file_post["description"]
     assert "页面切走或 SSE 断开后" in file_post["description"]
 
     file_events = paths["/asr/file/{task_id}/events"]["get"]
     assert "SSE" in file_events["summary"]
-    assert "event: segment" in file_events["description"]
-    assert "segment.data.task_id" in file_events["description"]
+    assert "event: message" in file_events["description"]
+    assert "data.type" in file_events["description"]
     assert "日志排查和断线恢复" in file_events["description"]
-    assert "不要依赖第一条 `segment` 才拿 `task_id`" in file_events["description"]
+    assert "不要依赖第一条 `type=text` 才拿 `task_id`" in file_events["description"]
 
     realtime_session = paths["/asr/realtime/session"]["post"]
     assert "实时录音转文字" in realtime_session["summary"]
@@ -51,10 +54,11 @@ def test_standard_asr_openapi_docs_are_actionable(tmp_path: Path, monkeypatch):
     assert "is_final=true" in realtime_audio["description"]
 
     realtime_events = paths["/asr/realtime/{session_id}/events"]["get"]
-    assert "online" in realtime_events["description"]
-    assert "simulated_streaming" in realtime_events["description"]
+    assert "event: message" in realtime_events["description"]
+    assert "stream=realtime" in realtime_events["description"]
+    assert "source_event" in realtime_events["description"]
     assert (
-        "simulated_streaming"
+        '"stream":"realtime"'
         in realtime_events["responses"]["200"]["content"]["text/event-stream"]["example"]
     )
 
@@ -67,3 +71,10 @@ def test_standard_asr_openapi_docs_are_actionable(tmp_path: Path, monkeypatch):
     task_id_description = segment_schema["properties"]["task_id"]["description"]
     assert "切页面后找回任务" in task_id_description
     assert "POST /asr/file" in task_id_description
+
+    from app.models.schemas import ASRStreamEvent
+
+    stream_schema = ASRStreamEvent.model_json_schema()
+    assert "text" in stream_schema["properties"]["type"]["enum"]
+    assert "done" in stream_schema["properties"]["type"]["enum"]
+    assert "error" in stream_schema["properties"]["type"]["enum"]

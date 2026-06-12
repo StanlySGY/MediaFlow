@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Play, Square, Trash2, Mic, Terminal, Info } from 'lucide-react';
-import { RealtimeEvent, RealtimeSession } from '../types';
+import { RealtimeEvent, RealtimeSession, StandardASRStreamEvent } from '../types';
 import { errorMessage } from '../lib/errors';
 
 interface RealtimeViewProps {
@@ -9,10 +9,9 @@ interface RealtimeViewProps {
   sseUrl: (path: string) => string;
 }
 
-// Shape of a raw SSE event payload from the realtime endpoint.
-type RawRtEvent = {
-  session_id?: string; seq?: number; text?: string;
-  is_final?: boolean; elapsed_ms?: number; mode?: string; error?: string;
+type LocalRtEvent = Partial<StandardASRStreamEvent> & {
+  mode?: string;
+  source_event?: string | null;
 };
 
 export const RealtimeView: React.FC<RealtimeViewProps> = ({
@@ -121,19 +120,17 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
     const es = new EventSource(sseUrl(`/asr/realtime/${sessId}/events`));
     sseRef.current = es;
 
-    const eventTypes = ['online', 'final', 'done', 'error'] as const;
-    eventTypes.forEach(ty => {
-      es.addEventListener(ty, (e: MessageEvent) => {
-        const ev = JSON.parse(e.data);
-        addEventLog(ty, ev);
-        
-        if (ty === 'done' || ty === 'error') {
-          es.close();
-          sseRef.current = null;
-          setIsFeeding(false);
-          feedingRef.current = false;
-        }
-      });
+    es.addEventListener('message', (e: MessageEvent) => {
+      const ev = JSON.parse(e.data) as StandardASRStreamEvent;
+      if (ev.stream !== 'realtime') return;
+      addEventLog(ev);
+
+      if (ev.type === 'done' || ev.type === 'error') {
+        es.close();
+        sseRef.current = null;
+        setIsFeeding(false);
+        feedingRef.current = false;
+      }
     });
 
     es.onerror = () => {
@@ -142,17 +139,24 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
     };
   };
 
-  const addEventLog = (type: 'online' | 'final' | 'done' | 'error', ev: RawRtEvent) => {
+  const addEventLog = (ev: LocalRtEvent) => {
     setRtEventCount(prev => prev + 1);
+    const type: RealtimeEvent['type'] =
+      ev.type === 'text'
+        ? (ev.source_event === 'final' ? 'final' : 'online')
+        : ev.type === 'done'
+          ? 'done'
+          : 'error';
     const newEv: RealtimeEvent = {
       type,
-      session_id: ev.session_id || '',
-      seq: ev.seq,
+      session_id: ev.session_id || ev.id || '',
+      seq: ev.seq ?? undefined,
       text: ev.text,
-      is_final: ev.is_final,
-      elapsed_ms: ev.elapsed_ms,
+      is_final: ev.is_final ?? undefined,
+      elapsed_ms: ev.elapsed_ms ?? undefined,
       mode: ev.mode,
-      error: ev.error,
+      error: ev.error || undefined,
+      raw: ev,
     };
     setEvents(prev => [...prev, newEv]);
   };
@@ -179,7 +183,13 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
 
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
-        addEventLog('error', { error: err.detail || `HTTP ${r.status}` });
+        addEventLog({
+          type: 'error',
+          stream: 'realtime',
+          id: session.session_id,
+          session_id: session.session_id,
+          error: err.detail || `HTTP ${r.status}`,
+        });
         return false;
       }
 
@@ -193,7 +203,13 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
       }
       return true;
     } catch (e) {
-      addEventLog('error', { error: `推送异常: ${errorMessage(e)}` });
+      addEventLog({
+        type: 'error',
+        stream: 'realtime',
+        id: session.session_id,
+        session_id: session.session_id,
+        error: `推送异常: ${errorMessage(e)}`,
+      });
       return false;
     }
   };

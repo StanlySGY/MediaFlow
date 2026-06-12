@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -43,7 +44,7 @@ class SegmentEvent(BaseModel):
     """SSE payload streamed to clients."""
     task_id: str = Field(
         description=(
-            "文件转写任务 ID。每条 segment 事件都会带出，便于事件归属、断线恢复"
+            "文件转写任务 ID。每条文件 text 事件都会带出，便于事件归属、断线恢复"
             "和切页面后找回任务；可靠来源仍是 POST /asr/file 的响应。"
         )
     )
@@ -73,6 +74,42 @@ class TaskInfo(BaseModel):
     total_segments: int = 0
     finished_segments: int = 0
     error: str | None = None
+
+
+# ---------------- Standard SSE stream ----------------
+
+class ASRStreamEvent(BaseModel):
+    """Unified SSE payload for standard ASR streaming endpoints."""
+
+    type: Literal["text", "done", "error"] = Field(
+        description="统一事件类型：text 表示有识别文本，done 表示流结束，error 表示失败。"
+    )
+    stream: Literal["realtime", "file"] = Field(
+        description="流来源：realtime 为实时录音接口，file 为上传文件接口。"
+    )
+    id: str = Field(description="统一流 ID；realtime 等于 session_id，file 等于 task_id。")
+    text: str = Field(default="", description="识别文本；type=text 时读取。")
+    is_final: bool = Field(
+        default=False,
+        description="当前 text 是否稳定。实时 online 为 false；实时 final 和文件分片为 true。",
+    )
+    seq: int | None = Field(
+        default=None,
+        description="统一序号；realtime 使用上游 seq，file 使用 segment_id。",
+    )
+    session_id: str | None = Field(default=None, description="实时会话 ID，仅 realtime 有值。")
+    task_id: str | None = Field(default=None, description="文件任务 ID，仅 file 有值。")
+    segment_id: int | None = Field(default=None, description="文件分片 ID，仅 file 有值。")
+    start: float | None = Field(default=None, description="文件分片开始时间，单位秒。")
+    end: float | None = Field(default=None, description="文件分片结束时间，单位秒。")
+    elapsed_ms: float = Field(default=0.0, description="事件对应的识别耗时，单位毫秒。")
+    status: str | None = Field(default=None, description="任务或会话状态；done/error 时常见。")
+    progress: float | None = Field(default=None, description="文件任务进度，仅 file done/error 常见。")
+    error: str | None = Field(default=None, description="错误信息；正常时为空。")
+    source_event: str | None = Field(
+        default=None,
+        description="底层原始事件名，例如 online / final / segment / done / error。",
+    )
 
 
 # ---------------- Realtime ----------------
