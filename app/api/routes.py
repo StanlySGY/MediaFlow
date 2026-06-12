@@ -75,6 +75,153 @@ ALLOWED_EXTS = {
     ".mkv",
 }
 
+STANDARD_FILE_ASR_DOC = """
+给第三方调用的标准「上传 WAV/音频文件转文字」入口。
+
+调用顺序：
+
+1. `POST /asr/file` 上传 `multipart/form-data` 文件，字段名必须是 `file`。
+2. 从返回值里取 `task_id` 或 `events_url`。
+3. `GET /asr/file/{task_id}/events` 订阅 SSE，实时接收分片识别事件。
+4. 任务完成后可 `GET /asr/file/{task_id}/result` 获取完整 JSON 结果。
+
+返回事件说明：
+
+- `event: segment`：单个分片识别结果，`data` 是 `SegmentEvent` JSON。
+- `event: done`：任务结束，`data` 是最终任务状态。
+
+当前服务端已经接入 Qwen ASR；这个接口屏蔽了底层 provider 差异，调用方只需要按
+标准上传文件和订阅 SSE。
+"""
+
+STANDARD_FILE_EVENTS_DOC = """
+订阅文件转写任务的 SSE 事件流。
+
+适用于「上传 WAV 文件转文字，流式返回文字」场景。客户端应使用支持 SSE 的方式
+保持长连接，例如浏览器 `EventSource` 或命令行 `curl -N`。
+
+事件格式：
+
+```text
+event: segment
+data: {"task_id":"...","segment_id":1,"start":0.0,"end":30.0,"text":"...","is_final":true}
+
+event: done
+data: {"task_id":"...","status":"done","progress":1.0}
+```
+
+如果启用了访问令牌，浏览器 `EventSource` 不能加 Header，可使用
+`?token=你的token` 查询参数。
+"""
+
+STANDARD_FILE_EVENTS_RESPONSE = {
+    200: {
+        "description": "SSE 事件流；持续返回 segment，结束时返回 done。",
+        "content": {
+            "text/event-stream": {
+                "example": (
+                    'event: segment\n'
+                    'data: {"task_id":"abc","segment_id":1,"start":0.0,'
+                    '"end":30.0,"text":"识别文本","is_final":true}\n\n'
+                    'event: done\n'
+                    'data: {"task_id":"abc","status":"done","progress":1.0}\n\n'
+                )
+            }
+        },
+    }
+}
+
+STANDARD_FILE_RESULT_DOC = """
+获取文件转写任务最终结果。
+
+任务未完成时返回 HTTP 202，完成后返回包含 `text`、`segments`、`duration`、
+`language`、`error` 等字段的 JSON。`segments` 中保留每个分片的时间范围和文本。
+"""
+
+REALTIME_SESSION_DOC = """
+创建一个实时录音转文字会话。
+
+给第三方调用的标准 realtime 入口。创建成功后返回：
+
+- `session_id`：后续上传音频和订阅事件都要使用。
+- `events_url`：SSE 文字流地址。
+- `audio_url`：base64 音频 chunk 上传地址。
+- `end_url`：主动结束会话地址。
+
+当前 Qwen ASR 通过 `realtime_offline` 封装时，不是底层模型原生实时识别：
+服务端会先接收 base64 chunks，收到结束信号后调用 Qwen ASR，再用 SSE 输出
+`online` / `final` / `done`。后续切换到原生实时 ASR 时，客户端接口不需要改。
+"""
+
+REALTIME_AUDIO_DOC = """
+向实时会话上传一段 base64 音频。
+
+调用方式：
+
+1. 客户端录音后按小块切分音频。
+2. 每块 base64 编码后调用本接口，`is_final=false`。
+3. 音频结束时，再发送一个 `is_final=true` 的包；此时 `audio` 可以为空字符串。
+
+请求体示例：
+
+```json
+{"seq":1,"audio":"base64音频片段","is_final":false}
+```
+
+结束包示例：
+
+```json
+{"seq":99,"audio":"","is_final":true}
+```
+
+单包解码后的大小受 `REALTIME_MAX_CHUNK_BYTES` 限制。
+"""
+
+REALTIME_EVENTS_DOC = """
+订阅实时识别结果的 SSE 事件流。
+
+事件类型：
+
+- `online`：中间识别结果。
+- `final`：最终识别文本。
+- `done`：会话结束。
+- `error`：识别失败或上游异常。
+
+事件 `data` 是 `RealtimeASREvent` JSON。若 `mode=simulated_streaming`，表示当前
+底层 ASR 是离线识别，由网关模拟成流式返回。
+
+如果启用了访问令牌，浏览器 `EventSource` 不能加 Header，可使用
+`?token=你的token` 查询参数。
+"""
+
+REALTIME_EVENTS_RESPONSE = {
+    200: {
+        "description": "SSE 事件流；返回 online / final / done / error。",
+        "content": {
+            "text/event-stream": {
+                "example": (
+                    'event: online\n'
+                    'data: {"type":"online","session_id":"abc","seq":1,'
+                    '"text":"中间识别结果","mode":"simulated_streaming"}\n\n'
+                    'event: final\n'
+                    'data: {"type":"final","session_id":"abc",'
+                    '"text":"最终识别文本","is_final":true,'
+                    '"mode":"simulated_streaming"}\n\n'
+                    'event: done\n'
+                    'data: {"type":"done","session_id":"abc","is_final":true}\n\n'
+                )
+            }
+        },
+    }
+}
+
+REALTIME_END_DOC = """
+主动结束实时会话。
+
+等价于发送 `{"audio":"","is_final":true}` 的结束包。服务端收到结束信号后会触发
+最终识别，并通过 `/asr/realtime/{session_id}/events` 输出 `final` 和 `done`。
+"""
+
 
 @router.post("/task")
 async def create_task(
@@ -139,17 +286,43 @@ async def create_task(
     return {"task_id": task_id}
 
 
-@router.post("/file")
+@router.post(
+    "/file",
+    summary="2. 上传 WAV 文件转文字（SSE 流式返回）",
+    description=STANDARD_FILE_ASR_DOC,
+    response_description="返回 task_id 以及状态、事件流、最终结果 URL。",
+)
 async def create_file_transcription(
-    file: UploadFile = File(...),
-    model: str | None = Form(default=None),
-    language: str | None = Form(default=None),
-    split_strategy: str | None = Form(default=None),
-    chunk_seconds: float | None = Form(default=None),
-    overlap_seconds: float | None = Form(default=None),
-    hotwords: str | None = Form(default=None),
-    prompt_hints: str | None = Form(default=None),
-    timestamps: bool | None = Form(default=None),
+    file: UploadFile = File(
+        ...,
+        description="要识别的 WAV/音频/视频文件。字段名固定为 file。",
+    ),
+    model: str | None = Form(default=None, description="可选：本次任务覆盖模型名称。"),
+    language: str | None = Form(default=None, description="可选：识别语言，例如 zh / en。"),
+    split_strategy: str | None = Form(
+        default=None,
+        description="可选：切分策略 fixed / silence / overlap；留空用服务端默认值。",
+    ),
+    chunk_seconds: float | None = Form(
+        default=None,
+        description="可选：每个分片目标时长，单位秒。",
+    ),
+    overlap_seconds: float | None = Form(
+        default=None,
+        description="可选：重叠切分时的重叠时长，单位秒。",
+    ),
+    hotwords: str | None = Form(
+        default=None,
+        description="可选：热词，逗号分隔；是否生效取决于底层 ASR provider。",
+    ),
+    prompt_hints: str | None = Form(
+        default=None,
+        description="可选：上下文提示词；是否生效取决于底层 ASR provider。",
+    ),
+    timestamps: bool | None = Form(
+        default=None,
+        description="可选：是否请求时间戳；上游不支持时建议传 false。",
+    ),
     manager: TaskManager = Depends(get_manager),
 ) -> dict[str, str]:
     """Standard file-ASR entrypoint.
@@ -249,7 +422,12 @@ async def get_status(
     return info
 
 
-@router.get("/file/{task_id}", response_model=TaskInfo)
+@router.get(
+    "/file/{task_id}",
+    response_model=TaskInfo,
+    summary="查询标准文件转写任务状态",
+    description="根据 `task_id` 查询上传文件转写任务的状态、进度、分片数量和错误信息。",
+)
 async def get_file_status(
     task_id: str, manager: TaskManager = Depends(get_manager)
 ) -> TaskInfo:
@@ -273,7 +451,12 @@ async def stream_task(
     return EventSourceResponse(event_gen())
 
 
-@router.get("/file/{task_id}/events")
+@router.get(
+    "/file/{task_id}/events",
+    summary="2. 订阅 WAV 文件转文字 SSE 流",
+    description=STANDARD_FILE_EVENTS_DOC,
+    responses=STANDARD_FILE_EVENTS_RESPONSE,
+)
 async def stream_file_transcription(
     task_id: str, manager: TaskManager = Depends(get_manager)
 ) -> EventSourceResponse:
@@ -292,7 +475,12 @@ async def get_result(
     return result
 
 
-@router.get("/file/{task_id}/result", response_model=TaskResult)
+@router.get(
+    "/file/{task_id}/result",
+    response_model=TaskResult,
+    summary="获取标准文件转写最终结果",
+    description=STANDARD_FILE_RESULT_DOC,
+)
 async def get_file_result(
     task_id: str, manager: TaskManager = Depends(get_manager)
 ) -> TaskResult | Response:
@@ -323,7 +511,12 @@ async def get_subtitle(
     )
 
 
-@router.get("/file/{task_id}/subtitle", response_class=PlainTextResponse)
+@router.get(
+    "/file/{task_id}/subtitle",
+    response_class=PlainTextResponse,
+    summary="下载标准文件转写字幕",
+    description="下载指定文件转写任务的 SRT 或 VTT 字幕。任务未完成时返回 409。",
+)
 async def get_file_subtitle(
     task_id: str,
     format: str = "srt",
@@ -557,7 +750,13 @@ async def get_segment_raw(
 # -------------------- Realtime --------------------
 
 
-@router.post("/realtime/session", response_model=RealtimeSessionInfo)
+@router.post(
+    "/realtime/session",
+    response_model=RealtimeSessionInfo,
+    summary="1. 实时录音转文字：创建会话",
+    description=REALTIME_SESSION_DOC,
+    response_description="返回实时会话 ID、音频上传 URL、SSE 订阅 URL 和结束 URL。",
+)
 async def create_realtime_session(
     config: RealtimeSessionCreate,
     rm: RealtimeManager = Depends(get_realtime_manager),
@@ -568,7 +767,11 @@ async def create_realtime_session(
         raise HTTPException(503, str(e))
 
 
-@router.get("/realtime/sessions")
+@router.get(
+    "/realtime/sessions",
+    summary="查看实时识别会话和可用 provider",
+    description="返回当前活跃实时会话、已注册 realtime provider、当前生效 provider。",
+)
 async def list_realtime_sessions(
     rm: RealtimeManager = Depends(get_realtime_manager),
 ) -> dict:
@@ -579,7 +782,12 @@ async def list_realtime_sessions(
     }
 
 
-@router.get("/realtime/{session_id}", response_model=RealtimeSessionInfo)
+@router.get(
+    "/realtime/{session_id}",
+    response_model=RealtimeSessionInfo,
+    summary="查询实时识别会话状态",
+    description="根据 `session_id` 查询当前实时会话的状态、已接收 chunk 数和字节数。",
+)
 async def get_realtime_session(
     session_id: str,
     rm: RealtimeManager = Depends(get_realtime_manager),
@@ -590,7 +798,12 @@ async def get_realtime_session(
     return info
 
 
-@router.post("/realtime/{session_id}/audio")
+@router.post(
+    "/realtime/{session_id}/audio",
+    summary="1. 实时录音转文字：上传 base64 音频 chunk",
+    description=REALTIME_AUDIO_DOC,
+    response_description="返回当前 chunk 是否接收成功。",
+)
 async def push_realtime_audio(
     session_id: str,
     chunk: RealtimeAudioChunk,
@@ -607,7 +820,12 @@ async def push_realtime_audio(
     return {"ok": True, "seq": chunk.seq}
 
 
-@router.get("/realtime/{session_id}/events")
+@router.get(
+    "/realtime/{session_id}/events",
+    summary="1. 实时录音转文字：订阅 SSE 文字流",
+    description=REALTIME_EVENTS_DOC,
+    responses=REALTIME_EVENTS_RESPONSE,
+)
 async def stream_realtime_session(
     session_id: str,
     rm: RealtimeManager = Depends(get_realtime_manager),
@@ -631,7 +849,11 @@ async def stream_realtime_session(
     return EventSourceResponse(event_gen())
 
 
-@router.post("/realtime/{session_id}/end")
+@router.post(
+    "/realtime/{session_id}/end",
+    summary="1. 实时录音转文字：结束会话",
+    description=REALTIME_END_DOC,
+)
 async def end_realtime_session(
     session_id: str,
     rm: RealtimeManager = Depends(get_realtime_manager),
@@ -643,7 +865,11 @@ async def end_realtime_session(
     return {"ok": True}
 
 
-@router.delete("/realtime/{session_id}")
+@router.delete(
+    "/realtime/{session_id}",
+    summary="删除实时识别会话",
+    description="关闭并释放实时会话资源。通常测试完成或客户端退出时调用。",
+)
 async def delete_realtime_session(
     session_id: str,
     rm: RealtimeManager = Depends(get_realtime_manager),
