@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Play, Square, Trash2, Mic, Terminal, Info } from 'lucide-react';
 import { RealtimeEvent, RealtimeSession, StandardASRStreamEvent } from '../types';
 import { errorMessage } from '../lib/errors';
+import { RealtimeRecorderPanel } from './RealtimeRecorderPanel';
 
 interface RealtimeViewProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
@@ -297,6 +298,8 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
 
   return (
     <div className="flex flex-col gap-6">
+      <RealtimeRecorderPanel authedFetch={authedFetch} sseUrl={sseUrl} />
+
       {/* Intro hint */}
       <div className="panel p-4 flex items-start gap-3">
         <Info className="w-4 h-4 text-accent shrink-0 mt-0.5" />
