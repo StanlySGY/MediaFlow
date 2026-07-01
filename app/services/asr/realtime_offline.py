@@ -107,7 +107,9 @@ class RealtimeOfflineProvider:
                         audio_path,
                         prompt=self._config.prompt_hints or None,
                     )
-            await self._emit_text(result.text)
+            # Build text with speaker labels if words have speaker info
+            text_with_speakers = self._build_text_with_speakers(result.words, result.text)
+            await self._emit_text(text_with_speakers)
         except Exception as e:  # noqa: BLE001
             self._queue.put_nowait(
                 RealtimeASREvent(
@@ -310,6 +312,21 @@ class RealtimeOfflineProvider:
 
     def _elapsed_ms(self) -> float:
         return (time.perf_counter() - self._started_at) * 1000.0
+
+    def _build_text_with_speakers(self, words: list, fallback_text: str) -> str:
+        """Build text with speaker labels if available, otherwise use fallback text."""
+        if not words or not any(w.speaker for w in words):
+            return fallback_text
+        lines: list[str] = []
+        current_speaker: str | None = None
+        for w in words:
+            if w.speaker and w.speaker != current_speaker:
+                current_speaker = w.speaker
+                if lines:
+                    lines.append("\n")
+                lines.append(f"[{current_speaker}] ")
+            lines.append(w.word)
+        return "".join(lines).strip()
 
     def _cleanup(self) -> None:
         if self._work_dir is not None:

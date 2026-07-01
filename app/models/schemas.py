@@ -221,3 +221,4 @@ class RealtimeASREvent(BaseModel):
     )
     error: str | None = Field(default=None, description="错误信息；仅 error 事件有值。")
     raw: dict | None = Field(default=None, description="下游原始事件，调试用。")
+    speaker: str | None = Field(default=None, description="说话人标签；开启说话人分离时返回。")
