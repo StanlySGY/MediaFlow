@@ -12,6 +12,7 @@ from app.services.asr.base import (
     ASRProvider,
     ASRResult,
     RetryableASRError,
+    WordTime,
 )
 from app.services.asr_monitoring import asr_monitor
 
@@ -83,7 +84,10 @@ class OpenAIChatAudioProvider:
         return {
             "model": self._model,
             "messages": messages,
-            "asr_options": {"enable_itn": False},
+            "asr_options": {
+                "enable_itn": False,
+                "diarization_enabled": True,
+            },
         }
 
     async def transcribe(self, file_path: Path, *, prompt: str | None = None) -> ASRResult:
@@ -142,7 +146,25 @@ def _parse_response(payload: dict) -> ASRResult:
         text = "".join(p.get("text", "") for p in content if isinstance(p, dict))
     else:
         text = (content or "").strip()
-    return ASRResult(text=text, language=None, duration=None, words=[], raw=payload)
+
+    # Parse segments with speaker info if available
+    segments_data = payload.get("segments") or []
+    words = []
+    if segments_data:
+        for seg in segments_data:
+            speaker = seg.get("speaker")
+            start = seg.get("start", 0.0)
+            end = seg.get("end", 0.0)
+            seg_text = seg.get("text", "")
+            if seg_text:
+                words.append(WordTime(
+                    word=seg_text,
+                    start=start,
+                    end=end,
+                    speaker=speaker,
+                ))
+
+    return ASRResult(text=text, language=None, duration=None, words=words, raw=payload)
 
 
 _: type[ASRProvider] = OpenAIChatAudioProvider

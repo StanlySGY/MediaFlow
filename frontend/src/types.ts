@@ -6,6 +6,7 @@ export interface ASRSegment {
   is_final: boolean;
   elapsed_ms?: number;
   error?: string | null;
+  speaker?: string | null;
 }
 
 export interface ASRTask {

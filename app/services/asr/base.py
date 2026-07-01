@@ -18,6 +18,7 @@ class WordTime:
     word: str
     start: float
     end: float
+    speaker: str | None = None
 
 
 @dataclass(frozen=True)

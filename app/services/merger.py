@@ -30,8 +30,8 @@ def _dedupe_join(prev: str, nxt: str, *, min_overlap: int = 4) -> str:
         return nxt
     if not nxt:
         return prev
-    tail = prev[-200:]
-    head = nxt[:200]
+    tail = prev[-500:]
+    head = nxt[:500]
     i, j, ln = _longest_common_substring(tail, head, min_len=min_overlap)
     if ln == 0:
         return prev + nxt
@@ -43,21 +43,34 @@ def _dedupe_join(prev: str, nxt: str, *, min_overlap: int = 4) -> str:
 def _is_cjk(ch: str) -> bool:
     if not ch:
         return False
+    cp = ord(ch)
     return (
-        "一" <= ch <= "鿿"
-        or "぀" <= ch <= "ヿ"
-        or "㐀" <= ch <= "䶿"
-        or "＀" <= ch <= "￯"
+        (0x4E00 <= cp <= 0x9FFF)      # CJK Unified Ideographs
+        or (0x3400 <= cp <= 0x4DBF)   # CJK Extension A
+        or (0x20000 <= cp <= 0x2A6DF) # CJK Extension B
+        or (0x2A700 <= cp <= 0x2B73F) # CJK Extension C
+        or (0x2B740 <= cp <= 0x2B81F) # CJK Extension D
+        or (0xF900 <= cp <= 0xFAFF)   # CJK Compatibility Ideographs
+        or (0x3000 <= cp <= 0x303F)   # CJK Symbols and Punctuation
+        or (0x3040 <= cp <= 0x309F)   # Hiragana
+        or (0x30A0 <= cp <= 0x30FF)   # Katakana
     )
 
 
 def _join_words(words: list[Word]) -> str:
     out: list[str] = []
+    current_speaker: str | None = None
     for w in words:
         token = w.word
         if not token:
             continue
-        if out:
+        # Insert speaker label when speaker changes
+        if w.speaker and w.speaker != current_speaker:
+            current_speaker = w.speaker
+            if out:
+                out.append("\n")
+            out.append(f"[{current_speaker}] ")
+        elif out:
             prev_last = out[-1][-1] if out[-1] else ""
             curr_first = token[0]
             if not (_is_cjk(prev_last) or _is_cjk(curr_first)):
@@ -83,12 +96,16 @@ def _merge_with_timestamps(segments: list[Segment]) -> tuple[str, list[Word]]:
             out.extend(seg.words)
             continue
         prev_end = out[-1].end
-        if seg.words[0].start < prev_end:
-            cut = (seg.words[0].start + prev_end) / 2
-            while out and out[-1].start >= cut:
+        seg_start = seg.words[0].start
+        if seg_start < prev_end:
+            # 找到重叠区域的中点作为裁剪位置
+            overlap_mid = (seg_start + prev_end) / 2
+            # 移除前一片段中与当前片段重叠的部分
+            while out and out[-1].start >= overlap_mid:
                 out.pop()
+            # 添加当前片段中不重叠的部分
             for w in seg.words:
-                if w.start >= cut:
+                if w.start >= overlap_mid:
                     out.append(w)
         else:
             out.extend(seg.words)

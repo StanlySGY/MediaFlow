@@ -153,6 +153,12 @@ export const SegmentList: React.FC<SegmentListProps> = ({
                     <Timer className="w-3 h-3 text-muted" />
                     <span>{elapsed}</span>
                   </span>
+
+                  {seg.speaker && (
+                    <span className="flex items-center gap-1 text-[11px] font-mono font-medium px-2.5 py-1 rounded-full bg-accent/10 border border-accent/20 text-accent">
+                      <span>{seg.speaker}</span>
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex-1 min-w-0">

@@ -21,6 +21,7 @@ class Word(BaseModel):
     word: str
     start: float
     end: float
+    speaker: str | None = None
 
 
 class Segment(BaseModel):
