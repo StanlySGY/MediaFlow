@@ -11,8 +11,8 @@ from app.services.asr.base import (
     ASRError,
     ASRProvider,
     ASRResult,
-    RetryableASRError,
     WordTime,
+    RetryableASRError,
 )
 from app.services.asr_monitoring import asr_monitor
 
@@ -84,10 +84,7 @@ class OpenAIChatAudioProvider:
         return {
             "model": self._model,
             "messages": messages,
-            "asr_options": {
-                "enable_itn": False,
-                "diarization_enabled": True,
-            },
+            "asr_options": {"enable_itn": False, "diarization_enabled": True},
         }
 
     async def transcribe(self, file_path: Path, *, prompt: str | None = None) -> ASRResult:
@@ -152,7 +149,7 @@ def _parse_response(payload: dict) -> ASRResult:
     words = []
     if segments_data:
         for seg in segments_data:
-            speaker = seg.get("speaker")
+            speaker = seg.get("speaker") or seg.get("speaker_id")
             start = seg.get("start", 0.0)
             end = seg.get("end", 0.0)
             seg_text = seg.get("text", "")
@@ -163,6 +160,29 @@ def _parse_response(payload: dict) -> ASRResult:
                     end=end,
                     speaker=speaker,
                 ))
+
+    # If no segments but text contains speaker labels, parse them
+    if not words and text:
+        import re
+        # Match patterns like [SPEAKER_00] text or [说话人1] text
+        speaker_pattern = re.compile(r'\[([^\]]+)\]\s*')
+        parts = speaker_pattern.split(text)
+        if len(parts) > 1:
+            current_speaker = None
+            i = 0
+            while i < len(parts):
+                if i % 2 == 1:  # Odd indices are speaker labels
+                    current_speaker = parts[i]
+                else:
+                    seg_text = parts[i].strip()
+                    if seg_text:
+                        words.append(WordTime(
+                            word=seg_text,
+                            start=0.0,
+                            end=0.0,
+                            speaker=current_speaker,
+                        ))
+                i += 1
 
     return ASRResult(text=text, language=None, duration=None, words=words, raw=payload)
 
