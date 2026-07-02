@@ -84,11 +84,11 @@ class OpenAIChatAudioProvider:
                 },
             ],
         }]
-        return {
+        body = {
             "model": self._model,
             "messages": messages,
-            "asr_options": {"enable_itn": False, "diarization_enabled": True},
         }
+        return body
 
     async def transcribe(self, file_path: Path, *, prompt: str | None = None) -> ASRResult:
         if self._client is None:
