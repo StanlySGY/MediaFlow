@@ -77,7 +77,10 @@ class OpenAIChatAudioProvider:
             "content": [
                 {
                     "type": "input_audio",
-                    "input_audio": {"data": f"data:audio/wav;base64,{audio_b64}"},
+                    "input_audio": {
+                        "data": f"data:audio/wav;base64,{audio_b64}",
+                        "format": "wav",
+                    },
                 },
             ],
         }]
