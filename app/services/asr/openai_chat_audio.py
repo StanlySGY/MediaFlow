@@ -136,16 +136,24 @@ class OpenAIChatAudioProvider:
 
 
 def _parse_response(payload: dict) -> ASRResult:
+    import re
+
     choices = payload.get("choices") or []
     if not choices:
         raise ASRError("chat completion returned no choices")
     msg = choices[0].get("message") or {}
     content = msg.get("content")
     if isinstance(content, list):
-        # multimodal output, rare for pure ASR — concat any text parts
         text = "".join(p.get("text", "") for p in content if isinstance(p, dict))
     else:
         text = (content or "").strip()
+
+    # Parse vLLM Qwen3-ASR format: "language Chinese<asr_text>识别文本"
+    language = None
+    m = re.match(r"language\s+(\S+)<asr_text>(.*)", text, re.DOTALL)
+    if m:
+        language = m.group(1)
+        text = m.group(2).strip()
 
     # Parse segments with speaker info if available
     segments_data = payload.get("segments") or []
