@@ -1,0 +1,12 @@
+services:
+  qwen3-asr:
+    build: .
+    image: qwen3-asr:1.0.0
+    container_name: qwen3-asr
+    restart: unless-stopped
+    ports:
+      - "8022:8022"
+    volumes:
+      - ./models:/app/models
+    environment:
+      - TZ=Asia/Shanghai
