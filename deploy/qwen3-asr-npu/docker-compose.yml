@@ -1,12 +1,37 @@
+# Qwen3-ASR NPU 部署配置
+# 使用前请确保：
+# 1. 已安装 NPU 驱动（npu-smi info 可正常执行）
+# 2. 模型文件已放置在 /home/models/Qwen3-ASR-1.7B/
+
 services:
   qwen3-asr:
     build: .
-    image: qwen3-asr:1.0.0
+    image: qwen3-asr-npu:latest
     container_name: qwen3-asr
     restart: unless-stopped
     ports:
+      # ASR 服务端口
       - "8022:8022"
     volumes:
-      - ./models:/app/models
+      # 模型文件目录（宿主机路径:容器路径）
+      - /home/models/Qwen3-ASR-1.7B:/app/models/Qwen3-ASR-1.7B
     environment:
       - TZ=Asia/Shanghai
+      # 指定 NPU 设备（0、1、2...根据 npu-smi info 结果修改）
+      - ASCEND_RT_VISIBLE_DEVICES=0
+    devices:
+      # NPU 设备映射（数字需与 ASCEND_RT_VISIBLE_DEVICES 一致）
+      - /dev/davinci0:/dev/davinci0
+      - /dev/davinci_manager:/dev/davinci_manager
+      - /dev/devmm_svm:/dev/devmm_svm
+      - /dev/hisi_hdc:/dev/hisi_hdc
+    # 共享内存（NPU 推理需要）
+    shm_size: "1g"
+    # Ascend 驱动挂载
+    volumes:
+      - /usr/local/dcmi:/usr/local/dcmi
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
+      - /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/
+      - /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version
+      - /etc/ascend_install.info:/etc/ascend_install.info
+      - /home/models/Qwen3-ASR-1.7B:/app/models/Qwen3-ASR-1.7B

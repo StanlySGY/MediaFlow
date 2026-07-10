@@ -1,33 +1,28 @@
-# Qwen3-ASR-1.7B 部署文档
+# Qwen3-ASR-1.7B NPU 部署文档
 
 ## 一、环境要求
 
 - 华为昇腾 NPU（Atlas 800I A2 等）
-- Docker 已安装
+- Docker + Docker Compose
 - NPU 驱动已安装（`npu-smi info` 可正常执行）
 
-## 二、文件清单
+## 二、部署步骤
 
-| 文件 | 说明 |
-|------|------|
-| `qwen3-asr-1.0.0-aarch64.tar.gz` | Docker 镜像 |
-| `DEPLOY.md` | 本文档 |
-
-模型文件 `/home/models/Qwen3-ASR-1.7B/` 已在服务器上，无需额外拷贝。
-
-## 三、部署步骤
-
-### 1. 加载镜像
+### 1. 进入部署目录
 
 ```bash
-docker load -i qwen3-asr-1.0.0-aarch64.tar.gz
+cd /path/to/MediaFlow/deploy/qwen3-asr-npu
 ```
 
-### 2. 停止旧容器（如有）
+### 2. 确认模型文件位置
+
+模型文件应在 `/home/models/Qwen3-ASR-1.7B/` 目录下：
 
 ```bash
-docker rm -f qwen3-asr-1.7b 2>/dev/null
+ls /home/models/Qwen3-ASR-1.7B/
 ```
+
+如果模型文件在其他位置，修改 `docker-compose.yml` 中的挂载路径。
 
 ### 3. 查看 NPU 卡号
 
@@ -37,46 +32,44 @@ npu-smi info
 
 选择一张空闲的卡，记下卡号（0、1、2...）。
 
-### 4. 启动容器
+### 4. 修改配置（如需要）
 
-将下面命令中的 `2` 替换为实际的卡号：
+编辑 `docker-compose.yml`，修改 NPU 卡号：
 
-```bash
-docker run -dit \
---name qwen3-asr \
---shm-size=1g \
---device /dev/davinci2 \
---device /dev/davinci_manager \
---device /dev/devmm_svm \
---device /dev/hisi_hdc \
--v /usr/local/dcmi:/usr/local/dcmi \
--v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
--v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
--v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version \
--v /etc/ascend_install.info:/etc/ascend_install.info \
--v /home/models/Qwen3-ASR-1.7B:/app/models/Qwen3-ASR-1.7B \
--p 8022:8022 \
--e ASCEND_RT_VISIBLE_DEVICES=2 \
-qwen3-asr:1.0.0
+```yaml
+environment:
+  - ASCEND_RT_VISIBLE_DEVICES=0  # 改为实际卡号
+
+devices:
+  - /dev/davinci0:/dev/davinci0  # 改为实际卡号
 ```
 
-> 注意：`--device /dev/davinci2` 和 `ASCEND_RT_VISIBLE_DEVICES=2` 中的数字要一致，且与 `npu-smi info` 中的卡号一致。
-
-### 5. 查看日志
+### 5. 构建并启动服务
 
 ```bash
-docker logs -f qwen3-asr
+# 构建镜像（首次需要，后续直接启动）
+docker-compose build
+
+# 启动服务
+docker-compose up -d
+```
+
+### 6. 查看日志
+
+```bash
+docker-compose logs -f
 ```
 
 看到以下内容说明启动成功：
 
 ```
-Loading model from /app/models/Qwen3-ASR-1.7B...
-Model ready
-Start uvicorn 0.0.0.0:8022
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8022
 ```
 
-### 6. 测试接口
+### 7. 测试接口
 
 ```bash
 # 查看模型列表
@@ -87,7 +80,7 @@ curl http://localhost:8022/v1/audio/transcriptions \
   -F "file=@test.wav"
 ```
 
-## 四、MediaFlow 配置
+## 三、MediaFlow 配置
 
 在 MediaFlow 页面「服务配置」中设置：
 
@@ -99,48 +92,72 @@ curl http://localhost:8022/v1/audio/transcriptions \
 | API 密钥 | （留空） |
 | 识别语言 | `zh` |
 
-## 五、常用操作
+## 四、常用操作
 
 ```bash
 # 查看日志
-docker logs -f qwen3-asr
+docker-compose logs -f
 
-# 重启容器
-docker restart qwen3-asr
+# 重启服务
+docker-compose restart
 
-# 停止容器
-docker stop qwen3-asr
+# 停止服务
+docker-compose down
 
-# 删除容器
-docker rm -f qwen3-asr
+# 重新构建并启动
+docker-compose down && docker-compose build && docker-compose up -d
 
 # 查看容器状态
 docker ps | grep qwen3-asr
 ```
 
-## 六、切换 NPU 卡号
+## 五、切换 NPU 卡号
 
-如需切换到其他卡，先停止并删除旧容器，再用新卡号启动：
+修改 `docker-compose.yml` 中的两个地方：
+
+```yaml
+environment:
+  - ASCEND_RT_VISIBLE_DEVICES=1  # 改为新卡号
+
+devices:
+  - /dev/davinci1:/dev/davinci1  # 改为新卡号
+```
+
+然后重启服务：
 
 ```bash
-# 停止并删除
-docker rm -f qwen3-asr
+docker-compose down && docker-compose up -d
+```
 
-# 用第 0 号卡启动
-docker run -dit \
---name qwen3-asr \
---shm-size=1g \
---device /dev/davinci0 \
---device /dev/davinci_manager \
---device /dev/devmm_svm \
---device /dev/hisi_hdc \
--v /usr/local/dcmi:/usr/local/dcmi \
--v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
--v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
--v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version \
--v /etc/ascend_install.info:/etc/ascend_install.info \
--v /home/models/Qwen3-ASR-1.7B:/app/models/Qwen3-ASR-1.7B \
--p 8022:8022 \
--e ASCEND_RT_VISIBLE_DEVICES=0 \
-qwen3-asr:1.0.0
+## 六、故障排查
+
+### 模型加载失败
+
+```bash
+# 检查模型文件是否完整
+ls -la /home/models/Qwen3-ASR-1.7B/
+
+# 检查容器内模型路径
+docker exec -it qwen3-asr ls /app/models/Qwen3-ASR-1.7B/
+```
+
+### NPU 设备不可用
+
+```bash
+# 检查 NPU 状态
+npu-smi info
+
+# 检查容器内设备
+docker exec -it qwen3-asr ls /dev/davinci*
+```
+
+### 端口被占用
+
+```bash
+# 查看 8022 端口占用
+lsof -i:8022
+
+# 修改 docker-compose.yml 中的端口映射
+ports:
+  - "8023:8022"  # 改为其他端口
 ```
