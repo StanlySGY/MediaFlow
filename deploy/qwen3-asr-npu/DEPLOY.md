@@ -6,7 +6,7 @@
 - Docker + Docker Compose
 - NPU 驱动已安装（`npu-smi info` 可正常执行）
 
-## 二、部署步骤
+## 二、在线部署（服务器可联网）
 
 ### 1. 进入部署目录
 
@@ -80,7 +80,82 @@ curl http://localhost:8022/v1/audio/transcriptions \
   -F "file=@test.wav"
 ```
 
-## 三、MediaFlow 配置
+## 三、离线部署（服务器无网络）
+
+适用于 NPU 服务器无法联网的场景。需要在本地有网络的机器上构建镜像，然后传输到服务器。
+
+### 步骤 1：在本地机器构建镜像
+
+```bash
+# 克隆代码
+git clone https://github.com/StanlySGY/MediaFlow.git
+cd MediaFlow/deploy/qwen3-asr-npu
+
+# 构建镜像
+docker build -t qwen3-asr-npu:latest .
+
+# 导出镜像为 tar 文件（约 8-10GB）
+docker save qwen3-asr-npu:latest -o qwen3-asr-npu.tar
+```
+
+### 步骤 2：传输到 NPU 服务器
+
+```bash
+# 方式一：SCP 传输
+scp qwen3-asr-npu.tar user@npu-server:/home/user/
+
+# 方式二：USB 拷贝
+# 将 qwen3-asr-npu.tar 拷贝到 USB 盘，插入服务器后复制
+```
+
+### 步骤 3：在 NPU 服务器导入镜像
+
+```bash
+# 导入镜像
+docker load -i qwen3-asr-npu.tar
+
+# 验证镜像
+docker images | grep qwen3-asr-npu
+```
+
+### 步骤 4：准备模型文件
+
+模型文件需要单独传输到服务器：
+
+```bash
+# 模型文件约 3.4GB，打包传输
+tar czf Qwen3-ASR-1.7B.tar.gz -C /path/to/models Qwen3-ASR-1.7B
+
+# 传输到服务器
+scp Qwen3-ASR-1.7B.tar.gz user@npu-server:/home/user/
+
+# 在服务器上解压
+mkdir -p /home/models
+tar xzf Qwen3-ASR-1.7B.tar.gz -C /home/models/
+```
+
+### 步骤 5：启动服务
+
+```bash
+# 在服务器上进入部署目录
+cd /path/to/MediaFlow/deploy/qwen3-asr-npu
+
+# 修改 docker-compose.yml 中的 NPU 卡号
+# 启动服务
+docker-compose up -d
+```
+
+### 离线部署文件清单
+
+需要传输的文件：
+
+| 文件 | 大小 | 说明 |
+|------|------|------|
+| `qwen3-asr-npu.tar` | ~8-10GB | Docker 镜像 |
+| `Qwen3-ASR-1.7B.tar.gz` | ~3.4GB | 模型文件 |
+| `docker-compose.yml` | <1KB | 部署配置 |
+
+## 四、MediaFlow 配置
 
 在 MediaFlow 页面「服务配置」中设置：
 
@@ -92,7 +167,7 @@ curl http://localhost:8022/v1/audio/transcriptions \
 | API 密钥 | （留空） |
 | 识别语言 | `zh` |
 
-## 四、常用操作
+## 五、常用操作
 
 ```bash
 # 查看日志
@@ -111,7 +186,7 @@ docker-compose down && docker-compose build && docker-compose up -d
 docker ps | grep qwen3-asr
 ```
 
-## 五、切换 NPU 卡号
+## 六、切换 NPU 卡号
 
 修改 `docker-compose.yml` 中的两个地方：
 
@@ -129,7 +204,7 @@ devices:
 docker-compose down && docker-compose up -d
 ```
 
-## 六、故障排查
+## 七、故障排查
 
 ### 模型加载失败
 
