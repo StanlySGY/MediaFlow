@@ -45,8 +45,8 @@ const GROUPS: FieldGroup[] = [
   {
     title: '实时识别', icon: Radio, desc: '「实时识别」页面使用的下游服务',
     fields: [
-      { key: 'realtime_asr_provider', label: '实时接口类型', type: 'select-realtime', hint: 'realtime_mock = 演示用假数据；realtime_http = 对接标准实时服务；realtime_offline = 用文件 ASR 模拟流式' },
-      { key: 'realtime_asr_base_url', label: '实时接口地址', type: 'text' },
+      { key: 'realtime_asr_provider', label: '实时接口类型', type: 'select-realtime', hint: 'realtime_mock = 演示用假数据；realtime_http = 对接标准实时服务（真正边说边出字，需部署 streaming 流式服务）；realtime_offline = 用文件 ASR「录完再识别」模拟流式' },
+      { key: 'realtime_asr_base_url', label: '实时接口地址', type: 'text', hint: '真正流式：选 realtime_http，填 Qwen3-ASR streaming 服务地址（如 http://<服务器IP>:8023）。部署见 deploy/qwen3-asr-npu/DEPLOY.md「流式部署」章节。' },
       { key: 'realtime_asr_api_key', label: '实时接口密钥', type: 'secret' },
       { key: 'realtime_asr_model', label: '实时模型名称', type: 'text' },
       { key: 'realtime_max_chunk_bytes', label: '单包最大字节', type: 'int' },
@@ -85,6 +85,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const [pingClass, setPingClass] = useState('');
   const [isTesting, setIsTesting] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
 
   const loadConfig = async () => {
     try {
@@ -117,6 +118,45 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const handleChange = (key: string, value: string | number | boolean) => {
     setFormState(prev => ({ ...prev, [key]: value }));
     setDirtyFields(prev => ({ ...prev, [key]: true }));
+  };
+
+  // 一键填入 Qwen3-ASR 流式服务配置：切到 realtime_http 并预填端口 8023 的地址。
+  const applyStreamingPreset = () => {
+    const host = (() => {
+      try {
+        return window.location.hostname || 'localhost';
+      } catch {
+        return 'localhost';
+      }
+    })();
+    handleChange('realtime_asr_provider', 'realtime_http');
+    handleChange('realtime_asr_base_url', `http://${host}:8023`);
+    setStreamStatus('已填入流式服务地址，记得点「保存配置」');
+    setTimeout(() => setStreamStatus(null), 5000);
+  };
+
+  // 探测流式服务 /health，确认已部署且模型已加载。
+  const checkStreamingHealth = async () => {
+    const base = String(formState['realtime_asr_base_url'] || '').replace(/\/+$/, '');
+    if (!base) {
+      setStreamStatus('请先填写实时接口地址');
+      setTimeout(() => setStreamStatus(null), 4000);
+      return;
+    }
+    setStreamStatus('检测中…');
+    try {
+      const r = await fetch(`${base}/health`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json().catch(() => ({}));
+      setStreamStatus(
+        data.model_loaded
+          ? '✓ 流式服务在线，模型已加载'
+          : '流式服务在线，但模型尚未加载完成',
+      );
+    } catch (e) {
+      setStreamStatus(`✗ 无法连接流式服务：${errorMessage(e)}`);
+    }
+    setTimeout(() => setStreamStatus(null), 6000);
   };
 
   const collectDiff = () => {
@@ -279,6 +319,22 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {g.fields.map(renderField)}
             </div>
+            {g.title === '实时识别' && (
+              <div className="mt-4 p-3.5 rounded-xl border border-border bg-accent-soft/30 flex flex-col gap-2">
+                <div className="text-xs font-semibold text-fg-dim">Qwen3-ASR 真流式（边说边出字）</div>
+                <p className="text-[11px] text-muted font-normal leading-snug">
+                  真正的流式识别需单独部署 streaming 服务（见 deploy/qwen3-asr-npu，需独占一张 NPU 卡）。
+                  部署后把「实时接口类型」设为 realtime_http，接口地址指向该服务（默认端口 8023）。
+                </p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button type="button" onClick={applyStreamingPreset}>一键填入流式服务配置</button>
+                  <button type="button" onClick={checkStreamingHealth} disabled={streamStatus === '检测中…'}>
+                    <Activity className="w-4 h-4" /><span>检测流式服务状态</span>
+                  </button>
+                  {streamStatus && <span className="toast">{streamStatus}</span>}
+                </div>
+              </div>
+            )}
           </div>
         );
       })}

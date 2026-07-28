@@ -33,3 +33,4 @@ app/web/icons.svg
 
 !temp/.gitkeep
 !outputs/.gitkeep
+.codegraph/
