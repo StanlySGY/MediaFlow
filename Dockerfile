@@ -1,8 +1,8 @@
 # ==========================================
 # Stage 1: Build the React Application
 # ==========================================
-ENV DOCKER_BUILDKIT=0
 FROM node:20-alpine AS frontend-builder
+ENV DOCKER_BUILDKIT=0
 WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm ci
