@@ -1,9 +1,9 @@
 # Production / air-gapped deployment — runs a pre-loaded image, never builds.
 #
 # Workflow (see README "离线现场部署"):
-#   build host (online):  ./build.sh --save        → mediaflow-1.4.0-arm64.tar.gz
+#   build host (online):  ./build.sh --save        → mediaflow-1.4.1-arm64.tar.gz
 #   copy the .tar.gz to the air-gapped site
-#   site (offline):       docker load -i mediaflow-1.4.0-arm64.tar.gz
+#   site (offline):       docker load -i mediaflow-1.4.1-arm64.tar.gz
 #                         cp .env.example .env   # set ASR_BASE_URL to the in-network ASR
 #                         docker compose -f docker-compose.prod.yml up -d
 #
@@ -18,7 +18,7 @@
 # (ufw allow 8999/tcp · firewall-cmd · OpenStack security group).
 services:
   mediaflow:
-    image: mediaflow:1.4.0
+    image: mediaflow:1.4.1
     container_name: mediaflow
     restart: unless-stopped
     network_mode: host
