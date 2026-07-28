@@ -43,7 +43,9 @@ export function useAuth() {
 
   const sseUrl = useCallback((path: string) => {
     const t = localStorage.getItem(TOKEN_KEY) || '';
-    return t ? `${path}?token=${encodeURIComponent(t)}` : path;
+    const baseUrl = window.location.origin;
+    const fullPath = t ? `${path}?token=${encodeURIComponent(t)}` : path;
+    return new URL(fullPath, baseUrl).href;
   }, []);
 
   return {
