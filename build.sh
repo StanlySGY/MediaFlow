@@ -93,7 +93,7 @@ echo "  flags    : ${NO_CACHE:-} ${PULL:-}"
 echo
 
 # shellcheck disable=SC2086
-docker build $NO_CACHE $PULL \
+DOCKER_BUILDKIT=0 docker build $NO_CACHE $PULL \
     --platform "$PLATFORM" \
     -t "$IMG_VER" \
     -t "$IMG_LAT" \
