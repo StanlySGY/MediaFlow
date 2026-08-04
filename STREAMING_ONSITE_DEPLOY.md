@@ -8,13 +8,13 @@
 
 ## 〇、带去现场的东西
 
-| 文件 | 大小 | 用途 |
-|------|------|------|
-| `streaming-part-aa` | 3.8G | streaming 镜像分片 1 |
-| `streaming-part-ab` | 3.4G | streaming 镜像分片 2 |
-| `streaming-checksum.txt` | <1K | 分片校验和 |
-| `deploy/qwen3-asr-npu/` 目录 | 52K | docker-compose.yml + streaming_server |
-| MediaFlow 项目代码 | — | 含最新 docker-compose.yml 等 |
+| 文件                           | 大小 | 用途                                  |
+| ------------------------------ | ---- | ------------------------------------- |
+| `streaming-part-aa`          | 3.8G | streaming 镜像分片 1                  |
+| `streaming-part-ab`          | 3.4G | streaming 镜像分片 2                  |
+| `streaming-checksum.txt`     | <1K  | 分片校验和                            |
+| `deploy/qwen3-asr-npu/` 目录 | 52K  | docker-compose.yml + streaming_server |
+| MediaFlow 项目代码             | —   | 含最新 docker-compose.yml 等          |
 
 > 刻盘：盘 1 装 `streaming-part-aa` + 校验文件，盘 2 装 `streaming-part-ab`。
 > 也可用 U 盘/移动硬盘直接拷，省得刻盘。
@@ -73,25 +73,34 @@ docker images | grep qwen3-asr-npu-streaming
 # /home/deploy/qwen3-asr-npu/streaming_server/server.py
 ```
 
-### 2.2 改 docker-compose.yml：用预构建镜像，不再现场构建
+### 2.2 用专用 compose 文件启动（推荐）
 
-编辑 `/home/deploy/qwen3-asr-npu/docker-compose.yml`，找到 `streaming` 服务段，**把 `build:` 换成 `image:`**：
+项目里已提供只启动 streaming 的 compose 文件 `docker-compose.streaming.yml`，无需改原 `docker-compose.yml`。只需改这一个文件的两处：
+
+编辑 `/home/deploy/qwen3-asr-npu/docker-compose.streaming.yml`：
+
+```yaml
+  streaming:
+    environment:
+      - ASCEND_RT_VISIBLE_DEVICES=1      # ← 改为实际空闲卡号（npu-smi info 查看）
+    devices:
+      - /dev/davinci1:/dev/davinci1      # ← 数字与上面一致
+```
+
+若模型不在 `/home/models/Qwen3-ASR-1.7B`，改 volumes 左侧宿主机路径。
+
+> 这个 compose 文件已用 `image: qwen3-asr-npu-streaming`（不是 `build:`），现场无网也能直接起，不会试图联网构建。
+
+### 2.3 （备选）改原 docker-compose.yml
+
+若用原来的 `docker-compose.yml`：找到 `streaming` 服务段，**把 `build:` 换成 `image:`**：
 
 ```yaml
   streaming:
     image: qwen3-asr-npu-streaming      # ← 用这一行（替换原来的 build:）
     # 删掉下面这两行：
     # build: ./streaming_server
-    container_name: qwen3-asr-streaming
-    restart: unless-stopped
-    ports:
-      - "8023:8001"
-    volumes:
-      - /home/models/Qwen3-ASR-1.7B:/data/models/Qwen3-ASR-1.7B
-      # ... 其余 volumes 保持不变
 ```
-
-> 关键：现场无网，不能用 `build:`（会去联网装 ffmpeg/pip 包），必须用 `image:` 直接用已 load 的镜像。
 
 ---
 
@@ -144,16 +153,17 @@ ls /home/models/Qwen3-ASR-1.7B/
 ```bash
 cd /home/deploy/qwen3-asr-npu
 
-# 只启动 streaming 服务（不会联网构建，因为已改成 image:）
-docker compose up -d streaming
+# 只启动 streaming 服务（不会联网构建，用已 load 的镜像）
+docker compose -f docker-compose.streaming.yml up -d streaming
 ```
 
-> 如果同时要起 vLLM 文件识别服务，确认它也用 `image: quay.io/ascend/vllm-ascend:v0.22.1rc1`（已 load），然后 `docker compose up -d`。
+> 用专用 compose 文件 `docker-compose.streaming.yml`（推荐），里面已配好 `image:`，不会触发构建。
+> 若用原 `docker-compose.yml`，确认 streaming 段已改成 `image:`，然后 `docker compose up -d streaming`。
 
 ### 4.2 看日志等就绪
 
 ```bash
-docker compose logs -f streaming
+docker compose -f docker-compose.streaming.yml logs -f
 ```
 
 等到看到这两行说明启动成功：
@@ -218,12 +228,12 @@ docker compose -f docker-compose.prod.yml up -d
 
 打开 `http://<服务器IP>:8999/` → 进「实时识别」页面 → 服务配置核对:
 
-| 配置项 | 值 |
-|--------|-----|
-| 实时接口类型 | `realtime_http` |
+| 配置项       | 值                         |
+| ------------ | -------------------------- |
+| 实时接口类型 | `realtime_http`          |
 | 实时接口地址 | `http://<服务器IP>:8023` |
-| 实时接口密钥 | （留空） |
-| 实时模型名称 | `qwen3-asr` |
+| 实时接口密钥 | （留空）                   |
+| 实时模型名称 | `qwen3-asr`              |
 
 保存 → 顶部「浏览器录音测试」→ 点「开始录音」→ 对麦克风说话 → **文字边说边出现** → 点「停止录音」结束。
 
@@ -239,18 +249,16 @@ cat streaming-part-* > streaming-update-v2.tar.gz      # 合并
 docker load -i streaming-update-v2.tar.gz              # 导入
 docker images | grep qwen3-asr-npu-streaming           # 确认
 
-# 2. 改 docker-compose.yml：build → image + 改 NPU 卡号
+# 2. 改专用 compose 文件的 NPU 卡号
 npu-smi info
-vi /home/deploy/qwen3-asr-npu/docker-compose.yml
-#   streaming:
-#     image: qwen3-asr-npu-streaming      # 替换 build:
-#     environment: ASCEND_RT_VISIBLE_DEVICES=<空闲卡号>
-#     devices: /dev/davinci<卡号>:/dev/davinci<卡号>
+vi /home/deploy/qwen3-asr-npu/docker-compose.streaming.yml
+#   environment: ASCEND_RT_VISIBLE_DEVICES=<空闲卡号>
+#   devices: /dev/davinci<卡号>:/dev/davinci<卡号>
 
-# 3. 启动 streaming
+# 3. 启动 streaming（用专用 compose 文件，不联网构建）
 cd /home/deploy/qwen3-asr-npu
-docker compose up -d streaming
-docker compose logs -f streaming        # 等 "model ready"
+docker compose -f docker-compose.streaming.yml up -d
+docker compose -f docker-compose.streaming.yml logs -f   # 等 "model ready"
 
 # 4. 验证
 curl http://localhost:8023/health
@@ -286,12 +294,14 @@ docker images | grep streaming
 
 ### 8.3 启动时报 "failed to build" / 试图联网
 
-说明 docker-compose.yml 没改成 `image:`，还在用 `build:`:
+说明用的 compose 文件还在用 `build:`（原 `docker-compose.yml`）。应改用专用文件：
 
 ```bash
-vi docker-compose.yml
-# 确认 streaming 段是 image: qwen3-asr-npu-streaming，没有 build:
+docker compose -f docker-compose.streaming.yml up -d
+# 该文件已用 image: qwen3-asr-npu-streaming，不会触发构建
 ```
+
+若一定要用原 `docker-compose.yml`，确认 streaming 段已改成 `image:`（无 `build:`）。
 
 ### 8.4 NPU 设备不可用
 
@@ -306,19 +316,19 @@ docker exec -it qwen3-asr-streaming ls /dev/davinci*  # 容器内能否看到
 ```bash
 ls -la /home/models/Qwen3-ASR-1.7B/      # 模型文件是否齐全
 docker exec -it qwen3-asr-streaming ls /data/models/Qwen3-ASR-1.7B/  # 容器内挂载
-# 挂载路径不对 → 改 docker-compose.yml volumes 左侧
+# 挂载路径不对 → 改 docker-compose.streaming.yml volumes 左侧
 ```
 
 ### 8.6 端口 8023 被占用
 
 ```bash
 lsof -i:8023
-# 改 docker-compose.yml ports 映射到空闲端口，同时改 MediaFlow 的 REALTIME_ASR_BASE_URL
+# 改 docker-compose.streaming.yml ports 映射到空闲端口，同时改 MediaFlow 的 REALTIME_ASR_BASE_URL
 ```
 
 ### 8.7 MediaFlow 实时识别报 503 / "missing http protocol"
 
-- 503 = streaming 服务没起来，`docker compose logs streaming` 看
+- 503 = streaming 服务没起来，`docker compose -f docker-compose.streaming.yml logs` 看
 - "missing http protocol" = 旧版 MediaFlow bug，确认跑的是 1.4.1+ 镜像
 
 ---
@@ -328,10 +338,11 @@ lsof -i:8023
 ```bash
 cd /home/deploy/qwen3-asr-npu
 
-docker compose logs -f streaming          # 看日志
-docker compose restart streaming          # 重启 streaming
-docker compose down streaming             # 停止 streaming
-docker compose up -d streaming            # 启动
+# 用专用 compose 文件操作
+docker compose -f docker-compose.streaming.yml logs -f        # 看日志
+docker compose -f docker-compose.streaming.yml restart        # 重启
+docker compose -f docker-compose.streaming.yml down           # 停止
+docker compose -f docker-compose.streaming.yml up -d          # 启动
 
 docker ps | grep streaming                # 看容器状态
 npu-smi info                             # 看 NPU 占用

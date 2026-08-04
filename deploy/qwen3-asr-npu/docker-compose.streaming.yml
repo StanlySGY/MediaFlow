@@ -1,0 +1,47 @@
+# Qwen3-ASR 流式识别服务（边说边出字）
+#
+# 仅启动 streaming 服务（端口 8023），不启动 vLLM 文件识别服务。
+# 前提：已 docker load 导入 qwen3-asr-npu-streaming 镜像；模型文件已就位。
+#
+# 使用前修改：
+#   1. ASCEND_RT_VISIBLE_DEVICES：改为实际空闲 NPU 卡号（npu-smi info 查看）
+#   2. /dev/davinciX：与卡号一致
+#   3. 模型文件路径：volumes 左侧改为实际路径（默认 /home/models/Qwen3-ASR-1.7B）
+
+services:
+  streaming:
+    image: qwen3-asr-npu-streaming
+    container_name: qwen3-asr-streaming
+    restart: unless-stopped
+    ports:
+      # 流式服务端口（对外 8023 → 容器内 8001）
+      - "8023:8001"
+    volumes:
+      # 模型文件目录（宿主机路径:容器路径）；改左侧为实际模型路径
+      - /home/models/Qwen3-ASR-1.7B:/data/models/Qwen3-ASR-1.7B
+      # Ascend 驱动挂载
+      - /usr/local/dcmi:/usr/local/dcmi
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
+      - /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/
+      - /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info
+      - /etc/ascend_install.info:/etc/ascend_install.info
+      - /root/.cache:/root/.cache
+    environment:
+      - TZ=Asia/Shanghai
+      # ← 改为实际空闲 NPU 卡号（用 npu-smi info 查看，不要和其他服务重复）
+      - ASCEND_RT_VISIBLE_DEVICES=0
+      - MODEL_DIR=/data/models/Qwen3-ASR-1.7B
+      - GPU_MEMORY_UTILIZATION=0.9
+      # 流式内部切块秒数：越小越“即时”，但推理更频繁
+      - CHUNK_SIZE_SEC=2.0
+    devices:
+      # ← 数字需与 ASCEND_RT_VISIBLE_DEVICES 一致
+      - /dev/davinci0:/dev/davinci0
+      - /dev/davinci_manager:/dev/davinci_manager
+      - /dev/devmm_svm:/dev/devmm_svm
+      - /dev/hisi_hdc:/dev/hisi_hdc
+    shm_size: "1g"
+
+# 启动：docker compose -f docker-compose.streaming.yml up -d
+# 日志：docker compose -f docker-compose.streaming.yml logs -f
+# 停止：docker compose -f docker-compose.streaming.yml down
