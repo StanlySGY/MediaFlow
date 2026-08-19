@@ -34,3 +34,10 @@ app/web/icons.svg
 !temp/.gitkeep
 !outputs/.gitkeep
 .codegraph/
+
+# Offline delivery artifacts: multi-GB image tarballs (`./build.sh --save`,
+# vllm-ascend, Qwen3-ASR model) and the split parts cut for USB transfer.
+# GitHub rejects files >100MB, so a stray `git add -A` would break the push.
+*.tar.gz
+*-part-??
+*-checksum.txt
