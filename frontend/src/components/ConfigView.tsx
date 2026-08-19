@@ -157,9 +157,15 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       const r = await fetch(healthUrl);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json().catch(() => ({}));
+      // Two shapes in the wild: the HTTP+SSE shim's /health answers
+      // {"model_loaded":true}; Qwen3-ASR's own /readyz answers
+      // {"status":"ready","backend":"qwen_asr","device":"npu:0"} with no
+      // model_loaded key. Accept either, else a healthy service reads as broken.
+      const ready = data.model_loaded === true || data.status === 'ready';
+      const detail = [data.backend, data.device].filter(Boolean).join(' · ');
       setStreamStatus(
-        data.model_loaded
-          ? '✓ 流式服务在线，模型已加载'
+        ready
+          ? `✓ 流式服务在线，模型已加载${detail ? ` · ${detail}` : ''}`
           : '流式服务在线，但模型尚未加载完成',
       );
     } catch (e) {
