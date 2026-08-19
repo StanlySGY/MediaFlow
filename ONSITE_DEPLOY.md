@@ -15,7 +15,7 @@
 |------|------|------|
 | `vllm-part-aa` + `vllm-part-ab` + `vllm-checksum.txt` | ~6.5G | ASR 推理镜像（两片分卷，刻在两张 4G 盘上） |
 | `streaming.tar.gz` | ~? | 流式服务镜像（本地预构建，现场无需联网构建） |
-| `mediaflow-1.4.1-arm64.tar.gz` | ~? | MediaFlow 应用镜像（`./build.sh --save` 生成） |
+| `mediaflow-1.7.0-arm64.tar.gz` | ~? | MediaFlow 应用镜像（`./build.sh --save` 生成） |
 | `Qwen3-ASR-1.7B.tar.gz` | ~3.4G | 模型文件（现场已有模型则不用带） |
 | `deploy/qwen3-asr-npu/` 目录 | 52K | ASR 服务的 docker-compose.yml + streaming_server |
 | MediaFlow 项目代码 | — | `docker-compose.prod.yml`、`.env.example` 等 |
@@ -68,17 +68,17 @@ docker images | grep vllm-ascend
 ### 2.1 如果 MediaFlow 镜像是整包
 
 ```bash
-docker load -i mediaflow-1.4.1-arm64.tar.gz
+docker load -i mediaflow-1.7.0-arm64.tar.gz
 docker images | grep mediaflow
-# 应看到 mediaflow    1.4.1
+# 应看到 mediaflow    1.7.0
 ```
 
 ### 2.2 如果 MediaFlow 镜像也分片了
 
 ```bash
 sha256sum -c mediaflow-checksum.txt        # 校验
-cat mediaflow-part-* > mediaflow-1.4.1-arm64.tar.gz
-docker load -i mediaflow-1.4.1-arm64.tar.gz
+cat mediaflow-part-* > mediaflow-1.7.0-arm64.tar.gz
+docker load -i mediaflow-1.7.0-arm64.tar.gz
 ```
 
 ---
@@ -385,10 +385,10 @@ lsof -i:8999   # MediaFlow 端口
 
 ### 9.7 实时识别报 "missing http protocol"
 
-这已修复（v1.4.1）。确认跑的是 1.4.1 镜像：
+这已修复（v1.4.1）。确认跑的是 1.4.1 或更高的镜像：
 ```bash
 docker images | grep mediaflow
-# 必须是 1.4.1。旧镜像就重新 load 新的。
+# 必须 ≥ 1.4.1。旧镜像就重新 load 新的。
 ```
 
 ---
@@ -403,7 +403,7 @@ cat vllm-part-* > vllm-ascend-v0.22.1rc1.tar.gz
 gunzip -c vllm-ascend-v0.22.1rc1.tar.gz | docker load
 
 # 2. 导入 MediaFlow 镜像
-docker load -i mediaflow-1.4.1-arm64.tar.gz
+docker load -i mediaflow-1.7.0-arm64.tar.gz
 
 # 3. 放模型
 mkdir -p /home/models && tar xzf Qwen3-ASR-1.7B.tar.gz -C /home/models/
@@ -439,5 +439,5 @@ curl http://localhost:8999/health
 | vllm-ascend | v0.22.1rc1 |
 | CANN | 9.0.1 |
 | Qwen3-ASR | 1.7B |
-| MediaFlow | 1.4.1 |
+| MediaFlow | 1.7.0 |
 ```

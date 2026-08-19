@@ -64,13 +64,13 @@ docker compose up -d --build
 ```bash
 # 1. 构建机（有网）：构建并导出镜像（默认跟随本机架构；构建机与现场均为 arm64）
 ./build.sh --save
-#    产物：mediaflow-1.4.0-arm64.tar.gz
+#    产物：mediaflow-1.7.0-arm64.tar.gz
 #    需为别的架构构建（如现场是 x86）：./build.sh --platform linux/amd64 --save（须 buildx + qemu）
 
 # 2. 把 .tar.gz、docker-compose.prod.yml、.env.example 拷到现场（U 盘 / 内网盘）
 
 # 3. 现场服务器（离线）：加载镜像
-docker load -i mediaflow-1.4.0-arm64.tar.gz
+docker load -i mediaflow-1.7.0-arm64.tar.gz
 
 # 4. 准备配置：ASR_BASE_URL 指向内网已部署的 ASR（无鉴权可留空 ASR_API_KEY）
 cp .env.example .env
@@ -79,7 +79,7 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.4.0`，多次交付时现场版本可追溯。`./outputs`、`./temp` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果。
+`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.7.0`，多次交付时现场版本可追溯。`./outputs`、`./temp` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果。
 
 > `docker-compose.prod.yml` 默认用 `network_mode: host`：MAAS/OpenStack、firewalld 节点会丢弃发往 docker bridge 的流量、令发布端口静默失效，host 网络直接绑宿主端口在各类环境都通。外网访问仍需宿主防火墙/安全组放行 8999（`ufw allow 8999/tcp`、`firewall-cmd`、OpenStack 安全组）。普通主机若想要端口隔离，可把 `network_mode: host` 换回 `ports: ["8999:8999"]`。
 
@@ -172,6 +172,7 @@ class RealtimeASRProvider(Protocol):
 | --- | --- |
 | `realtime_mock` | 测试用，按规则产出 online/final/done，无真实模型依赖 |
 | `realtime_http` | 通用 HTTP+SSE 客户端，对接「标准下层 ASR 服务」 |
+| `realtime_ws` | 直连 Qwen3-ASR `/v1/asr/stream`；WebM 经 FFmpeg 转为 16k PCM，实时返回 partial/final |
 | `realtime_offline` | 把离线文件 ASR 包成实时接口：接收 base64 chunks，结束后调用 `ASR_PROVIDER`，再以 SSE 模拟 online/final/done |
 
 **标准下层 ASR 协议**（下层模型方需实现）：
@@ -183,7 +184,17 @@ GET    {base}/session/{id}/events       SSE: event=online|final|error|done
 POST   {base}/session/{id}/end
 ```
 
-非标准 WebSocket 模型（如 FunASR runtime）**不要**直接接入 MediaFlow；先在模型服务旁边做一个 shim 把它包成上面这套 HTTP+SSE 协议，再让 `realtime_http` 对接 shim。
+Qwen3-ASR 原生 WebSocket 可直接使用 `realtime_ws`：
+
+```env
+REALTIME_ASR_PROVIDER=realtime_ws
+REALTIME_ASR_BASE_URL=ws://<服务器IP>:8022/v1/asr/stream
+REALTIME_ASR_API_KEY=
+```
+
+浏览器应使用同一个 `MediaRecorder` 连续产生 WebM/Opus chunks，并按 `seq` 串行上传。
+MediaFlow 会为每个会话启动常驻 FFmpeg，将 WebM 转为服务所需的 16kHz、16bit、单声道 PCM。
+其他非标准 WebSocket 协议仍需实现独立 provider，或先用 shim 转成上述 HTTP+SSE 协议。
 
 ### curl 示例
 
@@ -236,7 +247,7 @@ async function pushChunk(b64, isFinal=false) {
 
 ### 音频格式约定
 
-建议 PCM s16le mono 16kHz（chunks 之间无重叠）。`realtime_offline` 也支持把一段 WAV 文件切成 base64 chunks 上传，服务端会在结束后还原完整 WAV 并调用当前文件 ASR；返回事件带 `mode=simulated_streaming`。其他格式（webm/opus 等）需要 FFmpeg 可解码；只对 `realtime_mock` 来说音频内容不参与识别。
+建议浏览器使用连续 WebM/Opus chunks，或直接上传 PCM s16le mono 16kHz（chunks 之间无重叠）。`realtime_ws` 会把 WebM/Opus 实时转换为 200ms PCM 帧；`realtime_offline` 会在结束后把完整录音转成 WAV 并调用文件 ASR。只对 `realtime_mock` 来说音频内容不参与识别。
 
 ### Web UI
 
@@ -352,7 +363,7 @@ curl http://localhost:8999/asr/file/ab12.../result
 | `ASR_CONCURRENCY` | 并发分片数 | `4` |
 | `ASR_MAX_RETRIES` | 单分片最大重试次数 | `3` |
 | `MAX_UPLOAD_BYTES` | 单次上传上限 | 2 GiB |
-| `REALTIME_ASR_PROVIDER` | 实时后端：`realtime_mock` / `realtime_http` / `realtime_offline` | `realtime_mock` |
+| `REALTIME_ASR_PROVIDER` | 实时后端：`realtime_mock` / `realtime_http` / `realtime_ws` / `realtime_offline` | `realtime_mock` |
 | `ACCESS_TOKENS` | 逗号分隔的访问令牌，空 = 关闭鉴权 | *(空)* |
 
 ## 目录结构
@@ -370,6 +381,7 @@ app/
 │   │   ├── realtime_base.py     RealtimeASRProvider 协议
 │   │   ├── realtime_mock.py     测试用 mock realtime provider
 │   │   ├── realtime_http.py     标准下层 HTTP+SSE realtime provider
+│   │   ├── realtime_ws.py       Qwen3-ASR WebSocket + WebM→PCM 实时适配
 │   │   ├── realtime_offline.py  离线 ASR 模拟 realtime provider
 │   │   ├── realtime_registry.py realtime provider 注册表
 │   │   └── registry.py      batch provider 注册表

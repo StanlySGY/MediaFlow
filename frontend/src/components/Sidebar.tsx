@@ -39,7 +39,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
         <div>
           <div className="font-title font-bold text-[15px] text-fg tracking-tight">MediaFlow</div>
-          <div className="text-[10px] text-muted font-mono">音视频处理控制台 v1.4.0</div>
+          <div className="text-[10px] text-muted font-mono">音视频处理控制台 v1.7.0</div>
         </div>
       </div>
 

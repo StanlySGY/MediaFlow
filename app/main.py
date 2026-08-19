@@ -51,8 +51,9 @@ REALTIME_ASR_PROVIDER=realtime_offline
 Qwen ASR，并用统一 SSE 格式模拟流式返回真实识别文本。
 
 注意：`realtime_offline` 不是原生边说边识别，它会先缓存音频，结束后再调用真实 ASR。
-如果需要真正的低延迟实时 ASR，需要把 `REALTIME_ASR_PROVIDER` 改为 `realtime_http`，并提供一个
-符合本项目实时协议的下游服务。
+如果需要真正的低延迟实时 ASR，可以使用 `realtime_http` 对接标准 HTTP+SSE 下游服务，
+或使用 `realtime_ws` 直连 Qwen3-ASR 的 `/v1/asr/stream` WebSocket。`realtime_ws` 会把浏览器
+上传的连续 WebM 实时转换为 16k 单声道 PCM，并转发 partial/final 结果。
 
 ### 1. 实时录音转文字：上传 base64，SSE 流式返回文字
 
@@ -184,7 +185,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MediaFlow",
         description=API_DESCRIPTION,
-        version="1.4.0",
+        version="1.7.0",
         lifespan=_lifespan,
     )
     app.state.manager = TaskManager(settings)
