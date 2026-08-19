@@ -216,7 +216,8 @@ REALTIME_ASR_PROVIDER=realtime_offline
 
 `realtime_offline` 会先缓存 base64 音频，收到 `is_final=true` 或 `/end` 后才调用真实 ASR；
 它返回的流是模拟流式，不是模型原生低延迟实时。需要原生实时时，请使用 `realtime_http`
-并接入符合本项目实时协议的下游服务。
+接入标准 HTTP+SSE 下游服务，或使用 `realtime_ws` 直连 Qwen3-ASR
+`ws://<host>:8022/v1/asr/stream`。`realtime_ws` 支持把浏览器连续 WebM 转为 16k PCM。
 
 音频格式说明：
 
@@ -281,6 +282,8 @@ data: {"type":"done","stream":"realtime","id":"...","text":"","is_final":true,"s
   `ASR_PROVIDER=openai_chat_audio`、`ASR_BASE_URL`、`ASR_API_KEY`、`ASR_MODEL=qwen3-asr-flash`。
 - `realtime_offline` 只有在收到结束信号后才调用真实 ASR；调用方必须发送
   `{"audio":"","is_final":true}` 或调用 `POST /asr/realtime/{session_id}/end`。
+- 使用原生 Qwen3-ASR WebSocket 时，设置 `REALTIME_ASR_PROVIDER=realtime_ws` 和
+  `REALTIME_ASR_BASE_URL=ws://<host>:8022/v1/asr/stream`；录音期间会持续返回中间结果。
 
 如果启用了访问令牌，浏览器 `EventSource` 不能加 Header，可使用
 `?token=你的token` 查询参数。

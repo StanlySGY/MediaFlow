@@ -53,9 +53,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   const sessionIdRef = useRef('');
   const seqRef = useRef(0);
   const formatRef = useRef('webm');
-  const pendingPushesRef = useRef<Promise<unknown>[]>([]);
-
-  useEffect(() => () => cleanup(), []);
+  const pushChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const appendLog = (event: string, data: Record<string, unknown> = {}) => {
     const line = JSON.stringify({ ts: new Date().toISOString(), event, ...data });
@@ -72,6 +70,8 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     streamRef.current = null;
     recorderRef.current = null;
   };
+
+  useEffect(() => () => cleanup(), []);
 
   const subscribe = (sessionId: string) => {
     eventSourceRef.current?.close();
@@ -155,7 +155,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     setChunks(0);
     setBytes(0);
     seqRef.current = 0;
-    pendingPushesRef.current = [];
+    pushChainRef.current = Promise.resolve();
 
     const mimeType = pickRecorderMimeType();
     const format = formatFromMime(mimeType);
@@ -186,19 +186,19 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       streamRef.current = stream;
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       recorderRef.current = recorder;
-      recorder.ondataavailable = async (event) => {
+      recorder.ondataavailable = (event) => {
         if (!event.data || event.data.size === 0) return;
-        const pushJob = (async () => {
+        const pushJob = pushChainRef.current.then(async () => {
           const audio = await blobToBase64(event.data);
-          await pushChunk(audio, false);
-        })();
-        pendingPushesRef.current.push(pushJob);
-        await pushJob.finally(() => {
-          pendingPushesRef.current = pendingPushesRef.current.filter((job) => job !== pushJob);
+          const uploaded = await pushChunk(audio, false);
+          if (!uploaded) throw new Error('音频分片上传失败');
+        });
+        pushChainRef.current = pushJob.catch((error) => {
+          appendLog('push_queue_error', { message: errorMessage(error) });
         });
       };
       recorder.onstop = () => {
-        void Promise.allSettled(pendingPushesRef.current)
+        void pushChainRef.current
           .then(() => pushChunk('', true))
           .finally(() => {
             stream.getTracks().forEach((track) => track.stop());

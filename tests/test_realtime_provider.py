@@ -50,16 +50,18 @@ async def test_mock_rejects_push_after_finish():
             await p.push_audio(RealtimeAudioChunk(seq=1, audio="AAAA"))
 
 
-def test_realtime_registry_resolves_mock_and_http():
+def test_realtime_registry_resolves_builtin_providers():
     from app.config import Settings
     from app.services.asr import (
         create_realtime_provider, list_realtime_providers,
         RealtimeMockProvider, RealtimeHTTPProvider, RealtimeOfflineProvider,
+        RealtimeWSProvider,
     )
     providers = list_realtime_providers()
     assert "realtime_mock" in providers
     assert "realtime_http" in providers
     assert "realtime_offline" in providers
+    assert "realtime_ws" in providers
 
     mock = create_realtime_provider(Settings(realtime_asr_provider="realtime_mock"))
     assert isinstance(mock, RealtimeMockProvider)
@@ -73,6 +75,11 @@ def test_realtime_registry_resolves_mock_and_http():
         asr_api_key="x",
     ))
     assert isinstance(offline, RealtimeOfflineProvider)
+    ws = create_realtime_provider(Settings(
+        realtime_asr_provider="realtime_ws",
+        realtime_asr_base_url="ws://x/v1/asr/stream",
+    ))
+    assert isinstance(ws, RealtimeWSProvider)
 
 
 def test_unknown_realtime_provider_raises():
