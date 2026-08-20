@@ -12,7 +12,11 @@ from app.main import create_app
 @pytest.fixture
 def client():
     app = create_app()
-    return TestClient(app)
+    # Enter the context manager so lifespan runs: the transcription worker is
+    # owned by a lifespan-scoped supervisor, and without lifespan the test
+    # would only exercise the cancelled-task fallback.
+    with TestClient(app) as c:
+        yield c
 
 
 def test_create_transcribe_stream_returns_session_id(client):

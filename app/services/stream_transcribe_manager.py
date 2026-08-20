@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -29,6 +29,47 @@ class StreamTranscribeManager:
         self._settings = settings
         self._sessions: dict[str, _TranscribeSession] = {}
         self._lock = asyncio.Lock()
+        self._workers: set[asyncio.Task] = set()
+        self._spawn_queue: asyncio.Queue[str] | None = None
+        self._supervisor: asyncio.Task | None = None
+
+    # ---- lifespan ----
+
+    async def start(self) -> None:
+        """Spawn the worker supervisor. Call from app lifespan.
+
+        Transcription tasks must be created from a task that lives in the app
+        lifespan scope, not inside a request handler: anyio cancels
+        request-scoped child tasks when the response finishes, which killed the
+        worker before it could publish a terminal event and left every SSE
+        subscriber waiting forever.
+        """
+        if self._supervisor is not None:
+            return
+        self._spawn_queue = asyncio.Queue()
+        self._supervisor = asyncio.create_task(self._spawn_loop())
+
+    async def stop(self) -> None:
+        for w in list(self._workers):
+            w.cancel()
+        if self._supervisor is not None:
+            self._supervisor.cancel()
+            try:
+                await self._supervisor
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._supervisor = None
+
+    async def _spawn_loop(self) -> None:
+        assert self._spawn_queue is not None
+        try:
+            while True:
+                session_id = await self._spawn_queue.get()
+                task = asyncio.create_task(self._run_transcription(session_id))
+                self._workers.add(task)
+                task.add_done_callback(self._workers.discard)
+        except asyncio.CancelledError:
+            return
 
     async def create_session(
         self, file_path: Path, config: RealtimeSessionCreate
@@ -37,7 +78,15 @@ class StreamTranscribeManager:
         session = _TranscribeSession(session_id, file_path, config, self._settings)
         async with self._lock:
             self._sessions[session_id] = session
-        asyncio.create_task(self._run_transcription(session_id))
+        if self._spawn_queue is None:
+            # Bare scripts/tests that never called start(); the task is then
+            # request-scoped and may be cancelled, but complete() in the
+            # worker's finally still releases subscribers.
+            task = asyncio.create_task(self._run_transcription(session_id))
+            self._workers.add(task)
+            task.add_done_callback(self._workers.discard)
+        else:
+            self._spawn_queue.put_nowait(session_id)
         return session_id
 
     async def stream_events(self, session_id: str) -> AsyncIterator[RealtimeASREvent]:
@@ -52,6 +101,7 @@ class StreamTranscribeManager:
         if session is None:
             return
 
+        work_dir: Path | None = None
         try:
             session.publish(
                 RealtimeASREvent(
@@ -66,10 +116,6 @@ class StreamTranscribeManager:
             await normalize_to_wav(
                 session.file_path, normalized, timeout=self._settings.ffmpeg_timeout
             )
-
-            # 读取音频并转为 base64
-            audio_data = normalized.read_bytes()
-            audio_b64 = base64.b64encode(audio_data).decode()
 
             # 调用 ASR
             async with create_provider(self._settings) as provider:
@@ -88,19 +134,25 @@ class StreamTranscribeManager:
                 )
 
             session.publish(RealtimeASREvent(type="done", session_id=session_id))
-            session.complete()
 
+        except asyncio.CancelledError:
+            session.publish(
+                RealtimeASREvent(
+                    type="error", session_id=session_id, error="转录任务被取消"
+                )
+            )
+            raise
         except Exception as e:
             log.exception("transcription failed for session %s", session_id)
             session.publish(
                 RealtimeASREvent(type="error", session_id=session_id, error=str(e))
             )
-            session.complete()
         finally:
+            # Always release subscribers: without a terminal sentinel every SSE
+            # client blocks on an empty queue until the connection is dropped.
+            session.complete()
             session.file_path.unlink(missing_ok=True)
-            if work_dir.exists():
-                import shutil
-
+            if work_dir is not None and work_dir.exists():
                 shutil.rmtree(work_dir, ignore_errors=True)
 
 

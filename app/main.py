@@ -169,9 +169,11 @@ a{color:#2f6bff;text-decoration:none}</style></head><body><div class="box">
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     await app.state.realtime_manager.start()
+    await app.state.stream_transcribe_manager.start()
     try:
         yield
     finally:
+        await app.state.stream_transcribe_manager.stop()
         await app.state.realtime_manager.stop()
 
 
