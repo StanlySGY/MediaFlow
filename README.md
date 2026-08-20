@@ -105,7 +105,7 @@ curl -X POST $ASR_BASE_URL/audio/transcriptions \
 DATA_URI="data:audio/wav;base64,$(base64 -w0 any.wav)"
 curl -X POST $ASR_BASE_URL/chat/completions \
   -H "Content-Type: application/json" -H "Authorization: Bearer $ASR_API_KEY" \
-  -d '{"model":"'$ASR_MODEL'","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"'$DATA_URI'"}}]}],"asr_options":{"enable_itn":false}}'
+  -d '{"model":"'$ASR_MODEL'","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"'$DATA_URI'"}}]}]}'
 ```
 
 或者打开 Web UI 顶部的「服务配置」，点「测试连接」——服务端用 1s 静音 WAV 试探当前 provider，返回 200/4xx 直接显示在面板上，不通就切 `ASR_PROVIDER` 再点一次。

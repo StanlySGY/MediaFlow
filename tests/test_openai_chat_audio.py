@@ -64,7 +64,8 @@ async def test_request_body_has_input_audio_data_uri(wav_file: Path):
     assert content["type"] == "input_audio"
     url = content["input_audio"]["data"]
     assert url.startswith("data:audio/wav;base64,")
-    assert body["asr_options"]["enable_itn"] is False
+    # No asr_options: e5636c3 dropped it because vLLM rejects unknown keys.
+    assert "asr_options" not in body
 
     encoded = url.split(",", 1)[1]
     assert base64.b64decode(encoded) == wav_file.read_bytes()
