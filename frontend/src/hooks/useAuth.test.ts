@@ -23,8 +23,11 @@ describe('useAuth', () => {
 
   it('sseUrl appends an encoded token only when set', () => {
     const { result } = renderHook(() => useAuth());
-    expect(result.current.sseUrl('/x')).toBe('/x');
+    // 29bb85e made sseUrl return an absolute URL — EventSource needs one when
+    // the page is not served from the origin root.
+    const origin = window.location.origin;
+    expect(result.current.sseUrl('/x')).toBe(`${origin}/x`);
     act(() => result.current.setToken('t k'));
-    expect(result.current.sseUrl('/x')).toBe('/x?token=t%20k');
+    expect(result.current.sseUrl('/x')).toBe(`${origin}/x?token=t%20k`);
   });
 });
