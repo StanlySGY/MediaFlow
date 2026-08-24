@@ -77,7 +77,7 @@ Qwen ASR，并用统一 SSE 格式模拟流式返回真实识别文本。
 
 ```text
 event: message
-data: {"type":"text","stream":"realtime","id":"<session_id>","session_id":"<session_id>","text":"...","is_final":false,"seq":1}
+data: {"type":"text","stream":"realtime","id":"<session_id>","session_id":"<session_id>","text":"...","delta":"...","is_final":false,"seq":1}
 
 event: message
 data: {"type":"done","stream":"realtime","id":"<session_id>","session_id":"<session_id>","is_final":true}
@@ -86,6 +86,10 @@ data: {"type":"done","stream":"realtime","id":"<session_id>","session_id":"<sess
 `type` 统一为 `text`、`done`、`error`。调用方只需要监听 `message`，解析
 `data.type`、`data.text`、`data.is_final`。`stream=realtime` 表示来源是实时接口；
 `id` 等于 `session_id`。
+
+`data.text` 始终是全量文本（保留用于兼容旧客户端）；`data.delta` 是相对上一条
+text 事件新增的文本片段，只想做增量/打字机渲染的调用方可以只读 `delta`，不需要
+自己在客户端做字符串差分。
 
 当前 Qwen ASR 通过 `realtime_offline` 封装时，底层不是原生实时识别：
 服务端会先接收 base64 chunks，结束后调用 Qwen ASR，再用 SSE 模拟流式返回。
@@ -108,7 +112,7 @@ data: {"type":"done","stream":"realtime","id":"<session_id>","session_id":"<sess
 
 ```text
 event: message
-data: {"type":"text","stream":"file","id":"<task_id>","task_id":"<task_id>","seq":1,"segment_id":1,"start":0.0,"end":30.0,"text":"...","is_final":true}
+data: {"type":"text","stream":"file","id":"<task_id>","task_id":"<task_id>","seq":1,"segment_id":1,"start":0.0,"end":30.0,"text":"...","delta":"...","is_final":true}
 
 event: message
 data: {"type":"done","stream":"file","id":"<task_id>","task_id":"<task_id>","status":"done","progress":1.0}

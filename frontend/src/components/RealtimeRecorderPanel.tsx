@@ -84,6 +84,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         type: event.type,
         source_event: event.source_event,
         text: event.text,
+        delta: event.delta,
         is_final: event.is_final,
         elapsed_ms: event.elapsed_ms,
         error: event.error,

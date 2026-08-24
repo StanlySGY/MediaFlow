@@ -31,6 +31,7 @@ def test_realtime_events_convert_to_standard_sse_messages():
         "stream": "realtime",
         "id": "sess-1",
         "text": "实时中间文本",
+        "delta": "实时中间文本",
         "is_final": False,
         "seq": 7,
         "session_id": "sess-1",
@@ -80,6 +81,7 @@ def test_file_events_convert_to_same_standard_sse_message_shape():
         "stream": "file",
         "id": "task-1",
         "text": "文件分片文本",
+        "delta": "文件分片文本",
         "is_final": True,
         "seq": 3,
         "session_id": None,
@@ -111,3 +113,60 @@ def test_file_events_convert_to_same_standard_sse_message_shape():
     assert done["task_id"] == "task-1"
     assert done["status"] == "done"
     assert done["progress"] == 1.0
+
+
+def test_realtime_delta_is_suffix_of_growing_text():
+    from app.api.routes import _standard_realtime_sse_message
+
+    first = _decode_sse_payload(
+        _standard_realtime_sse_message(
+            RealtimeASREvent(type="online", session_id="s", text="今天"),
+            previous_text="",
+        )
+    )
+    assert first["text"] == "今天"
+    assert first["delta"] == "今天"
+
+    second = _decode_sse_payload(
+        _standard_realtime_sse_message(
+            RealtimeASREvent(type="online", session_id="s", text="今天天气"),
+            previous_text=first["text"],
+        )
+    )
+    assert second["text"] == "今天天气"
+    assert second["delta"] == "天气"
+
+
+def test_realtime_delta_falls_back_to_full_text_when_not_a_simple_extension():
+    from app.api.routes import _standard_realtime_sse_message
+
+    # Upstream revised/shortened its output instead of just appending to it;
+    # delta must fall back to the full text so nothing is silently lost.
+    revised = _decode_sse_payload(
+        _standard_realtime_sse_message(
+            RealtimeASREvent(type="online", session_id="s", text="今天天气很好"),
+            previous_text="今天天气不错",
+        )
+    )
+    assert revised["text"] == "今天天气很好"
+    assert revised["delta"] == "今天天气很好"
+
+
+def test_realtime_done_and_error_events_have_empty_delta():
+    from app.api.routes import _standard_realtime_sse_message
+
+    done = _decode_sse_payload(
+        _standard_realtime_sse_message(
+            RealtimeASREvent(type="done", session_id="s", is_final=True),
+            previous_text="今天天气不错",
+        )
+    )
+    assert done["delta"] == ""
+
+    error = _decode_sse_payload(
+        _standard_realtime_sse_message(
+            RealtimeASREvent(type="error", session_id="s", error="boom"),
+            previous_text="今天天气不错",
+        )
+    )
+    assert error["delta"] == ""

@@ -38,6 +38,7 @@ export interface RealtimeEvent {
   session_id: string;
   seq?: number;
   text?: string;
+  delta?: string;
   is_final?: boolean;
   elapsed_ms?: number;
   mode?: string;
@@ -50,6 +51,10 @@ export interface StandardASRStreamEvent {
   stream: 'realtime' | 'file';
   id: string;
   text: string;
+  /** Newly-added text since the previous event on this stream; falls back to
+   * the full `text` when the upstream revised/shortened its output instead
+   * of simply extending it. */
+  delta?: string;
   is_final: boolean;
   seq?: number | null;
   session_id?: string | null;

@@ -89,7 +89,23 @@ class ASRStreamEvent(BaseModel):
         description="流来源：realtime 为实时录音接口，file 为上传文件接口。"
     )
     id: str = Field(description="统一流 ID；realtime 等于 session_id，file 等于 task_id。")
-    text: str = Field(default="", description="识别文本；type=text 时读取。")
+    text: str = Field(
+        default="",
+        description=(
+            "识别文本；type=text 时读取。始终是全量文本"
+            "（从会话/分片开始到当前的累计结果），保留用于兼容旧客户端。"
+        ),
+    )
+    delta: str = Field(
+        default="",
+        description=(
+            "本次相对上一条事件新增的文本片段；type=text 时可用。"
+            "realtime 流：相对同一 session 上一条事件的 text 做前缀差分，"
+            "只在文本非前缀增长（被修正）时退化为整段 text。"
+            "file 流：每条事件本身就是独立分片，delta 恒等于 text。"
+            "新客户端可用 delta 做增量/打字机渲染；旧客户端可继续只读 text。"
+        ),
+    )
     is_final: bool = Field(
         default=False,
         description="当前 text 是否稳定。实时 online 为 false；实时 final 和文件分片为 true。",

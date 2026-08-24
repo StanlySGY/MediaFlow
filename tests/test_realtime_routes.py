@@ -121,3 +121,35 @@ def test_auth_required_for_realtime(secured_client):
         headers={"Authorization": "Bearer tok"},
     )
     assert r2.status_code == 200
+
+
+def test_realtime_events_stream_carries_delta(client):
+    import json
+
+    sid = client.post("/asr/realtime/session", json={}).json()["session_id"]
+    for i in range(6):
+        client.post(
+            f"/asr/realtime/{sid}/audio",
+            json={"seq": i, "audio": "AAAAAAAAAAA="},
+        )
+    client.post(f"/asr/realtime/{sid}/end")
+
+    with client.stream("GET", f"/asr/realtime/{sid}/events") as resp:
+        assert resp.status_code == 200
+        payloads = []
+        for line in resp.iter_lines():
+            if line.startswith("data:"):
+                payloads.append(json.loads(line[len("data:"):].strip()))
+
+    text_events = [p for p in payloads if p["type"] == "text"]
+    assert text_events, "expected at least one text event from realtime_mock"
+    for evt in text_events:
+        assert "delta" in evt
+        # realtime_mock always emits a monotonically-growing transcript per
+        # session, so delta must be a non-empty suffix of the full text.
+        assert evt["text"].endswith(evt["delta"])
+
+    terminal = [p for p in payloads if p["type"] in {"done", "error"}]
+    assert terminal
+    for evt in terminal:
+        assert evt["delta"] == ""

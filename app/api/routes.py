@@ -141,6 +141,10 @@ data: {"type":"done","stream":"file","id":"...","text":"","is_final":true,"task_
 都解析 `data.type`、`data.stream`、`data.id`、`data.text`、`data.is_final`。文件流额外
 提供 `task_id`、`segment_id`、`start`、`end`。
 
+`data.text` 始终是全量文本；每条文件 text 事件同时携带 `data.delta`，文件流里
+`delta` 恒等于 `text`（每个分片本身就是独立的一段，没有跨事件累计）。只关心增量的
+调用方可以直接用 `delta`，不需要自己去重。
+
 `data.task_id` 会在每条文件 text 事件中返回，用于前端多任务并行、页面切换后的事件归属、
 日志排查和断线恢复。但任务 ID 的可靠来源仍然是 `POST /asr/file` 的响应；客户端应在上传
 成功后立即保存它。不要依赖第一条 `type=text` 才拿 `task_id`，因为第一条分片可能在切分、
@@ -162,14 +166,14 @@ STANDARD_FILE_EVENTS_RESPONSE = {
                 "example": (
                     'event: message\n'
                     'data: {"type":"text","stream":"file","id":"abc",'
-                    '"text":"识别文本","is_final":true,"seq":1,'
+                    '"text":"识别文本","delta":"识别文本","is_final":true,"seq":1,'
                     '"session_id":null,"task_id":"abc","segment_id":1,'
                     '"start":0.0,"end":30.0,"elapsed_ms":120.0,'
                     '"status":null,"progress":null,"error":null,'
                     '"source_event":"segment"}\n\n'
                     'event: message\n'
                     'data: {"type":"done","stream":"file","id":"abc",'
-                    '"text":"","is_final":true,"seq":null,"session_id":null,'
+                    '"text":"","delta":"","is_final":true,"seq":null,"session_id":null,'
                     '"task_id":"abc","segment_id":null,"start":null,"end":null,'
                     '"elapsed_ms":0.0,"status":"done","progress":1.0,'
                     '"error":null,"source_event":"done"}\n\n'
@@ -258,13 +262,13 @@ REALTIME_EVENTS_DOC = """
 
 ```text
 event: message
-data: {"type":"text","stream":"realtime","id":"...","text":"中间识别结果","is_final":false,"seq":1,"session_id":"...","source_event":"online"}
+data: {"type":"text","stream":"realtime","id":"...","text":"中间识别结果","delta":"中间识别结果","is_final":false,"seq":1,"session_id":"...","source_event":"online"}
 
 event: message
-data: {"type":"text","stream":"realtime","id":"...","text":"最终识别文本","is_final":true,"session_id":"...","source_event":"final"}
+data: {"type":"text","stream":"realtime","id":"...","text":"最终识别文本","delta":"","is_final":true,"session_id":"...","source_event":"final"}
 
 event: message
-data: {"type":"done","stream":"realtime","id":"...","text":"","is_final":true,"session_id":"...","source_event":"done"}
+data: {"type":"done","stream":"realtime","id":"...","text":"","delta":"","is_final":true,"session_id":"...","source_event":"done"}
 ```
 
 统一字段：
@@ -274,6 +278,9 @@ data: {"type":"done","stream":"realtime","id":"...","text":"","is_final":true,"s
 - `type=error`：识别失败或上游异常。
 - `stream=realtime`，`id=session_id`。
 - `source_event` 保留底层事件名，例如 `online`、`final`、`done`、`error`，用于调试。
+- `text` 始终是本次事件为止的全量识别文本（向后兼容旧客户端）；`delta` 是相对同一
+  session 上一条 text 事件新增的部分，用于增量/打字机渲染。只在上游模型改写或缩短了
+  已识别文本（不是简单的前缀追加）时，`delta` 会退化为等于整段 `text`，保证不丢信息。
 
 真实数据配置：
 
@@ -297,14 +304,14 @@ REALTIME_EVENTS_RESPONSE = {
                 "example": (
                     'event: message\n'
                     'data: {"type":"text","stream":"realtime","id":"abc",'
-                    '"text":"中间识别结果","is_final":false,"seq":1,'
+                    '"text":"中间识别结果","delta":"中间识别结果","is_final":false,"seq":1,'
                     '"session_id":"abc","task_id":null,"segment_id":null,'
                     '"start":null,"end":null,"elapsed_ms":30.0,'
                     '"status":null,"progress":null,"error":null,'
                     '"source_event":"online"}\n\n'
                     'event: message\n'
                     'data: {"type":"done","stream":"realtime","id":"abc",'
-                    '"text":"","is_final":true,"seq":null,"session_id":"abc",'
+                    '"text":"","delta":"","is_final":true,"seq":null,"session_id":"abc",'
                     '"task_id":null,"segment_id":null,"start":null,"end":null,'
                     '"elapsed_ms":0.0,"status":null,"progress":null,'
                     '"error":null,"source_event":"done"}\n\n'
@@ -377,12 +384,15 @@ def _sse_message(payload: ASRStreamEvent) -> dict[str, str]:
 
 
 def _standard_file_segment_sse_message(evt: SegmentEvent) -> dict[str, str]:
+    # File segments are already independent chunks (no cross-event accumulation),
+    # so delta is always the same as the full segment text.
     return _sse_message(
         ASRStreamEvent(
             type="text",
             stream="file",
             id=evt.task_id,
             text=evt.text,
+            delta=evt.text,
             is_final=evt.is_final,
             seq=evt.segment_id,
             task_id=evt.task_id,
@@ -413,7 +423,31 @@ def _standard_file_done_sse_message(info: TaskInfo) -> dict[str, str]:
     )
 
 
-def _standard_realtime_sse_message(evt: RealtimeASREvent) -> dict[str, str]:
+def _realtime_delta(previous_text: str, full_text: str) -> str:
+    """Newly-added suffix of `full_text` relative to `previous_text`.
+
+    Falls back to the full text when the new text is not a simple extension
+    of the previous one (e.g. the upstream model revised or shortened its
+    output), so no information is ever lost -- only the happy path of a
+    monotonically growing transcript gets the delta shortcut.
+    """
+    if full_text.startswith(previous_text):
+        return full_text[len(previous_text):]
+    return full_text
+
+
+def _standard_realtime_sse_message(
+    evt: RealtimeASREvent, *, previous_text: str = ""
+) -> dict[str, str]:
+    """Convert one provider-level event into the outgoing standard SSE message.
+
+    `previous_text` is the caller's own running "last text seen" for this
+    particular subscriber connection. It must NOT be tracked as shared/global
+    state keyed by session_id: a single realtime session can have several
+    independent subscribers replaying the same event history concurrently
+    (see test_multiple_subscribers_each_get_all_events), and each one needs
+    its own delta baseline.
+    """
     if evt.type == "done":
         event_type = "done"
     elif evt.type == "error":
@@ -421,12 +455,15 @@ def _standard_realtime_sse_message(evt: RealtimeASREvent) -> dict[str, str]:
     else:
         event_type = "text"
 
+    delta = _realtime_delta(previous_text, evt.text) if event_type == "text" else ""
+
     return _sse_message(
         ASRStreamEvent(
             type=event_type,
             stream="realtime",
             id=evt.session_id,
             text=evt.text,
+            delta=delta,
             is_final=evt.is_final or evt.type in {"final", "done"},
             seq=evt.seq,
             session_id=evt.session_id,
@@ -1100,15 +1137,19 @@ async def stream_realtime_session(
         raise HTTPException(404, "session not found")
 
     async def event_gen():
+        previous_text = ""
         async for evt in rm.stream(session_id):
-            yield _standard_realtime_sse_message(evt)
+            msg = _standard_realtime_sse_message(evt, previous_text=previous_text)
+            if evt.type not in {"done", "error"}:
+                previous_text = evt.text
+            yield msg
         info = rm.get(session_id)
         if info is not None and info.status.value not in {"done", "failed", "closed"}:
             # safety fallback if the stream ended without a terminal event
             terminal = RealtimeASREvent(
                 type="done", session_id=session_id, is_final=True
             )
-            yield _standard_realtime_sse_message(terminal)
+            yield _standard_realtime_sse_message(terminal, previous_text=previous_text)
 
     return EventSourceResponse(event_gen())
 

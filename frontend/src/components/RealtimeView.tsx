@@ -153,6 +153,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
       session_id: ev.session_id || ev.id || '',
       seq: ev.seq ?? undefined,
       text: ev.text,
+      delta: ev.delta,
       is_final: ev.is_final ?? undefined,
       elapsed_ms: ev.elapsed_ms ?? undefined,
       mode: ev.mode,
