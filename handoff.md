@@ -1,7 +1,7 @@
 # Handoff — Qwen3-ASR 流式接入 / AutoDL 部署
 
 > 用法：下次开新会话时说一句「读取 handoff.md 恢复上下文」即可继续。
-> 最后更新：2026-08-24。写这份文档时 git HEAD = `132ce81`（branch `main`，工作区干净，remote `git@github.com:StanlySGY/MediaFlow.git`）。
+> 最后更新：2026-08-24。写这份文档时 git HEAD = `ae1b073`（branch `main`，已 push 到远端，工作区干净，remote `git@github.com:StanlySGY/MediaFlow.git`）。
 
 ## 背景一句话
 
@@ -13,18 +13,29 @@
 
 ---
 
-## ⏸️ 悬而未决：等你答复才能继续
+## ✅ 已完成：分句契约（delta 字段）
 
-**问题**：MediaFlow 目前不管走 `realtime_http` 还是 `realtime_ws`，推给前端的都是"全量文本"（每次推送都是从头到尾的完整识别结果），不是增量/分句。这是要现在改成分句下发（加 `delta` 字段或按句切 `segment_id`），还是等对方（前端）这版先跑通再改？
+上次决策是「先改」，方案 A（加 delta 字段，向后兼容），已经改完并 push 到 main（commit `ae1b073`）。
 
-上一次对话中我已经把方案想清楚了，只是在等这个决策：
-- **倾向的方案**：在 MediaFlow 层做差分——记住上次推送给下游调用方的文本，只发新增部分。这个改动小，对 `realtime_http` 和 `realtime_ws` 两个 provider 通吃（因为两条路径殊途同归，最后都在 MediaFlow 里拼出全量字符串再往外推，差分逻辑加在这个"往外推"的环节即可）。
-- **代价**：这是对外 SSE 契约变更，前端说明文档要重写。
-- **两个选项**：
-  1. 现在改（对方前端还没写完对接代码，一次到位，不用改两次）
-  2. 等现在这版全量方案先联调跑通，确认端到端没问题后再切分句
+- `app/models/schemas.py`：`ASRStreamEvent` 新增 `delta: str` 字段（默认 `""`），`text` 字段的 docstring 更新为明确说明"始终是全量文本"。
+- `app/api/routes.py`：
+  - 新增 `_realtime_delta(previous_text, full_text)` 纯函数：对 `full_text` 相对 `previous_text` 做前缀差分，非前缀增长（模型改写/缩短了输出）时退化为整段 `full_text`，绝不丢信息。
+  - `_standard_realtime_sse_message()` 签名改为 `(evt, *, previous_text="")`，`previous_text` 由调用方（每个 SSE 连接自己）维护，**不是**按 `session_id` 存的全局/共享状态——因为同一个 realtime session 可能有多个并发订阅者各自重放同一份事件历史（`test_multiple_subscribers_each_get_all_events`），一个全局 dict 会让它们互相污染 delta 基准。
+  - `stream_realtime_session()` 里的 `event_gen()` 在本地维护 `previous_text` 局部变量，逐个事件更新。
+  - `_standard_file_segment_sse_message()`：文件流每个 segment 本身就是独立分片，`delta` 恒等于 `text`。
+  - `REALTIME_EVENTS_DOC`、`STANDARD_FILE_EVENTS_DOC`、两处 OpenAPI response example 都加了 `delta` 字段说明和示例。
+- `app/main.py`：顶部 `API_DESCRIPTION` 里的 SSE 示例和文字说明同步加了 `delta`。
+- 前端：`frontend/src/types.ts` 的 `StandardASRStreamEvent`/`RealtimeEvent` 都加了 `delta?: string`；`RealtimeView.tsx`、`RealtimeRecorderPanel.tsx` 透传 `delta`（渲染逻辑本身没改，前端目前仍按 `text` 全量渲染，`delta` 字段已经在事件对象里，后续要做打字机效果时前端可以直接用）。
+- 测试：`tests/test_standard_sse_format.py` 更新了旧断言（`==` 全字典比较加了 `delta` 键），新增 3 个测试专门验证 delta 前缀差分/回退整段/done-error 时 delta 恒为空；`tests/test_realtime_routes.py` 新增一个端到端 SSE 流测试验证 `delta` 字段真实出现在 HTTP 响应流里。
+- 全部通过：后端 `pytest` 129 passed；前端 `tsc -b --noEmit` 无错、`vitest run` 16 passed。
 
-**一旦你给出决定，直接告诉我"现在改"或"先不改"，我就能继续动手，不用重新解释背景。**
+**注意**：这次只加了 `delta` 字段，**没有**动 `deploy/qwen3-asr-npu/streaming_server/server.py`（AutoDL 上要部署的那个上游服务）和 `app/services/asr/realtime_ws.py`（现场 WebSocket provider）的内部逻辑——它们继续往 `RealtimeASREvent.text` 里塞全量文本，差分是在 MediaFlow 网关层（`_standard_realtime_sse_message`）统一做的，两个 provider 不用改，这也是设计这个方案时特意要达到的效果（对两个 provider 通吃）。
+
+---
+
+## 悬而未决：无（截至本次更新）
+
+上一轮的分句契约问题已经解决。目前没有阻塞性决策待你回复；下一步是 AutoDL 部署联调（见下方问题 2/3），如果部署或联调中出现新的分支决策，会更新在这里。
 
 ---
 
@@ -110,11 +121,11 @@ curl http://127.0.0.1:8001/health     # 期望 {"status":"ok","model_loaded":tru
 | `app/services/asr/realtime_registry.py` | provider 注册表，`realtime_http`/`realtime_ws` 两个 key |
 | `STREAMING_ONSITE_DEPLOY.md` / `ONSITE_DEPLOY.md` / `DEPLOY_ONSITE.md` | 现场部署相关既有文档 |
 
-## 下一步（等你回答完悬而未决的问题后）
+## 下一步
 
-1. 按你的决定，动手改/不改分句契约。
+1. ~~分句契约~~ 已完成，见上方「✅ 已完成」章节。
 2. 按上面步骤在 AutoDL 开 4090/3090 实例，部署 `streaming_server`。
-3. 把 AutoDL 映射地址配进 MediaFlow（`realtime_http`），联调验证 SSE 契约、前端渲染。
+3. 把 AutoDL 映射地址配进 MediaFlow（`realtime_http`），联调验证 SSE 契约、前端渲染、`delta` 字段是否符合预期。
 4. 遇到 `qwen-asr[vllm]` 安装报错或 HF 模型名不对，把报错贴过来。
 
 ## 关于本文件维护的提醒（用户偏好，来自 memory）
