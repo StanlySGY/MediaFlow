@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from app.models.schemas import RealtimeAudioChunk, RealtimeSessionCreate
-from app.services.asr.realtime_ws import RealtimeWSProvider
+from app.services.asr.realtime_ws import RealtimeWSProvider, _normalize_language
 
 
 class _FakeWebSocket:
@@ -168,7 +168,7 @@ async def test_pcm_stream_maps_qwen_events_to_cumulative_text(monkeypatch):
         "channels": 1,
         "enable_partial": True,
         "enable_vad": True,
-        "language": "zh",
+        "language": "Chinese",
     }
     binary_frames = [item for item in socket.sent if isinstance(item, bytes)]
     assert [len(item) for item in binary_frames] == [6400, 10]
@@ -315,3 +315,34 @@ async def test_websocket_uses_bearer_auth_and_no_proxy(monkeypatch):
     ]
     assert captured["proxy"] is None
     assert "language" not in json.loads(str(socket.sent[0]))
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("zh", "Chinese"),
+        ("ZH", "Chinese"),
+        ("zh-CN", "Chinese"),
+        ("en", "English"),
+        ("ja", "Japanese"),
+        ("Chinese", "Chinese"),
+        ("english", "English"),
+        ("  zh  ", "Chinese"),
+        ("", ""),
+        ("klingon", "Klingon"),
+    ],
+)
+def test_normalize_language_maps_iso_codes_to_full_names(given: str, expected: str):
+    assert _normalize_language(given) == expected
+
+
+async def test_start_frame_sends_full_language_name_upstream(monkeypatch):
+    socket = _FakeWebSocket(terminal_events=[{"type": "done", "text": ""}])
+    provider = await _provider_with_socket(monkeypatch, socket)
+
+    async with provider:
+        await provider.start(RealtimeSessionCreate(language="zh"))
+        await provider.finish()
+        _ = [event async for event in provider.events()]
+
+    assert json.loads(str(socket.sent[0]))["language"] == "Chinese"

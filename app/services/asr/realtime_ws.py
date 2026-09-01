@@ -49,6 +49,38 @@ _CLOSE_CODE_ERRORS: dict[int, str] = {
     4503: "model still loading",
 }
 
+# 上游 qwen-asr 只认语言全称（内部会对传入值做 capitalize 再查白名单，
+# 所以 "zh" 会变成 "Zh" 被拒）。这里把常见 ISO 码翻成它认识的全称。
+_LANGUAGE_ALIASES: dict[str, str] = {
+    "zh": "Chinese",
+    "zh-cn": "Chinese",
+    "zh-hans": "Chinese",
+    "cmn": "Chinese",
+    "en": "English",
+    "en-us": "English",
+    "ja": "Japanese",
+    "jp": "Japanese",
+    "ko": "Korean",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "ar": "Arabic",
+}
+
+
+def _normalize_language(language: str) -> str:
+    """把语言码归一成上游认识的全称；已经是全称或未知值则原样首字母大写。"""
+    key = language.strip()
+    if not key:
+        return ""
+    mapped = _LANGUAGE_ALIASES.get(key.lower())
+    if mapped:
+        return mapped
+    return key[:1].upper() + key[1:]
+
 
 def _normalize_ws_url(url: str) -> str:
     url = url.strip()
@@ -270,7 +302,9 @@ class RealtimeWSProvider:
             "enable_vad": True,
         }
         if config.language and config.language.strip().lower() != "auto":
-            frame["language"] = config.language.strip()
+            normalized = _normalize_language(config.language)
+            if normalized:
+                frame["language"] = normalized
         return frame
 
     async def _ensure_audio_pipeline(

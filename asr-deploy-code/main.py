@@ -73,6 +73,7 @@ async def lifespan(app: FastAPI):
     finally:
         if not task.done():
             task.cancel()
+        engine.shutdown()
         engine.unload()
         set_engine(None)
         logger.info("服务已停止。")

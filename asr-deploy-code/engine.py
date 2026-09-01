@@ -20,6 +20,7 @@ import re
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -277,6 +278,7 @@ class ASREngine:
         self._lock = threading.Lock()  # NPU 上串行化 generate，避免流并发踩踏
         self._sem: Optional[asyncio.Semaphore] = None
         self._partial_sem: Optional[asyncio.Semaphore] = None
+        self._pool: Optional[ThreadPoolExecutor] = None
 
     # ------------------------------------------------------------- lifecycle
     def load(self) -> None:
@@ -446,9 +448,33 @@ class ASREngine:
 
     # ------------------------------------------------------------ concurrency
     def bind_loop(self) -> None:
-        """在事件循环启动后调用，创建并发闸门。"""
-        self._sem = asyncio.Semaphore(max(1, self.settings.max_concurrency))
-        self._partial_sem = asyncio.Semaphore(max(1, self.settings.partial_concurrency))
+        """在事件循环启动后调用，创建并发闸门与推理线程池。
+
+        推理是 GIL 受限的阻塞调用。如果丢给 run_in_executor(None, ...)，用的是
+        事件循环默认的无界线程池（min(32, cpu+4) 个线程），信号量放行的请求会
+        全部同时进入线程池抢 GIL 和显存，max_concurrency 就形同虚设——排队变成
+        了颠簸。这里显式建一个 max_workers 与闸门对齐的池，超出的请求真正在
+        队列里等，而不是挤进去互相拖慢。
+        """
+        limit = max(1, self.settings.max_concurrency)
+        partial_limit = max(1, self.settings.partial_concurrency)
+        self._sem = asyncio.Semaphore(limit)
+        self._partial_sem = asyncio.Semaphore(partial_limit)
+        # 两个信号量是独立闸门（整句走 _sem、partial 走 _partial_sem），最坏情况
+        # 同时有 limit + partial_limit 个阻塞调用。池按这个上限开，闸门才是唯一
+        # 的限流点；池开小了会变成第二道错位的闸门，反而把请求卡在池队列里。
+        # streamer 的取词/join 是纯等待、不吃 GIL，仍留在默认线程池，避免占位。
+        self._pool = ThreadPoolExecutor(
+            max_workers=limit + partial_limit, thread_name_prefix="asr-infer"
+        )
+        logger.info("并发闸门就绪: max_concurrency=%d partial_concurrency=%d pool=%d",
+                    limit, partial_limit, limit + partial_limit)
+
+    def shutdown(self) -> None:
+        """关停推理线程池（应用 lifespan 退出时调用）。"""
+        pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     # -------------------------------------------------------------- inference
     def _build_inputs(self, audio: np.ndarray, language: Optional[str]):
@@ -654,14 +680,11 @@ class ASREngine:
     ) -> ASRResult:
         sem = self._partial_sem if partial and self._partial_sem else self._sem
         loop = asyncio.get_running_loop()
+        run = lambda: self.transcribe_sync(audio, language, max_new_tokens)  # noqa: E731
         if sem is None:
-            return await loop.run_in_executor(
-                None, lambda: self.transcribe_sync(audio, language, max_new_tokens)
-            )
+            return await loop.run_in_executor(self._pool, run)
         async with sem:
-            return await loop.run_in_executor(
-                None, lambda: self.transcribe_sync(audio, language, max_new_tokens)
-            )
+            return await loop.run_in_executor(self._pool, run)
 
     async def transcribe_iter(
         self,
@@ -705,7 +728,7 @@ class ASREngine:
             )
 
             inputs = await loop.run_in_executor(
-                None, lambda: self._to_device(self._build_inputs(audio, language))
+                self._pool, lambda: self._to_device(self._build_inputs(audio, language))
             )
 
             err_box: List[BaseException] = []

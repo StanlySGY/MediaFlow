@@ -1,0 +1,81 @@
+# Qwen3-ASR 流式服务 · NVIDIA CUDA 版
+#
+# 用法（在仓库根目录执行，build context 必须是根目录）：
+#   docker compose -f deploy/qwen3-asr-cuda/docker-compose.yml up -d --build
+#
+# 前置条件：宿主机装好 NVIDIA 驱动 + nvidia-container-toolkit
+#   验证：docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
+
+services:
+  qwen3-asr:
+    build:
+      context: ../..                        # 根目录，才能 COPY asr-deploy-code/
+      dockerfile: deploy/qwen3-asr-cuda/Dockerfile
+    image: qwen3-asr:cuda
+    container_name: qwen3-asr-cuda
+    restart: unless-stopped
+
+    ports:
+      - "8030:8022"                         # 对外 8030 → 容器内 8022
+
+    volumes:
+      # ← 改为实际权重目录。容器内路径要和下面 ASR_MODEL_PATH 一致
+      - /home/models/Qwen3-ASR-1.7B:/models/Qwen3-ASR-1.7B:ro
+
+    environment:
+      TZ: Asia/Shanghai
+
+      # ---------------- 基础 ----------------
+      ASR_MODEL_PATH: /models/Qwen3-ASR-1.7B
+      ASR_HOST: 0.0.0.0
+      ASR_PORT: 8022
+      ASR_LOG_LEVEL: INFO
+      ASR_API_KEY: ""                       # ← 非内网部署请设一个，客户端用 Bearer 传
+      ASR_CORS_ORIGINS: "*"
+
+      # ---------------- 设备与模型 ----------------
+      ASR_DEVICE: cuda
+      ASR_NPU_DEVICE_ID: 0                  # cuda 下复用这个字段当卡号 → cuda:0
+      ASR_DTYPE: bfloat16                   # 老卡（不支持 bf16）改 float16
+      ASR_BACKEND: auto                     # 装了 qwen-asr 时会自动选 qwen_asr
+      ASR_ATTN_IMPLEMENTATION: eager
+      ASR_MAX_NEW_TOKENS: 256
+      ASR_DEFAULT_LANGUAGE: ""              # 留空自动识别；填全称如 Chinese
+      ASR_WARMUP: "true"
+
+      # ---------------- 流式 / VAD ----------------
+      ASR_STREAM_PARTIAL_ENABLED: "true"
+      ASR_STREAM_PARTIAL_INTERVAL_MS: 640
+      ASR_STREAM_MAX_SESSIONS: 8
+      ASR_STREAM_TOKEN_LEVEL: "true"        # qwen_asr 后端不暴露 streamer，会自动降级为整句返回
+      ASR_VAD_ENABLED: "true"
+      ASR_VAD_SILENCE_MS: 700               # 静音多久算一句结束 → 触发 final
+      ASR_SEGMENT_MAX_MS: 25000
+
+      # ---------------- 并发 ----------------
+      # 推理是 GIL 受限的阻塞调用，engine.bind_loop() 会按 max+partial 开一个等大的
+      # 线程池，所以这两个值就是真实并发上限。往上调之前先看显存够不够。
+      ASR_MAX_CONCURRENCY: 2
+      ASR_PARTIAL_CONCURRENCY: 1
+
+    # 权重加载/推理会用较大共享内存，默认 64MB 不够
+    shm_size: "1g"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1                      # ← 多卡想全给就改成 all
+              capabilities: [gpu]
+
+# MediaFlow 侧怎么填（服务配置页面，两个区块不要串）：
+#   实时流式（realtime_ws）: ws://<宿主机IP>:8030/v1/asr/stream
+#   整段转写（openai_compat）: http://<宿主机IP>:8030/v1
+#   注意 openai_compat 要填到 /v1 根，且 scheme 必须是 http——服务不说 HTTPS，
+#   填 https 会报 [SSL: WRONG_VERSION_NUMBER]。
+#
+# 启动：docker compose -f deploy/qwen3-asr-cuda/docker-compose.yml up -d --build
+# 日志：docker compose -f deploy/qwen3-asr-cuda/docker-compose.yml logs -f
+# 停止：docker compose -f deploy/qwen3-asr-cuda/docker-compose.yml down
+# 自检：curl http://127.0.0.1:8030/readyz

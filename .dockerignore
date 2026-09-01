@@ -33,3 +33,9 @@ frontend/node_modules
 frontend/dist
 frontend/.vite
 **/*.metadata.json
+# 离线交付用的 tar 包，共约 13GB。镜像不从它们构建（昇腾那套直接拉
+# quay.io/ascend/vllm-ascend 基础镜像），但只要留在 build context 里，
+# docker build 每次都会把它们打包发给 daemon。
+vllm-ascend-*.tar.gz
+vllm-part-*
+vllm-checksum.txt

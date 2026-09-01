@@ -147,7 +147,10 @@ class RealtimeSessionCreate(BaseModel):
     )
     language: str | None = Field(
         default=None,
-        description="识别语言，例如 zh / en；留空表示自动识别或使用服务端默认值。",
+        description=(
+            "识别语言，可填 ISO 码（zh / en）或语言全称（Chinese / English）；"
+            "realtime_ws 会自动翻成上游要求的全称。留空或填 auto 表示自动识别。"
+        ),
     )
     sample_rate: int = Field(
         default=16000,

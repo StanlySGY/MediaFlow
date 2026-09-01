@@ -216,6 +216,7 @@ curl http://127.0.0.1:8001/health     # 期望 {"status":"ok","model_loaded":tru
 | `app/services/asr/realtime_http.py` | MediaFlow 内 `realtime_http` provider，透传下游 SSE |
 | `app/services/asr/realtime_ws.py` | MediaFlow 内 `realtime_ws` provider，自己拼 `_render_text`（约 455-608 行），对应现场环境 |
 | `app/services/asr/realtime_registry.py` | provider 注册表，`realtime_http`/`realtime_ws` 两个 key |
+| `deploy/qwen3-asr-cuda/` | **新增**：`asr-deploy-code/` 的 CUDA 容器封装（Dockerfile + compose + README），拉代码就能部署 |
 | `STREAMING_ONSITE_DEPLOY.md` / `ONSITE_DEPLOY.md` / `DEPLOY_ONSITE.md` | 现场部署相关既有文档 |
 
 ## 服务端已修的 bug（`asr-deploy-code/engine.py`）
@@ -228,7 +229,48 @@ curl http://127.0.0.1:8001/health     # 期望 {"status":"ok","model_loaded":tru
 
 `qwen_asr` 后端下 partial（`session.py:198`）和 final（`session.py:262`）都会落到 `transcribe_sync` → 这个解析函数，所以呼吸、咳嗽、环境噪声这类被 VAD 放过但转写为空的片段，都会把这串 dataclass repr 当识别文本推进 SSE，MediaFlow 原样透传。已改为用 `_SENTINEL`（`engine.py:32` 本来就有）区分缺失与空值。
 
+### 并发闸门形同虚设（本次修）
+
+`transcribe()` 拿了 `_sem` / `_partial_sem`，但推理是 `run_in_executor(None, ...)` —— 事件循环默认的
+无界线程池（`min(32, cpu+4)` 个线程）。信号量放行的请求全部同时进池抢 GIL 和显存，
+`ASR_MAX_CONCURRENCY` 根本没限住任何东西，排队变成了颠簸。
+
+`bind_loop()` 现在显式建一个 `ThreadPoolExecutor(max_workers=limit + partial_limit)`，
+`transcribe()` 和 `transcribe_iter()` 里 `_build_inputs`/`_to_device` 那一处走这个池。
+池大小必须是两个闸门之和：`_sem` 和 `_partial_sem` 是独立闸门，最坏情况同时有
+`limit + partial_limit` 个阻塞调用；池开小了就成了第二道错位的闸门，把闸门已经放行的
+请求又卡在池队列里。
+
+`next(streamer_iter)` 和 `worker.join` **故意留在默认线程池**——纯等待、不吃 GIL，
+挪进推理池只会白占推理槽位。`main.py` 的 lifespan 退出时先 `engine.shutdown()` 关池，
+再 `engine.unload()`。
+
 **改完要重启 GPU 机器上的服务才生效。**
+
+## 容器封装（`deploy/qwen3-asr-cuda/`，本次新增）
+
+拉代码到任意 N 卡机器，在**仓库根目录**执行：
+
+```bash
+docker compose -f deploy/qwen3-asr-cuda/docker-compose.yml up -d --build
+curl http://127.0.0.1:8030/readyz     # 模型后台加载，首次约 1~2 分钟
+```
+
+只有两处要改，compose 里都标了 `←`：权重挂载路径、`ASR_API_KEY`。几个封装时踩到的点：
+
+- `context` 必须是仓库根目录（compose 里已配 `context: ../..`），镜像要 `COPY asr-deploy-code/`。
+- 目录名 `asr-deploy-code` 带连字符不是合法包名，而 `main.py` 用相对导入 + 硬编码
+  `"app.main:app"`，所以镜像里必须重命名成 `/srv/app/`。
+- `uvicorn` 得装 `[standard]`，否则没 websockets，`/v1/asr/stream` 直接 404。
+  `qwen-asr` 不用加 `[vllm]`——引擎走 `Qwen3ASRModel.from_pretrained`。
+- `torch_npu` 是干净可选的：`_probe_device()` 在 `engine.py:193` 就
+  `if settings.device != "npu": return info` 提前返回了，CUDA 镜像不需要任何昇腾组件。
+- `.dockerignore` 补了 `vllm-ascend-*.tar.gz` / `vllm-part-*` / `vllm-checksum.txt`。
+  这三个离线交付包共约 13GB，没有任何 Dockerfile 从它们构建，但留在 build context 里
+  每次 build 都会打包发给 daemon。排除后服务侧 payload 是 124K / 13 个文件。
+- 权重不进镜像，靠挂载。换模型只改挂载路径和 `ASR_MODEL_PATH`，不用重建镜像。
+
+昇腾那套仍在 `deploy/qwen3-asr-npu/`，两套并存。
 
 ## 当前实际拓扑（2026-09-01）
 
@@ -250,12 +292,29 @@ curl http://127.0.0.1:8001/health     # 期望 {"status":"ok","model_loaded":tru
 
 逐字时间戳开关无所谓：`qwen_asr` 后端返回 `time_stamps=None`，词级时间轴拿不回来。
 
+## 本次交付（三件都已完成）
+
+1. **`language` 归一化**：`RealtimeSessionCreate.language` 文档写「zh / en」，但 `qwen_asr` 内部
+   `capitalize()` 成 `Zh` 再拿全英文名白名单校验，直接 `ValueError: Unsupported language: Zh`。
+   已在 `app/services/asr/realtime_ws.py` 加 `_normalize_language()`，`zh` → `Chinese`。
+   直连服务端时要自己注意，上游只认全称。
+2. **并发闸门**：见上方「并发闸门形同虚设」。是并发上限的问题，不是单会话卡死——
+   单会话走 MediaFlow 自己的 UI 一直是正常的，之前那次「冻住」是我自己叠了三个并发测试会话。
+   修法是有界线程池，不是 `ProcessPoolExecutor`。
+3. **容器封装**：见上方「容器封装」。
+
+本地验证：后端 `python -m pytest -q` → 140 passed（1 个既有 `StarletteDeprecationWarning`）；
+前端 `npx tsc -b --noEmit` 干净、`npx vitest run` → 6 files / 16 tests passed；
+`docker compose config` → OK；两个改动文件 `py_compile` → OK。
+**镜像没构建过、容器没跑过**——本地没有 GPU，这一步只能在目标机器上验。
+
 ## 下一步
 
 1. ~~分句契约~~ 已完成，见上方「✅ 已完成」章节。
 2. ~~AutoDL 部署~~ 已完成，见上方「当前实际拓扑」。
-3. 用户改完配置页后，跑端到端流式验证：SSE `delta` 契约（`text` 累积、`delta` 增量、`text.endsWith(delta)`）、700ms 静音触发 `final` 的分句、前端渲染。
+3. 用户改完配置页后，跑端到端流式验证：SSE `delta` 契约（`text` 累积、`delta` 增量、`text.endsWith(delta)`）、700ms 静音触发 `final` 的分句、前端渲染（含非前缀增长时的替换语义）。
 4. 服务端 bug 修复需重启 `172.16.100.26:8030` 上的服务后才生效。
+5. 优先级低：`error` SSE 事件不带诊断 `text`，原因只能靠 `GET /asr/realtime/{sid}` 捞。
 
 ## 关于本文件维护的提醒（用户偏好，来自 memory）
 
