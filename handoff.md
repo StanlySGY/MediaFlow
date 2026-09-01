@@ -1,7 +1,7 @@
 # Handoff — Qwen3-ASR 流式接入 / AutoDL 部署
 
 > 用法：下次开新会话时说一句「读取 handoff.md 恢复上下文」即可继续。
-> 最后更新：2026-08-24。写这份文档时 git HEAD = `ae1b073`（branch `main`，已 push 到远端，工作区干净，remote `git@github.com:StanlySGY/MediaFlow.git`）。
+> 最后更新：2026-09-01。AutoDL 已部署完并经隧道打通，见「当前实际拓扑」；服务端修了一个空转写 bug，见「服务端已修的 bug」。
 
 ## 背景一句话
 
@@ -10,6 +10,103 @@
 **部署到 AutoDL 后，MediaFlow 侧要配：实时接口类型 = `realtime_http`，实时接口地址 = `http://<AutoDL映射地址>`（不带路径后缀）。** 配成 `realtime_ws` 会连不上。
 
 这意味着 AutoDL 自建环境测不到现场那条 `realtime_ws` 代码路径（`app/services/asr/realtime_ws.py`），但对当前要验证的东西——SSE 契约、前端渲染、全量 vs 分句——完全够用，因为 MediaFlow 推给调用方的 SSE 格式跟用哪个 provider 无关（两条 provider 路径最终都会喂给同一套下游 SSE 格式）。
+
+---
+
+## 重大转向：不再用仓库自带的简化版 streaming_server，改为原样复刻现场服务
+
+之前几轮说的「AutoDL 部署 deploy/qwen3-asr-npu/streaming_server/server.py」这条路线已经放弃。原因：那只是一个我搭的简化验证用具（SSE 协议、累计全文、无 VAD），跟现场真实架构不是一回事，测不出 MediaFlow `realtime_ws` provider 里 `_dispatch_server_frame`/`_render_text` 那部分逻辑。
+
+现在的新计划：你已经从同事那里拿到了现场真实部署的那套 WebSocket 流式服务的完整源码，放在仓库根目录的 `asr-deploy-code/` 目录下（已入库，见下方「服务端已修的 bug」）。目标是把这套服务原样部署到你能拿到的 GPU 环境上，然后 MediaFlow 配置成真正的 `REALTIME_ASR_PROVIDER=realtime_ws` 去联调，而不是 `realtime_http`。
+
+### `asr-deploy-code/` 源码结构与关键发现
+
+```
+asr-deploy-code/
+├── __init__.py          (from .version import VERSION)
+├── version.py           (VERSION = "1.0.0")
+├── config.py            (pydantic-settings，ASR_ 前缀环境变量)
+├── engine.py            (推理引擎：transformers 或 qwen_asr 两种后端，自动探测)
+├── session.py           (StreamSession：VAD 切句 + partial/delta/final 状态机)
+├── vad.py               (StreamVad：纯 numpy 能量+过零率 VAD，零额外依赖)
+├── audio.py             (PCM 解码、重采样、ffmpeg 容器转码)
+├── schemas.py           (Pydantic 响应模型)
+├── main.py              (FastAPI app 入口，硬编码 `uvicorn.run("app.main:app", ...)`)
+└── routers/
+    ├── health.py        (/healthz /readyz /v1/info)
+    ├── http.py           (POST /v1/audio/transcriptions，OpenAI 兼容 + SSE)
+    └── ws.py             (WebSocket /v1/asr/stream，跟你贴的 API 文档完全对应)
+```
+
+**好消息 1**：`config.py` 里 `device: Literal["npu", "cpu", "cuda"] = "npu"`，`engine.py` 的 `init_device()` 只有 `device=="npu"` 分支才碰 `torch_npu`/Ascend 专属 API，`cuda`/`cpu` 分支干净直接返回。**这份代码本来就是跨设备兼容的，切 N 卡不用改一行代码**，只需要把环境变量 `ASR_DEVICE` 设成 `cuda`。
+
+**好消息 2**：`engine.py` 里 `_load_qwen_asr()` 走的是 `Qwen3ASRModel.from_pretrained(...)`（transformers 风格直接加载），不是 vLLM 的 `.LLM()` 方式，所以**不需要装 `qwen-asr[vllm]` 这个重量级 extra**，`pip install qwen-asr` 就够，避免了 vLLM 在 CUDA 上装不装得上的顾虑。
+
+**需要注意的坑**：
+1. 目录名 `asr-deploy-code` 带连字符，Python 包名不合法，且 `main.py` 硬编码了 `app.main:app`，说明这个包原本目录名就叫 `app`。**部署时必须把目录改名为 `app`**，从其上级目录用 `python -m app.main` 或 `uvicorn app.main:app` 启动。
+2. 需要 `uvicorn[standard]`（带 `websockets` 依赖），裸 `uvicorn` 跑不了 WebSocket 路由。
+3. 环境变量前缀是 `ASR_`（不是 `MODEL_DIR` 那种老命名），比如模型路径是 `ASR_MODEL_PATH`，设备是 `ASR_DEVICE`，端口是 `ASR_PORT`。
+
+### 部署到 GPU 环境的命令（不区分 AutoDL 还是别的，只要有 CUDA + 能跑 python）
+
+```bash
+mkdir -p /root/qwen3-asr-service
+cd /root/qwen3-asr-service
+# 把本地 asr-deploy-code/ 整个目录内容传上来，重命名为 app/
+
+pip install "uvicorn[standard]" fastapi pydantic pydantic-settings numpy soundfile python-multipart
+pip install qwen-asr          # 不要装 [vllm] extra
+apt-get update && apt-get install -y ffmpeg
+
+export HF_ENDPOINT=https://hf-mirror.com
+pip install huggingface_hub
+huggingface-cli download Qwen/Qwen3-ASR-1.7B --local-dir /root/autodl-tmp/Qwen3-ASR-1.7B
+
+cd /root/qwen3-asr-service
+export ASR_MODEL_PATH=/root/autodl-tmp/Qwen3-ASR-1.7B
+export ASR_DEVICE=cuda
+export ASR_NPU_DEVICE_ID=0        # 字段名沿用 npu_device_id，对 cuda 一样生效，即卡号
+export ASR_BACKEND=auto
+export ASR_DTYPE=bfloat16
+export ASR_PORT=8022
+export ASR_WARMUP=true
+
+python -m app.main
+# 或：uvicorn app.main:app --host 0.0.0.0 --port 8022
+
+curl http://127.0.0.1:8022/healthz
+curl http://127.0.0.1:8022/readyz
+curl http://127.0.0.1:8022/v1/info
+```
+
+MediaFlow 配置改为真正的 `realtime_ws`：
+```
+REALTIME_ASR_PROVIDER=realtime_ws
+REALTIME_ASR_BASE_URL=ws://<部署地址>/v1/asr/stream
+```
+
+### 两个还没验证的风险点
+1. `pip install qwen-asr` 在 CUDA 环境下能否正常装、`Qwen3ASRModel.from_pretrained(..., device_map="cuda:0")` 是否吃这些参数（`_load_qwen_asr()` 对 `TypeError` 做了逐步降级重试，容错不错，但没实测过）。
+2. `Qwen/Qwen3-ASR-1.7B`（非 `-hf` 版）这个仓库名和权重结构是否与 `qwen_asr.Qwen3ASRModel.from_pretrained` 匹配。
+
+---
+
+## ⏸️ 悬而未决：等你确认一条命令的结果
+
+**背景**：你说目标服务器「只有 docker 权限，没别的」（没有 root/裸机 shell，只能 `docker run`/`docker compose`）。这不代表不能部署，但取决于宿主机是否已经装好 **NVIDIA Container Toolkit**（让 Docker 容器能看到宿主机 GPU 的那层驱动桥接）。
+
+**判断依据**：
+- 如果宿主机装了 NVIDIA Container Toolkit：完全可以在 docker 里跑，`docker run --gpus all ...` 或 compose 里加 `deploy.resources.reservations.devices` 就行，用官方 `nvidia/cuda` 或 `pytorch/pytorch` 基础镜像，把 `asr-deploy-code/`（改名 `app/`）复制进镜像或挂载进去。跟前面「裸机部署」的命令基本一样，只是包一层 Dockerfile。
+- 如果宿主机没装 NVIDIA Container Toolkit：容器内部 `torch.cuda.is_available()` 会返回 `False`，模型只能退化到 CPU 推理——Qwen3-ASR-1.7B 在 CPU 上跑流式识别会慢到没法用（正常应该是几百毫秒级的推理，CPU 上可能是几十秒），实际不可用。这种情况下建议放弃这台服务器，去租 AutoDL（AutoDL 的镜像默认已经配好 NVIDIA Container Toolkit，如果你在 AutoDL 上也用 docker 部署的话）。
+
+**你需要做的确认**（任选一种）：
+1. 如果你有该服务器的 SSH/控制台但只被限制了权限，尝试跑 `docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi`——如果输出显卡信息（型号、显存），说明 Toolkit 装好了，可以在 docker 里正常用 GPU；如果报错找不到 `--gpus` 或 `nvidia-smi`，说明没配。
+2. 如果你完全没有 shell，只能通过某个 Web 面板管理容器，问问该面板/供应商「容器是否支持挂载 GPU」，或者直接看有没有「GPU」相关的资源选项。
+3. 如果以上都不确定，直接告诉我你是通过什么方式管理这个 docker 环境的（比如 Portainer 面板、云服务商的容器服务、还是自己 SSH 进去跑 docker 命令），我可以给出更具体的检测步骤。
+
+**一旦你确认了检测结果，把输出发我，我就能给你：**
+- 能跑：写好对应的 Dockerfile + docker run/compose 命令，直接照抄部署。
+- 不能跑：确认转向 AutoDL，沿用上面「部署到 GPU 环境的命令」章节，只是加一层 Dockerfile 或者直接裸机跑（AutoDL 大多数场景给的是完整机器权限，不受 docker-only 限制）。
 
 ---
 
@@ -121,12 +218,44 @@ curl http://127.0.0.1:8001/health     # 期望 {"status":"ok","model_loaded":tru
 | `app/services/asr/realtime_registry.py` | provider 注册表，`realtime_http`/`realtime_ws` 两个 key |
 | `STREAMING_ONSITE_DEPLOY.md` / `ONSITE_DEPLOY.md` / `DEPLOY_ONSITE.md` | 现场部署相关既有文档 |
 
+## 服务端已修的 bug（`asr-deploy-code/engine.py`）
+
+`_parse_qwen_asr_result` 原来是 `if not text: text = str(item)`，把「合法的空转写」和「字段缺失」混为一谈。静音或纯噪声片段会返回：
+
+```
+"text": "ASRTranscription(language='', text='', time_stamps=None)"
+```
+
+`qwen_asr` 后端下 partial（`session.py:198`）和 final（`session.py:262`）都会落到 `transcribe_sync` → 这个解析函数，所以呼吸、咳嗽、环境噪声这类被 VAD 放过但转写为空的片段，都会把这串 dataclass repr 当识别文本推进 SSE，MediaFlow 原样透传。已改为用 `_SENTINEL`（`engine.py:32` 本来就有）区分缺失与空值。
+
+**改完要重启 GPU 机器上的服务才生效。**
+
+## 当前实际拓扑（2026-09-01）
+
+- ASR 服务：`172.16.100.26:8030`，AutoDL 实例经隧道打通。`backend=qwen_asr`、`device=cuda:0`。
+- MediaFlow：`172.16.100.26:8999`。**注意这不是开发机** —— 改本地 `.env` 对它无效。
+- MediaFlow 侧配置走的是**服务配置页**，不是环境变量。页面存 `runtime_config.json`，`get_settings()` 先读 `.env` 再把它盖上去（`app/config.py:146`），**页面永远赢**。回退用 `POST /asr/config/reset`。
+
+配置页两段值（实时段和整段转写段打的是同一服务的两个不同接口，不能互串）：
+
+| 段 | 字段 | 值 |
+|---|---|---|
+| 实时 | 接口类型 | `realtime_ws` |
+| 实时 | 接口地址 | `ws://172.16.100.26:8030/v1/asr/stream` |
+| 实时 | 密钥 / 模型名 | 都留空 |
+| 整段 | 接口类型 | `openai_compat`（服务没有 `/chat/completions`，实测 404） |
+| 整段 | 服务地址 | `http://172.16.100.26:8030/v1`（`/v1` 根，provider 自己拼 `/audio/transcriptions`） |
+| 整段 | 密钥 | 清空（原有 DashScope 旧 key） |
+| 整段 | 模型名 | `Qwen3-ASR-1.7B` |
+
+逐字时间戳开关无所谓：`qwen_asr` 后端返回 `time_stamps=None`，词级时间轴拿不回来。
+
 ## 下一步
 
 1. ~~分句契约~~ 已完成，见上方「✅ 已完成」章节。
-2. 按上面步骤在 AutoDL 开 4090/3090 实例，部署 `streaming_server`。
-3. 把 AutoDL 映射地址配进 MediaFlow（`realtime_http`），联调验证 SSE 契约、前端渲染、`delta` 字段是否符合预期。
-4. 遇到 `qwen-asr[vllm]` 安装报错或 HF 模型名不对，把报错贴过来。
+2. ~~AutoDL 部署~~ 已完成，见上方「当前实际拓扑」。
+3. 用户改完配置页后，跑端到端流式验证：SSE `delta` 契约（`text` 累积、`delta` 增量、`text.endsWith(delta)`）、700ms 静音触发 `final` 的分句、前端渲染。
+4. 服务端 bug 修复需重启 `172.16.100.26:8030` 上的服务后才生效。
 
 ## 关于本文件维护的提醒（用户偏好，来自 memory）
 
