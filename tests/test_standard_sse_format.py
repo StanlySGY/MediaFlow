@@ -30,8 +30,8 @@ def test_realtime_events_convert_to_standard_sse_messages():
         "type": "text",
         "stream": "realtime",
         "id": "sess-1",
-        "text": "实时中间文本",
-        "delta": "实时中间文本",
+        "text": "",
+        "delta": {"start": 0, "remove": 0, "text": "实时中间文本"},
         "is_final": False,
         "seq": 7,
         "session_id": "sess-1",
@@ -115,7 +115,7 @@ def test_file_events_convert_to_same_standard_sse_message_shape():
     assert done["progress"] == 1.0
 
 
-def test_realtime_delta_is_suffix_of_growing_text():
+def test_realtime_delta_is_splice_extension_of_growing_text():
     from app.api.routes import _standard_realtime_sse_message
 
     first = _decode_sse_payload(
@@ -124,35 +124,35 @@ def test_realtime_delta_is_suffix_of_growing_text():
             previous_text="",
         )
     )
-    assert first["text"] == "今天"
-    assert first["delta"] == "今天"
+    assert first["text"] == ""
+    assert first["delta"] == {"start": 0, "remove": 0, "text": "今天"}
 
     second = _decode_sse_payload(
         _standard_realtime_sse_message(
             RealtimeASREvent(type="online", session_id="s", text="今天天气"),
-            previous_text=first["text"],
+            previous_text="今天",
         )
     )
-    assert second["text"] == "今天天气"
-    assert second["delta"] == "天气"
+    assert second["text"] == ""
+    assert second["delta"] == {"start": 2, "remove": 0, "text": "天气"}
 
 
-def test_realtime_delta_falls_back_to_full_text_when_not_a_simple_extension():
+def test_realtime_delta_splices_edit_when_upstream_revises_text():
     from app.api.routes import _standard_realtime_sse_message
 
-    # Upstream revised/shortened its output instead of just appending to it;
-    # delta must fall back to the full text so nothing is silently lost.
+    # Upstream revised/shortened its output (非单调改写) instead of just
+    # appending; delta must be a splice edit op so nothing is silently lost.
     revised = _decode_sse_payload(
         _standard_realtime_sse_message(
             RealtimeASREvent(type="online", session_id="s", text="今天天气很好"),
             previous_text="今天天气不错",
         )
     )
-    assert revised["text"] == "今天天气很好"
-    assert revised["delta"] == "今天天气很好"
+    assert revised["text"] == ""
+    assert revised["delta"] == {"start": 4, "remove": 2, "text": "很好"}
 
 
-def test_realtime_done_and_error_events_have_empty_delta():
+def test_realtime_done_and_error_events_have_null_delta():
     from app.api.routes import _standard_realtime_sse_message
 
     done = _decode_sse_payload(
@@ -161,7 +161,7 @@ def test_realtime_done_and_error_events_have_empty_delta():
             previous_text="今天天气不错",
         )
     )
-    assert done["delta"] == ""
+    assert done["delta"] is None
 
     error = _decode_sse_payload(
         _standard_realtime_sse_message(
@@ -169,4 +169,4 @@ def test_realtime_done_and_error_events_have_empty_delta():
             previous_text="今天天气不错",
         )
     )
-    assert error["delta"] == ""
+    assert error["delta"] is None

@@ -143,13 +143,16 @@ def test_realtime_events_stream_carries_delta(client):
 
     text_events = [p for p in payloads if p["type"] == "text"]
     assert text_events, "expected at least one text event from realtime_mock"
+    rebuilt = ""
     for evt in text_events:
-        assert "delta" in evt
-        # realtime_mock always emits a monotonically-growing transcript per
-        # session, so delta must be a non-empty suffix of the full text.
-        assert evt["text"].endswith(evt["delta"])
+        assert evt["text"] == "", "realtime stream must emit an empty text field"
+        assert isinstance(evt["delta"], dict), "realtime text delta must be a splice edit op"
+        assert set(evt["delta"].keys()) == {"start", "remove", "text"}
+        d = evt["delta"]
+        rebuilt = rebuilt[: d["start"]] + d["text"] + rebuilt[d["start"] + d["remove"] :]
+    assert rebuilt, "reconstructed transcript must be non-empty"
 
     terminal = [p for p in payloads if p["type"] in {"done", "error"}]
     assert terminal
     for evt in terminal:
-        assert evt["delta"] == ""
+        assert evt["delta"] is None
