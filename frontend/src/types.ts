@@ -33,12 +33,21 @@ export interface RealtimeSession {
   bytes_received: number;
 }
 
+/** Structured splice edit op for the realtime stream. Reconstruct the full
+ * transcript from the previous committed text with:
+ * `new = previous.slice(0, start) + text + previous.slice(start + remove)`. */
+export interface ASRDelta {
+  start: number;
+  remove: number;
+  text: string;
+}
+
 export interface RealtimeEvent {
   type: 'online' | 'final' | 'done' | 'error';
   session_id: string;
   seq?: number;
   text?: string;
-  delta?: string;
+  delta?: ASRDelta | string | null;
   is_final?: boolean;
   elapsed_ms?: number;
   mode?: string;
@@ -50,11 +59,13 @@ export interface StandardASRStreamEvent {
   type: 'text' | 'done' | 'error';
   stream: 'realtime' | 'file';
   id: string;
+  /** Full text. `file` streams: the independent segment text. `realtime`
+   * streams: always empty — clients rebuild the transcript from `delta`. */
   text: string;
-  /** Newly-added text since the previous event on this stream; falls back to
-   * the full `text` when the upstream revised/shortened its output instead
-   * of simply extending it. */
-  delta?: string;
+  /** Incremental content. `realtime` streams: a structured ASRDelta splice
+   * edit op. `file` streams: a plain string equal to `text`. `done`/`error`
+   * events: null. */
+  delta?: ASRDelta | string | null;
   is_final: boolean;
   seq?: number | null;
   session_id?: string | null;

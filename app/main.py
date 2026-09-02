@@ -77,19 +77,28 @@ Qwen ASR，并用统一 SSE 格式模拟流式返回真实识别文本。
 
 ```text
 event: message
-data: {"type":"text","stream":"realtime","id":"<session_id>","session_id":"<session_id>","text":"...","delta":"...","is_final":false,"seq":1}
+data: {"type":"text","stream":"realtime","id":"<session_id>","session_id":"<session_id>","text":"","delta":{"start":0,"remove":0,"text":"你好"},"is_final":false,"seq":1}
 
 event: message
 data: {"type":"done","stream":"realtime","id":"<session_id>","session_id":"<session_id>","is_final":true}
 ```
 
 `type` 统一为 `text`、`done`、`error`。调用方只需要监听 `message`，解析
-`data.type`、`data.text`、`data.is_final`。`stream=realtime` 表示来源是实时接口；
+`data.type`、`data.delta`、`data.is_final`。`stream=realtime` 表示来源是实时接口；
 `id` 等于 `session_id`。
 
-`data.text` 始终是全量文本（保留用于兼容旧客户端）；`data.delta` 是相对上一条
-text 事件新增的文本片段，只想做增量/打字机渲染的调用方可以只读 `delta`，不需要
-自己在客户端做字符串差分。
+`data.text` 在实时流中恒为空字符串——实时流不再逐帧推送全量累计文本（长会话下
+会造成 O(n²) 的接收压力）。增量内容改由结构体 `data.delta` 表达，是一个最小编辑
+操作 `{start, remove, text}`，调用方按如下规则重建完整转写：
+
+```text
+new = previous[:start] + text + previous[start + remove:]
+```
+
+其中 `start`/`remove` 是相对「上一条已重建文本」的码点偏移：`start` 是编辑起点，
+`remove` 是要删除的码点数，`text` 是插入的替换文本（纯插入时 `remove=0`，纯删除时
+`text=""`）。这样即使识别结果中途被修正或重写标点，每条事件仍是小增量，客户端用
+O(1) 完成重建。
 
 当前 Qwen ASR 通过 `realtime_offline` 封装时，底层不是原生实时识别：
 服务端会先接收 base64 chunks，结束后调用 Qwen ASR，再用 SSE 模拟流式返回。
@@ -120,7 +129,8 @@ data: {"type":"done","stream":"file","id":"<task_id>","task_id":"<task_id>","sta
 
 `stream=file` 表示来源是文件接口；`id` 等于 `task_id`。每条 `type=text` 事件都会带出
 `data.task_id`，便于调用方把事件归属到对应任务；文件流额外包含 `segment_id`、
-`start`、`end`。
+`start`、`end`。文件流不存在跨事件累计：每条事件就是独立分片，`data.text` 是该分片
+完整文本，`data.delta` 是恒等于 `text` 的普通字符串（与实时流的结构体 `delta` 不同）。
 
 注意：不要等第一条 `type=text` 事件才保存 `task_id`。有些文件需要等待切分或上游识别后才会
 产生第一条分片事件，失败场景也可能没有分片。可靠做法是在 `POST /asr/file` 成功后立刻

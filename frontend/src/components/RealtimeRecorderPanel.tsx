@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ClipboardCopy, Mic, Square, Trash2 } from 'lucide-react';
 import { StandardASRStreamEvent } from '../types';
 import { errorMessage } from '../lib/errors';
+import { applySplice } from '../lib/splice';
 
 interface RealtimeRecorderPanelProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
@@ -54,6 +55,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   const seqRef = useRef(0);
   const formatRef = useRef('webm');
   const pushChainRef = useRef<Promise<void>>(Promise.resolve());
+  const committedTextRef = useRef('');
 
   const appendLog = (event: string, data: Record<string, unknown> = {}) => {
     const line = JSON.stringify({ ts: new Date().toISOString(), event, ...data });
@@ -89,7 +91,12 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         elapsed_ms: event.elapsed_ms,
         error: event.error,
       });
-      if (event.text) setTranscript(event.text);
+      // Rebuild the transcript from the structured splice delta (realtime
+      // `event.text` is always empty under the incremental contract).
+      if (event.type === 'text' && typeof event.delta === 'object' && event.delta !== null) {
+        committedTextRef.current = applySplice(committedTextRef.current, event.delta);
+        setTranscript(committedTextRef.current);
+      }
       if (event.type === 'done' || event.type === 'error') {
         es.close();
         eventSourceRef.current = null;
@@ -152,6 +159,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
 
     cleanup();
     setTranscript('');
+    committedTextRef.current = '';
     setLogs([]);
     setChunks(0);
     setBytes(0);

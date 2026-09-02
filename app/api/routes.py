@@ -22,6 +22,7 @@ from app.config import (
     update_runtime_overrides,
 )
 from app.models.schemas import (
+    ASRDelta,
     ASRStreamEvent,
     RealtimeASREvent,
     RealtimeAudioChunk,
@@ -262,13 +263,13 @@ REALTIME_EVENTS_DOC = """
 
 ```text
 event: message
-data: {"type":"text","stream":"realtime","id":"...","text":"中间识别结果","delta":"中间识别结果","is_final":false,"seq":1,"session_id":"...","source_event":"online"}
+data: {"type":"text","stream":"realtime","id":"...","text":"","delta":{"start":0,"remove":0,"text":"中间识别结果"},"is_final":false,"seq":1,"session_id":"...","source_event":"online"}
 
 event: message
-data: {"type":"text","stream":"realtime","id":"...","text":"最终识别文本","delta":"","is_final":true,"session_id":"...","source_event":"final"}
+data: {"type":"text","stream":"realtime","id":"...","text":"","delta":{"start":4,"remove":2,"text":"结果"},"is_final":true,"session_id":"...","source_event":"final"}
 
 event: message
-data: {"type":"done","stream":"realtime","id":"...","text":"","delta":"","is_final":true,"session_id":"...","source_event":"done"}
+data: {"type":"done","stream":"realtime","id":"...","text":"","delta":null,"is_final":true,"session_id":"...","source_event":"done"}
 ```
 
 统一字段：
@@ -278,9 +279,12 @@ data: {"type":"done","stream":"realtime","id":"...","text":"","delta":"","is_fin
 - `type=error`：识别失败或上游异常。
 - `stream=realtime`，`id=session_id`。
 - `source_event` 保留底层事件名，例如 `online`、`final`、`done`、`error`，用于调试。
-- `text` 始终是本次事件为止的全量识别文本（向后兼容旧客户端）；`delta` 是相对同一
-  session 上一条 text 事件新增的部分，用于增量/打字机渲染。只在上游模型改写或缩短了
-  已识别文本（不是简单的前缀追加）时，`delta` 会退化为等于整段 `text`，保证不丢信息。
+- `text` 在实时流中恒为空字符串——不再逐帧推送全量累计文本（长会话下会造成 O(n²
+  的接收压力）。增量内容由结构化编辑操作 `delta` 表达：`{start, remove, text}`。
+- 客户端按 `new = previous[:start] + text + previous[start + remove:]` 重建完整转写，其中
+  `start`/`remove` 是相对「上一条已重建文本」的码点偏移：`start` 是编辑起点，`remove`
+  是要删除的码点数，`text` 是插入的替换文本（纯插入时 `remove=0`，纯删除时 `text=""`）。
+  识别结果即使中途被修正或重写标点，每条事件仍是小增量，客户端用 O(1) 完成重建。。
 
 真实数据配置：
 
@@ -304,14 +308,14 @@ REALTIME_EVENTS_RESPONSE = {
                 "example": (
                     'event: message\n'
                     'data: {"type":"text","stream":"realtime","id":"abc",'
-                    '"text":"中间识别结果","delta":"中间识别结果","is_final":false,"seq":1,'
+                    '"text":"","delta":{"start":0,"remove":0,"text":"中间识别结果"},"is_final":false,"seq":1,'
                     '"session_id":"abc","task_id":null,"segment_id":null,'
                     '"start":null,"end":null,"elapsed_ms":30.0,'
                     '"status":null,"progress":null,"error":null,'
                     '"source_event":"online"}\n\n'
                     'event: message\n'
                     'data: {"type":"done","stream":"realtime","id":"abc",'
-                    '"text":"","delta":"","is_final":true,"seq":null,"session_id":"abc",'
+                    '"text":"","delta":null,"is_final":true,"seq":null,"session_id":"abc",'
                     '"task_id":null,"segment_id":null,"start":null,"end":null,'
                     '"elapsed_ms":0.0,"status":null,"progress":null,'
                     '"error":null,"source_event":"done"}\n\n'
@@ -423,17 +427,41 @@ def _standard_file_done_sse_message(info: TaskInfo) -> dict[str, str]:
     )
 
 
-def _realtime_delta(previous_text: str, full_text: str) -> str:
-    """Newly-added suffix of `full_text` relative to `previous_text`.
+def _realtime_delta(previous_text: str, full_text: str) -> ASRDelta:
+    """Minimal splice edit turning `previous_text` into `full_text`.
 
-    Falls back to the full text when the new text is not a simple extension
-    of the previous one (e.g. the upstream model revised or shortened its
-    output), so no information is ever lost -- only the happy path of a
-    monotonically growing transcript gets the delta shortcut.
+    Computed from the longest common prefix (`start`) and the longest common
+    suffix of the two tails, then returning the single edit operation that
+    reconstructs `full_text` from `previous_text`::
+
+        new = previous[:start] + text + previous[start + remove:]
+
+    Unlike the old prefix-only diff, this stays a small increment even when
+    the ASR model revises a character mid-sentence or rewrites trailing
+    punctuation (both common with Chinese output) -- which previously made
+    `delta` degenerate to the full accumulated text on nearly every frame.
     """
-    if full_text.startswith(previous_text):
-        return full_text[len(previous_text):]
-    return full_text
+    p = 0
+    max_p = min(len(previous_text), len(full_text))
+    while p < max_p and previous_text[p] == full_text[p]:
+        p += 1
+
+    prev_tail = previous_text[p:]
+    full_tail = full_text[p:]
+
+    s = 0
+    max_s = min(len(prev_tail), len(full_tail))
+    while (
+        s < max_s
+        and prev_tail[len(prev_tail) - 1 - s] == full_tail[len(full_tail) - 1 - s]
+    ):
+        s += 1
+
+    return ASRDelta(
+        start=p,
+        remove=len(prev_tail) - s,
+        text=full_tail[: len(full_tail) - s],
+    )
 
 
 def _standard_realtime_sse_message(
@@ -447,6 +475,11 @@ def _standard_realtime_sse_message(
     independent subscribers replaying the same event history concurrently
     (see test_multiple_subscribers_each_get_all_events), and each one needs
     its own delta baseline.
+
+    The realtime stream no longer forwards the full cumulative `text` (empty
+    string instead); it emits a structured splice `delta` so the client can
+    reconstruct the transcript in O(1) per event rather than re-receiving the
+    whole accumulated text each frame.
     """
     if evt.type == "done":
         event_type = "done"
@@ -455,14 +488,14 @@ def _standard_realtime_sse_message(
     else:
         event_type = "text"
 
-    delta = _realtime_delta(previous_text, evt.text) if event_type == "text" else ""
+    delta = _realtime_delta(previous_text, evt.text) if event_type == "text" else None
 
     return _sse_message(
         ASRStreamEvent(
             type=event_type,
             stream="realtime",
             id=evt.session_id,
-            text=evt.text,
+            text="",
             delta=delta,
             is_final=evt.is_final or evt.type in {"final", "done"},
             seq=evt.seq,

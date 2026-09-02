@@ -79,6 +79,36 @@ class TaskInfo(BaseModel):
 
 # ---------------- Standard SSE stream ----------------
 
+class ASRDelta(BaseModel):
+    """Structured splice edit op for the realtime stream.
+
+    Reconstruct the full transcript from the previous committed text with::
+
+        new = previous[:start] + text + previous[start + remove:]
+
+    Positions are Unicode code-point offsets into the *previous* committed
+    text. ``start`` is where the edit begins, ``remove`` is how many code
+    points are deleted there, and ``text`` is the replacement inserted at
+    ``start``. This replaces the old prefix-diff string delta, which
+    degenerated to the full transcript whenever the ASR model revised or
+    punctuated earlier text (common with Chinese output), making every frame
+    re-send the whole accumulated text.
+    """
+
+    start: int = Field(
+        default=0,
+        description="切除起始位置：相对上一条已提交文本的码点偏移。",
+    )
+    remove: int = Field(
+        default=0,
+        description="从 start 处删除的码点数；0 表示纯插入。",
+    )
+    text: str = Field(
+        default="",
+        description="在 start 处插入的替换文本；纯删除时为空。",
+    )
+
+
 class ASRStreamEvent(BaseModel):
     """Unified SSE payload for standard ASR streaming endpoints."""
 
@@ -92,18 +122,21 @@ class ASRStreamEvent(BaseModel):
     text: str = Field(
         default="",
         description=(
-            "识别文本；type=text 时读取。始终是全量文本"
-            "（从会话/分片开始到当前的累计结果），保留用于兼容旧客户端。"
+            "识别文本；type=text 时读取。file 流：当前分片的独立文本，"
+            "不存在跨事件累计，恒等于该分片的完整结果。"
+            "realtime 流：恒为空字符串——不再推送全量累计文本，"
+            "客户端用 delta 结构体增量重建完整转写，避免长会话逐帧"
+            "重传全部文本造成 O(n²) 的接收压力。"
         ),
     )
-    delta: str = Field(
-        default="",
+    delta: ASRDelta | str | None = Field(
+        default=None,
         description=(
-            "本次相对上一条事件新增的文本片段；type=text 时可用。"
-            "realtime 流：相对同一 session 上一条事件的 text 做前缀差分，"
-            "只在文本非前缀增长（被修正）时退化为整段 text。"
-            "file 流：每条事件本身就是独立分片，delta 恒等于 text。"
-            "新客户端可用 delta 做增量/打字机渲染；旧客户端可继续只读 text。"
+            "增量内容；type=text 时可用。"
+            "realtime 流：结构化最小编辑操作 ASRDelta {start, remove, text}，"
+            "按 new = previous[:start] + text + previous[start+remove:] 重建。"
+            "file 流：字符串，恒等于 text。"
+            "done/error 事件恒为空。"
         ),
     )
     is_final: bool = Field(

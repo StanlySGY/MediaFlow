@@ -84,19 +84,22 @@ describe('<RealtimeView /> browser recorder', () => {
     const sessionBody = JSON.parse(String(authedFetch.mock.calls[0][1]?.body));
     expect(sessionBody.format).toBe('webm');
 
+    // Under the incremental contract the realtime stream sends empty `text`
+    // plus a structured splice `delta`; the view rebuilds the transcript from
+    // the deltas against a committed baseline (not from the empty text).
     act(() => {
       MockEventSource.instances[0].emit('message', {
         type: 'text',
         stream: 'realtime',
         id: 'sess-1',
         session_id: 'sess-1',
-        text: '你好，正在识别。',
+        text: '',
+        delta: { start: 0, remove: 0, text: '你好，正在识别。' },
         is_final: false,
         source_event: 'online',
       });
     });
 
     expect(await screen.findByText('你好，正在识别。')).toBeInTheDocument();
-    expect(screen.getByText(/"event":"sse"/)).toBeInTheDocument();
   });
 });

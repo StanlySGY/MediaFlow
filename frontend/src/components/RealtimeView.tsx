@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Play, Square, Trash2, Mic, Terminal, Info } from 'lucide-react';
 import { RealtimeEvent, RealtimeSession, StandardASRStreamEvent } from '../types';
 import { errorMessage } from '../lib/errors';
+import { applySplice } from '../lib/splice';
 import { RealtimeRecorderPanel } from './RealtimeRecorderPanel';
 
 interface RealtimeViewProps {
@@ -46,6 +47,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
   const logRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
   const feedingRef = useRef(false);
+  const committedTextRef = useRef('');
 
   // Auto-scroll the logger
   useEffect(() => {
@@ -102,6 +104,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
       setFedBytes(0);
       setRtEventCount(0);
       setEvents([]);
+      committedTextRef.current = '';
       
       setRtStatus(`✓ 会话 ${data.session_id.slice(0, 8)}…`);
       setToastClass('ok');
@@ -148,11 +151,20 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
         : ev.type === 'done'
           ? 'done'
           : 'error';
+
+    // Rebuild the committed transcript from the structured splice delta
+    // (realtime `ev.text` is always empty under the incremental contract).
+    let text = ev.text;
+    if (ev.type === 'text' && typeof ev.delta === 'object' && ev.delta !== null) {
+      committedTextRef.current = applySplice(committedTextRef.current, ev.delta);
+      text = committedTextRef.current;
+    }
+
     const newEv: RealtimeEvent = {
       type,
       session_id: ev.session_id || ev.id || '',
       seq: ev.seq ?? undefined,
-      text: ev.text,
+      text,
       delta: ev.delta,
       is_final: ev.is_final ?? undefined,
       elapsed_ms: ev.elapsed_ms ?? undefined,
