@@ -35,7 +35,9 @@ export interface RealtimeSession {
 
 /** Structured splice edit op for the realtime stream. Reconstruct the full
  * transcript from the previous committed text with:
- * `new = previous.slice(0, start) + text + previous.slice(start + remove)`. */
+ * `new = previous.slice(0, start) + text + previous.slice(start + remove)`.
+ * `start` and `remove` are UTF-16 code-unit offsets, matching JavaScript's
+ * String.slice indexing; the backend chooses Unicode character boundaries. */
 export interface ASRDelta {
   start: number;
   remove: number;

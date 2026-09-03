@@ -35,6 +35,16 @@ def secured_client(tmp_path: Path, monkeypatch):
         yield c
 
 
+def _apply_utf16_splice(previous: str, delta: dict) -> str:
+    encoded = previous.encode("utf-16-le", errors="surrogatepass")
+    start = delta["start"] * 2
+    end = start + delta["remove"] * 2
+    replacement = delta["text"].encode("utf-16-le", errors="surrogatepass")
+    return (encoded[:start] + replacement + encoded[end:]).decode(
+        "utf-16-le", errors="surrogatepass"
+    )
+
+
 def test_create_session_returns_urls(client):
     r = client.post("/asr/realtime/session", json={"language": "zh"})
     assert r.status_code == 200, r.text
@@ -149,7 +159,7 @@ def test_realtime_events_stream_carries_delta(client):
         assert isinstance(evt["delta"], dict), "realtime text delta must be a splice edit op"
         assert set(evt["delta"].keys()) == {"start", "remove", "text"}
         d = evt["delta"]
-        rebuilt = rebuilt[: d["start"]] + d["text"] + rebuilt[d["start"] + d["remove"] :]
+        rebuilt = _apply_utf16_splice(rebuilt, d)
     assert rebuilt, "reconstructed transcript must be non-empty"
 
     terminal = [p for p in payloads if p["type"] in {"done", "error"}]

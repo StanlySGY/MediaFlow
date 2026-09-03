@@ -282,9 +282,10 @@ data: {"type":"done","stream":"realtime","id":"...","text":"","delta":null,"is_f
 - `text` 在实时流中恒为空字符串——不再逐帧推送全量累计文本（长会话下会造成 O(n²
   的接收压力）。增量内容由结构化编辑操作 `delta` 表达：`{start, remove, text}`。
 - 客户端按 `new = previous[:start] + text + previous[start + remove:]` 重建完整转写，其中
-  `start`/`remove` 是相对「上一条已重建文本」的码点偏移：`start` 是编辑起点，`remove`
-  是要删除的码点数，`text` 是插入的替换文本（纯插入时 `remove=0`，纯删除时 `text=""`）。
-  识别结果即使中途被修正或重写标点，每条事件仍是小增量，客户端用 O(1) 完成重建。。
+  `start`/`remove` 是相对「上一条已重建文本」的 UTF-16 code unit 偏移：`start` 是编辑起点，`remove`
+  是要删除的 UTF-16 code unit 数，`text` 是插入的替换文本（纯插入时 `remove=0`，纯删除时
+  `text=""`）。服务端只在 Unicode 码点边界生成这些偏移，因此不会从服务端主动拆开一个字符。
+  识别结果即使中途被修正或重写标点，每条事件仍是小增量，客户端用 O(1) 完成重建。
 
 真实数据配置：
 
@@ -427,8 +428,19 @@ def _standard_file_done_sse_message(info: TaskInfo) -> dict[str, str]:
     )
 
 
+def _utf16_code_units(value: str) -> int:
+    """Return the number of JavaScript UTF-16 code units in ``value``."""
+    return len(value.encode("utf-16-le", errors="surrogatepass")) // 2
+
+
 def _realtime_delta(previous_text: str, full_text: str) -> ASRDelta:
     """Minimal splice edit turning `previous_text` into `full_text`.
+
+    The comparison runs at Python Unicode code-point boundaries, while the
+    serialized offsets use UTF-16 code units to match JavaScript's
+    ``String.slice``. This lets browser clients apply the operation directly,
+    while ensuring the backend never intentionally starts or ends an edit in
+    the middle of a Unicode character.
 
     Computed from the longest common prefix (`start`) and the longest common
     suffix of the two tails, then returning the single edit operation that
@@ -457,10 +469,12 @@ def _realtime_delta(previous_text: str, full_text: str) -> ASRDelta:
     ):
         s += 1
 
+    removed_text = prev_tail[: len(prev_tail) - s]
+    inserted_text = full_tail[: len(full_tail) - s]
     return ASRDelta(
-        start=p,
-        remove=len(prev_tail) - s,
-        text=full_tail[: len(full_tail) - s],
+        start=_utf16_code_units(previous_text[:p]),
+        remove=_utf16_code_units(removed_text),
+        text=inserted_text,
     )
 
 

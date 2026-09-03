@@ -101,5 +101,20 @@ describe('<RealtimeView /> browser recorder', () => {
     });
 
     expect(await screen.findByText('你好，正在识别。')).toBeInTheDocument();
+
+    act(() => {
+      MockEventSource.instances[0].emit('message', {
+        type: 'text',
+        stream: 'realtime',
+        id: 'sess-1',
+        session_id: 'sess-1',
+        text: '',
+        delta: { start: 1, remove: 2, text: '😃' },
+        is_final: true,
+        source_event: 'final',
+      });
+    });
+
+    expect(await screen.findByText('你😃正在识别。')).toBeInTheDocument();
   });
 });

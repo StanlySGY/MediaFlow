@@ -95,10 +95,10 @@ data: {"type":"done","stream":"realtime","id":"<session_id>","session_id":"<sess
 new = previous[:start] + text + previous[start + remove:]
 ```
 
-其中 `start`/`remove` 是相对「上一条已重建文本」的码点偏移：`start` 是编辑起点，
-`remove` 是要删除的码点数，`text` 是插入的替换文本（纯插入时 `remove=0`，纯删除时
-`text=""`）。这样即使识别结果中途被修正或重写标点，每条事件仍是小增量，客户端用
-O(1) 完成重建。
+其中 `start`/`remove` 是相对「上一条已重建文本」的 UTF-16 code unit 偏移：`start` 是编辑起点，
+`remove` 是要删除的 UTF-16 code unit 数，`text` 是插入的替换文本（纯插入时 `remove=0`，纯删除时
+`text=""`）。服务端只在 Unicode 码点边界生成这些偏移，因此不会从服务端主动拆开一个字符。这样即使
+识别结果中途被修正或重写标点，每条事件仍是小增量，客户端用 O(1) 完成重建。
 
 当前 Qwen ASR 通过 `realtime_offline` 封装时，底层不是原生实时识别：
 服务端会先接收 base64 chunks，结束后调用 Qwen ASR，再用 SSE 模拟流式返回。

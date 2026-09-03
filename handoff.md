@@ -1,7 +1,7 @@
 # Handoff — Qwen3-ASR 流式接入 / AutoDL 部署
 
 > 用法：下次开新会话时说一句「读取 handoff.md 恢复上下文」即可继续。
-> 最后更新：2026-09-01。AutoDL 已部署完并经隧道打通，见「当前实际拓扑」；服务端修了一个空转写 bug，见「服务端已修的 bug」。
+> 最后更新：2026-09-03。AutoDL 已部署完并经隧道打通，见「当前实际拓扑」；服务端修了一个空转写 bug，见「服务端已修的 bug」。
 
 ## 背景一句话
 
@@ -110,23 +110,26 @@ REALTIME_ASR_BASE_URL=ws://<部署地址>/v1/asr/stream
 
 ---
 
-## ✅ 已完成：分句契约（delta 字段）
+## ✅ 已完成：实时分句契约与 Unicode 偏移修复
 
-上次决策是「先改」，方案 A（加 delta 字段，向后兼容），已经改完并 push 到 main（commit `ae1b073`）。
+结构化 realtime splice delta 已完成并继续维护在统一网关层。当前最终契约如下：
 
-- `app/models/schemas.py`：`ASRStreamEvent` 新增 `delta: str` 字段（默认 `""`），`text` 字段的 docstring 更新为明确说明"始终是全量文本"。
-- `app/api/routes.py`：
-  - 新增 `_realtime_delta(previous_text, full_text)` 纯函数：对 `full_text` 相对 `previous_text` 做前缀差分，非前缀增长（模型改写/缩短了输出）时退化为整段 `full_text`，绝不丢信息。
-  - `_standard_realtime_sse_message()` 签名改为 `(evt, *, previous_text="")`，`previous_text` 由调用方（每个 SSE 连接自己）维护，**不是**按 `session_id` 存的全局/共享状态——因为同一个 realtime session 可能有多个并发订阅者各自重放同一份事件历史（`test_multiple_subscribers_each_get_all_events`），一个全局 dict 会让它们互相污染 delta 基准。
-  - `stream_realtime_session()` 里的 `event_gen()` 在本地维护 `previous_text` 局部变量，逐个事件更新。
-  - `_standard_file_segment_sse_message()`：文件流每个 segment 本身就是独立分片，`delta` 恒等于 `text`。
-  - `REALTIME_EVENTS_DOC`、`STANDARD_FILE_EVENTS_DOC`、两处 OpenAPI response example 都加了 `delta` 字段说明和示例。
-- `app/main.py`：顶部 `API_DESCRIPTION` 里的 SSE 示例和文字说明同步加了 `delta`。
-- 前端：`frontend/src/types.ts` 的 `StandardASRStreamEvent`/`RealtimeEvent` 都加了 `delta?: string`；`RealtimeView.tsx`、`RealtimeRecorderPanel.tsx` 透传 `delta`（渲染逻辑本身没改，前端目前仍按 `text` 全量渲染，`delta` 字段已经在事件对象里，后续要做打字机效果时前端可以直接用）。
-- 测试：`tests/test_standard_sse_format.py` 更新了旧断言（`==` 全字典比较加了 `delta` 键），新增 3 个测试专门验证 delta 前缀差分/回退整段/done-error 时 delta 恒为空；`tests/test_realtime_routes.py` 新增一个端到端 SSE 流测试验证 `delta` 字段真实出现在 HTTP 响应流里。
-- 全部通过：后端 `pytest` 129 passed；前端 `tsc -b --noEmit` 无错、`vitest run` 16 passed。
+- realtime `text` 始终为空字符串；每条 `type=text` 事件的 `delta` 是结构化
+  `{start, remove, text}` splice 操作。
+- `start`/`remove` 是相对上一条已重建文本的 **UTF-16 code unit 偏移**，与浏览器
+  JavaScript `String.slice()` 一致；`remove` 以 UTF-16 code unit 计数。
+- 网关在 Python Unicode 码点边界上比较 provider 返回的全量文本，再把偏移转换为
+  UTF-16 code unit，因此不会主动把一个 Unicode 字符拆成两半。
+- 客户端按 `new = previous[:start] + text + previous[start + remove:]` 重建累计文本。
+- file stream 的 `delta` 仍是普通字符串，并且恒等于该独立分片的 `text`；`done`/`error`
+  的 `delta` 为 `null`。
+- `realtime_http`、`realtime_ws`、offline/mock provider 继续输出 provider-level 全量文本，
+  不需要各自实现差分；差分统一由 `app/api/routes.py` 计算。
+- 只读取 realtime `text` 的旧外部客户端必须升级，因为 realtime `text` 已不再携带累计全文。
 
-**注意**：这次只加了 `delta` 字段，**没有**动 `deploy/qwen3-asr-npu/streaming_server/server.py`（AutoDL 上要部署的那个上游服务）和 `app/services/asr/realtime_ws.py`（现场 WebSocket provider）的内部逻辑——它们继续往 `RealtimeASREvent.text` 里塞全量文本，差分是在 MediaFlow 网关层（`_standard_realtime_sse_message`）统一做的，两个 provider 不用改，这也是设计这个方案时特意要达到的效果（对两个 provider 通吃）。
+本次 Unicode 修复涉及 `app/api/routes.py`、`app/models/schemas.py`、`app/main.py`、
+`frontend/src/types.ts`、`frontend/src/lib/splice.ts` 及对应测试；新增了 emoji 等非 BMP
+字符的后端 UTF-16 偏移和前端重建回归覆盖。
 
 ---
 
@@ -303,16 +306,20 @@ curl http://127.0.0.1:8030/readyz     # 模型后台加载，首次约 1~2 分�
    修法是有界线程池，不是 `ProcessPoolExecutor`。
 3. **容器封装**：见上方「容器封装」。
 
-本地验证：后端 `python -m pytest -q` → 140 passed（1 个既有 `StarletteDeprecationWarning`）；
-前端 `npx tsc -b --noEmit` 干净、`npx vitest run` → 6 files / 16 tests passed；
+本地验证：后端 `python -m pytest -q` → 141 passed（1 个既有 `StarletteDeprecationWarning`）；
+前端 `npx tsc -b --noEmit` 干净、`npx vitest run` → 7 files / 18 tests passed；前端生产构建成功。
 `docker compose config` → OK；两个改动文件 `py_compile` → OK。
 **镜像没构建过、容器没跑过**——本地没有 GPU，这一步只能在目标机器上验。
 
+注意：`npx eslint .` 仍有两个既有错误：`frontend/src/components/MonitorView.tsx:53` 的
+`setState-in-effect` 规则，以及 `frontend/src/components/RealtimeView.test.tsx:71` 的未使用
+`opts` 参数；本次 delta 修复未扩大处理范围。
+
 ## 下一步
 
-1. ~~分句契约~~ 已完成，见上方「✅ 已完成」章节。
+1. ~~分句契约~~ 已完成，见上方「✅ 已完成」章节；已补齐 UTF-16 偏移的 emoji 回归测试。
 2. ~~AutoDL 部署~~ 已完成，见上方「当前实际拓扑」。
-3. 用户改完配置页后，跑端到端流式验证：SSE `delta` 契约（`text` 累积、`delta` 增量、`text.endsWith(delta)`）、700ms 静音触发 `final` 的分句、前端渲染（含非前缀增长时的替换语义）。
+3. 用户改完配置页后，跑端到端流式验证：SSE structured `delta` 契约、700ms 静音触发 `final` 的分句、前端渲染（含非前缀增长和非 BMP 字符替换语义）。
 4. 服务端 bug 修复需重启 `172.16.100.26:8030` 上的服务后才生效。
 5. 优先级低：`error` SSE 事件不带诊断 `text`，原因只能靠 `GET /asr/realtime/{sid}` 捞。
 

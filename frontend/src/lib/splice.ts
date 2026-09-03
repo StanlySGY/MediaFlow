@@ -5,8 +5,10 @@ import { ASRDelta } from '../types';
  *
  *     new = previous[:start] + text + previous[start + remove:]
  *
- * `slice` uses UTF-16 code units, which matches the backend's Unicode code
- * point offsets for BMP characters (ASCII and CJK). */
+ * `start` and `remove` are UTF-16 code-unit offsets, matching JavaScript's
+ * native `slice` indexing. The backend emits offsets at Unicode character
+ * boundaries, so applying this operation does not split backend-generated
+ * characters. */
 export const applySplice = (previous: string, delta: ASRDelta): string => {
   const start = Number.isFinite(delta.start) ? delta.start : 0;
   const remove = Number.isFinite(delta.remove) ? delta.remove : 0;

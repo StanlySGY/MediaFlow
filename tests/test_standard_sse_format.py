@@ -5,6 +5,17 @@ import json
 from app.models.schemas import RealtimeASREvent, SegmentEvent, TaskInfo, TaskStatus
 
 
+def _apply_utf16_splice(previous: str, delta: dict) -> str:
+    """Apply a browser-compatible splice using UTF-16 code-unit offsets."""
+    encoded = previous.encode("utf-16-le", errors="surrogatepass")
+    replacement = delta["text"].encode("utf-16-le", errors="surrogatepass")
+    start = delta["start"] * 2
+    end = start + delta["remove"] * 2
+    return (encoded[:start] + replacement + encoded[end:]).decode(
+        "utf-16-le", errors="surrogatepass"
+    )
+
+
 def _decode_sse_payload(message: dict) -> dict:
     assert message["event"] == "message"
     return json.loads(message["data"])
@@ -150,6 +161,28 @@ def test_realtime_delta_splices_edit_when_upstream_revises_text():
     )
     assert revised["text"] == ""
     assert revised["delta"] == {"start": 4, "remove": 2, "text": "很好"}
+
+
+def test_realtime_delta_uses_utf16_offsets_for_non_bmp_text():
+    from app.api.routes import _standard_realtime_sse_message
+
+    cases = [
+        ("😀a", "😀b", {"start": 2, "remove": 1, "text": "b"}),
+        ("a😀b", "a😃b", {"start": 1, "remove": 2, "text": "😃"}),
+        ("😀abc", "😀aXbc", {"start": 3, "remove": 0, "text": "X"}),
+        ("A😀B", "AB", {"start": 1, "remove": 2, "text": ""}),
+        ("😀abc", "😀abc!", {"start": 5, "remove": 0, "text": "!"}),
+    ]
+
+    for previous, full, expected in cases:
+        payload = _decode_sse_payload(
+            _standard_realtime_sse_message(
+                RealtimeASREvent(type="online", session_id="s", text=full),
+                previous_text=previous,
+            )
+        )
+        assert payload["delta"] == expected
+        assert _apply_utf16_splice(previous, payload["delta"]) == full
 
 
 def test_realtime_done_and_error_events_have_null_delta():

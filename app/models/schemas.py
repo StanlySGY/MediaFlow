@@ -86,22 +86,24 @@ class ASRDelta(BaseModel):
 
         new = previous[:start] + text + previous[start + remove:]
 
-    Positions are Unicode code-point offsets into the *previous* committed
-    text. ``start`` is where the edit begins, ``remove`` is how many code
-    points are deleted there, and ``text`` is the replacement inserted at
-    ``start``. This replaces the old prefix-diff string delta, which
-    degenerated to the full transcript whenever the ASR model revised or
-    punctuated earlier text (common with Chinese output), making every frame
-    re-send the whole accumulated text.
+    Positions are UTF-16 code-unit offsets into the *previous* committed
+    text, matching JavaScript's ``String.slice`` indexing. ``start`` is where
+    the edit begins and ``remove`` is how many UTF-16 code units are deleted
+    there; ``text`` is the replacement inserted at ``start``. The backend
+    computes boundaries at Unicode code-point boundaries, so it does not
+    intentionally split a Unicode character. This replaces the old
+    prefix-diff string delta, which degenerated to the full transcript
+    whenever the ASR model revised or punctuated earlier text (common with
+    Chinese output), making every frame re-send the whole accumulated text.
     """
 
     start: int = Field(
         default=0,
-        description="切除起始位置：相对上一条已提交文本的码点偏移。",
+        description="切除起始位置：相对上一条已提交文本的 UTF-16 code unit 偏移。",
     )
     remove: int = Field(
         default=0,
-        description="从 start 处删除的码点数；0 表示纯插入。",
+        description="从 start 处删除的 UTF-16 code unit 数；0 表示纯插入。",
     )
     text: str = Field(
         default="",
@@ -134,6 +136,7 @@ class ASRStreamEvent(BaseModel):
         description=(
             "增量内容；type=text 时可用。"
             "realtime 流：结构化最小编辑操作 ASRDelta {start, remove, text}，"
+            "其中 start/remove 是相对上一条已重建文本的 UTF-16 code unit 偏移，"
             "按 new = previous[:start] + text + previous[start+remove:] 重建。"
             "file 流：字符串，恒等于 text。"
             "done/error 事件恒为空。"
