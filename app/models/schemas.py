@@ -159,6 +159,18 @@ class ASRStreamEvent(BaseModel):
     status: str | None = Field(default=None, description="任务或会话状态；done/error 时常见。")
     progress: float | None = Field(default=None, description="文件任务进度，仅 file done/error 常见。")
     error: str | None = Field(default=None, description="错误信息；正常时为空。")
+    error_code: str | None = Field(
+        default=None,
+        description=(
+            "结构化错误代码，仅 type=error 时有值。便于客户端程序化处理。"
+            "常见值：'provider_error'（上游服务错误）、'invalid_audio'（音频格式不支持）、"
+            "'session_expired'（会话已过期）、'internal_error'（内部错误）。"
+        ),
+    )
+    hint: str | None = Field(
+        default=None,
+        description="用户友好的错误提示或建议，仅 type=error 时有值。辅助 error_code 提供操作指引。",
+    )
     source_event: str | None = Field(
         default=None,
         description="底层原始事件名，例如 online / final / segment / done / error。",
@@ -211,6 +223,12 @@ class RealtimeSessionCreate(BaseModel):
     prompt_hints: str = Field(
         default="",
         description="上下文提示词；realtime_offline 会作为 prompt 传给文件 ASR provider。",
+    )
+    vad_silence_ms: int = Field(
+        default=700,
+        ge=100,
+        le=5000,
+        description="VAD 静音阈值（毫秒），超过此时长的静音触发 final 分句。默认 700ms。",
     )
 
 

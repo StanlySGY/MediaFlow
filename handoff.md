@@ -131,6 +131,42 @@ REALTIME_ASR_BASE_URL=ws://<部署地址>/v1/asr/stream
 `frontend/src/types.ts`、`frontend/src/lib/splice.ts` 及对应测试；新增了 emoji 等非 BMP
 字符的后端 UTF-16 偏移和前端重建回归覆盖。
 
+## ✅ 已完成：六项改进（2026-09-03）
+
+根据设计审查结果，已完成以下六项改进：
+
+### 1. 缓存优化文档化
+在 `_realtime_delta()` 函数文档中明确说明了缓存策略的局限性：该函数是无状态的差分计算，
+调用方（SSE 订阅者循环）已经按连接隔离地跟踪 `previous_text`，因此差分函数无法自己缓存。
+稳定前缀的提前退出对大多数追加写场景仍然有效，O(n) 复杂度在实时流场景下可接受。
+
+### 2. 滑动窗口内存管理
+新增 `_trim_old_segments()` 方法（`app/services/asr/realtime_ws.py:610-621`），在每次 final
+事件记录后自动清理过期的旧 final 段。滑动窗口保留最近 128 个 final 段（约 5-10 分钟语音），
+防止长会话中 `_final_segments` 字典无限增长导致的内存泄漏。
+
+### 3. WebSocket 重连策略文档（本文档）
+WebSocket 重连由客户端负责：连接断开时保留 `session_id`，用原 `session_id` 重新订阅
+`/asr/realtime/{session_id}/events` 即可继续接收事件（该 SSE 端点会重放历史 + 推送新事件）。
+服务端维护会话状态直到 TTL 过期（默认 300 秒）。不支持 WebSocket 层面的自动重连，因为
+`realtime_ws` provider 是直连模式，MediaFlow 作为客户端不实现重连池。
+
+### 4. 可配置 VAD 静音阈值
+在 `RealtimeSessionCreate` schema 中新增 `vad_silence_ms` 字段（`app/models/schemas.py:212-218`），
+允许调用方覆盖默认的 700ms 静音切句阈值，范围 100ms-5000ms。适用于需要更敏感或更宽容分句的场景。
+
+### 5. 增强错误诊断字段
+在 `ASRStreamEvent` schema 中新增 `error_code` 和 `hint` 字段（`app/models/schemas.py:162-173`），
+为 `error` 类型事件提供结构化的错误代码和用户友好提示。`error_code` 便于客户端程序化处理
+（如重试逻辑、特定错误页面跳转），`hint` 提供操作指引（如"请检查音频格式是否为 WAV/MP3"）。
+**尚未在各 provider 的错误发射点统一实现**——当前各处仍只设置 `error` 字符串字段，需要逐一
+review 错误路径并补充 `error_code`/`hint` 赋值。
+
+### 6. `previous_text` 隔离警告强化
+在 `_standard_realtime_sse_message()` 函数文档字符串开头添加 **CRITICAL** 标记
+（`app/api/routes.py:494-499`），明确强调 `previous_text` 必须按订阅者连接隔离，不能作为
+session_id 级别的共享状态。违反此隔离会导致并发订阅者在不同时间点加入时产生错误的 delta 计算。
+
 ---
 
 ## 悬而未决：无（截至本次更新）

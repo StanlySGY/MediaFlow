@@ -165,6 +165,10 @@ class RealtimeWSProvider:
         self._delta_segments: dict[str, str] = {}
         self._final_segments: dict[str, str] = {}
         self._last_final_text = ""
+        
+        # Sliding window: keep only recent N final segments to bound memory
+        # in long sessions. Recent=128 segments covers ~5-10 min of typical speech.
+        self._max_final_segments = 128
 
     async def __aenter__(self) -> "RealtimeWSProvider":
         headers: list[tuple[str, str]] = []
@@ -529,6 +533,7 @@ class RealtimeWSProvider:
             self._final_segments[segment_id] = text
             self._partial_segments.pop(segment_id, None)
             self._delta_segments.pop(segment_id, None)
+            self._trim_old_segments()
             full_text = self._render_text()
             self._last_final_text = full_text
             self._emit_text("final", full_text, payload, is_final=True)
@@ -604,6 +609,14 @@ class RealtimeWSProvider:
     def _remember_segment(self, segment_id: str) -> None:
         if segment_id not in self._segment_order:
             self._segment_order.append(segment_id)
+
+    def _trim_old_segments(self) -> None:
+        """Remove old final segments beyond the sliding window to bound memory."""
+        if len(self._final_segments) <= self._max_final_segments:
+            return
+        excess = len(self._final_segments) - self._max_final_segments
+        for segment_id in self._segment_order[:excess]:
+            self._final_segments.pop(segment_id, None)
 
     def _render_text(self, active_segment: str | None = None, active_text: str = "") -> str:
         parts: list[str] = []

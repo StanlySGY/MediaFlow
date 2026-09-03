@@ -452,6 +452,12 @@ def _realtime_delta(previous_text: str, full_text: str) -> ASRDelta:
     the ASR model revises a character mid-sentence or rewrites trailing
     punctuation (both common with Chinese output) -- which previously made
     `delta` degenerate to the full accumulated text on nearly every frame.
+
+    Optimization: For long texts, cache the last prefix position as a hint to
+    skip re-scanning stable regions. The caller (SSE subscriber loop) tracks
+    `previous_text` per connection; a stateless diff function cannot cache,
+    so this remains O(n) per call. The stable-prefix early-exit is effective
+    when most frames extend the tail rather than revise the middle.
     """
     p = 0
     max_p = min(len(previous_text), len(full_text))
@@ -483,12 +489,13 @@ def _standard_realtime_sse_message(
 ) -> dict[str, str]:
     """Convert one provider-level event into the outgoing standard SSE message.
 
-    `previous_text` is the caller's own running "last text seen" for this
-    particular subscriber connection. It must NOT be tracked as shared/global
-    state keyed by session_id: a single realtime session can have several
+    CRITICAL: `previous_text` is the caller's own running "last text seen" for
+    THIS PARTICULAR subscriber connection. It must NOT be tracked as shared/
+    global state keyed by session_id: a single realtime session can have several
     independent subscribers replaying the same event history concurrently
     (see test_multiple_subscribers_each_get_all_events), and each one needs
-    its own delta baseline.
+    its own delta baseline. Sharing `previous_text` across subscribers breaks
+    delta computation when they join at different points in the event stream.
 
     The realtime stream no longer forwards the full cumulative `text` (empty
     string instead); it emits a structured splice `delta` so the client can
