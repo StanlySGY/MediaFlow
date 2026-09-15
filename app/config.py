@@ -49,9 +49,13 @@ class Settings(BaseSettings):
     realtime_asr_api_key: str = ""
     realtime_asr_model: str = ""
     realtime_session_ttl_seconds: int = 300
-    # 上游 Qwen3-ASR streaming 服务 stream_max_sessions=8，超出会直接 close(4429)。
-    # 这里对齐 8，让 MediaFlow 先返回可控的 429/503，而不是让 socket 被静默掐断。
-    realtime_max_sessions: int = 8
+    # 并发闸门。上游 stream_max_sessions=8 只是"连接层"允许的上限，实测（2026-09-15
+    # 参数扫掠：4 档 partial 节流 × 1/3/6/8 路）表明真正的约束是上游 generate 全局锁
+    # 串行化推理：6 路时起稿要等 4.4s、10s 内只刷新 4 次；8 路等 6.5s，且 8 个客户端
+    # 里只有 1 个能在 20s 内收到 done。调大节流参数救不了这一点（首字反而更慢）。
+    # 4 路以内尾延迟 <2s、刷新 ≥6 次/10s，是"实时可用"的边界，故默认收紧到 4，
+    # 让超出的请求拿到可控的 429，而不是让所有人一起变卡。
+    realtime_max_sessions: int = 4
     realtime_max_chunk_bytes: int = 1024 * 1024  # 1 MiB per audio chunk
 
     access_tokens: str = ""
