@@ -20,6 +20,15 @@ from app.services.asr.realtime_base import RealtimeASRError, RealtimeASRProvider
 
 log = logging.getLogger(__name__)
 
+# Statuses whose sessions no longer hold an upstream connection. They linger in
+# the map only for SSE replay until TTL eviction, so they don't count against
+# realtime_max_sessions.
+_TERMINAL_STATUSES = frozenset({
+    RealtimeSessionStatus.done,
+    RealtimeSessionStatus.failed,
+    RealtimeSessionStatus.closed,
+})
+
 
 class _Session:
     """Per-session state: event history, fan-out subscribers, provider lifecycle."""
@@ -148,7 +157,14 @@ class RealtimeManager:
     async def create(self, config: RealtimeSessionCreate) -> RealtimeSessionInfo:
         s = self._settings
         self._evict_expired()
-        if len(self._sessions) >= s.realtime_max_sessions:
+        # Count only non-terminal sessions against the cap: a finished session no
+        # longer holds an upstream connection, and TTL-not-yet-expired `done`
+        # entries must not starve new recordings (they linger for replay).
+        live = sum(
+            1 for ses in self._sessions.values()
+            if ses.info.status not in _TERMINAL_STATUSES
+        )
+        if live >= s.realtime_max_sessions:
             raise RealtimeASRError(
                 f"max realtime sessions ({s.realtime_max_sessions}) reached"
             )
@@ -312,3 +328,11 @@ class RealtimeManager:
         finally:
             if not session.done.is_set():
                 session.complete(RealtimeSessionStatus.done)
+            # Pump ended => the provider will never yield again; release the
+            # upstream connection immediately instead of holding one of the
+            # upstream's scarce slots until TTL eviction. Events stay for replay.
+            try:
+                await session.provider.__aexit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                log.warning("provider exit after pump failed for %s", session_id,
+                            exc_info=True)

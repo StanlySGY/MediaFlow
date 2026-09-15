@@ -157,6 +157,28 @@ async def test_max_sessions_enforced(settings):
     await rm.close(s2.session_id)
 
 
+async def test_finished_sessions_do_not_count_toward_cap(settings):
+    """A `done` session lingers for SSE replay but must not starve new recordings
+    (regression: 8 finished sessions blocked the 9th create until TTL eviction)."""
+    settings = settings.model_copy(update={"realtime_max_sessions": 2})
+    rm = RealtimeManager(settings)
+    s1 = await rm.create(RealtimeSessionCreate())
+    s2 = await rm.create(RealtimeSessionCreate())
+    # Drive both to a terminal state without removing them from the map.
+    await rm.push_audio(s1.session_id, RealtimeAudioChunk(seq=0, audio="AAAA"))
+    await rm.finish(s1.session_id)
+    await rm.push_audio(s2.session_id, RealtimeAudioChunk(seq=0, audio="AAAA"))
+    await rm.finish(s2.session_id)
+    await asyncio.sleep(0.1)
+    assert rm.get(s1.session_id).status == RealtimeSessionStatus.done
+    assert rm.get(s2.session_id).status == RealtimeSessionStatus.done
+    # Cap only counts live sessions, so create #3 succeeds while replays linger.
+    s3 = await rm.create(RealtimeSessionCreate())
+    assert s3.session_id
+    for sid in (s1.session_id, s2.session_id, s3.session_id):
+        await rm.close(sid)
+
+
 async def test_late_subscriber_replays_history(settings):
     rm = RealtimeManager(settings)
     info = await rm.create(RealtimeSessionCreate())
