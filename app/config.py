@@ -49,7 +49,9 @@ class Settings(BaseSettings):
     realtime_asr_api_key: str = ""
     realtime_asr_model: str = ""
     realtime_session_ttl_seconds: int = 300
-    realtime_max_sessions: int = 100
+    # 上游 Qwen3-ASR streaming 服务 stream_max_sessions=8，超出会直接 close(4429)。
+    # 这里对齐 8，让 MediaFlow 先返回可控的 429/503，而不是让 socket 被静默掐断。
+    realtime_max_sessions: int = 8
     realtime_max_chunk_bytes: int = 1024 * 1024  # 1 MiB per audio chunk
 
     access_tokens: str = ""

@@ -48,8 +48,12 @@ class Settings(BaseSettings):
 
     # ---------------- 流式 ----------------
     stream_partial_enabled: bool = True
-    stream_partial_interval_ms: int = 640  # 两次 partial 推理的最小间隔
-    stream_min_partial_ms: int = 480       # 语音累计多长才开始出 partial
+    # 两次 partial 推理的最小间隔。原默认 640ms 叠加下面 480ms 门限，导致 VAD
+    # 起音后最快也要 ~1.1s 才出第一条 partial；降到 300/240 可把首字延迟压到 ~0.5s。
+    # 注意：partial 是对「段起点→当前」整段重推理，间隔越小 GPU 抢占越密，
+    # 3 路以上并发时会挤压 final 的定稿速度。多用户场景优先用 env 调回大值。
+    stream_partial_interval_ms: int = 300  # 两次 partial 推理的最小间隔
+    stream_min_partial_ms: int = 240       # 语音累计多长才开始出 partial
     stream_max_sessions: int = 8
     stream_recv_timeout_s: float = 300.0
     stream_token_level: bool = True        # generate 过程中逐 token 推送

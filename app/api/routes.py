@@ -1159,7 +1159,7 @@ async def get_realtime_session(
     "/realtime/{session_id}/audio",
     summary="1. 实时录音转文字：上传 base64 音频 chunk",
     description=REALTIME_AUDIO_DOC,
-    response_description="返回当前 chunk 是否接收成功。",
+    response_description="返回当前 chunk 是否接收成功，并附带累计字节数（省一次状态查询）。",
 )
 async def push_realtime_audio(
     session_id: str,
@@ -1167,14 +1167,19 @@ async def push_realtime_audio(
     rm: RealtimeManager = Depends(get_realtime_manager),
 ) -> dict:
     try:
-        await rm.push_audio(session_id, chunk)
+        info = await rm.push_audio(session_id, chunk)
     except KeyError:
         raise HTTPException(404, "session not found")
     except ValueError as e:
         raise HTTPException(400, str(e))
     except RealtimeASRError as e:
         raise HTTPException(502, str(e))
-    return {"ok": True, "seq": chunk.seq}
+    return {
+        "ok": True,
+        "seq": chunk.seq,
+        "chunks_received": info.chunks_received,
+        "bytes_received": info.bytes_received,
+    }
 
 
 @router.get(

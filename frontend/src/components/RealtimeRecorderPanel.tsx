@@ -141,10 +141,15 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     }
     setChunks(seq);
 
-    const info = await authedFetch(`/asr/realtime/${sessionId}`);
-    if (info.ok) {
-      const data = await info.json();
-      setBytes(data.bytes_received || 0);
+    // The audio POST already carries the running byte counter, so there is no
+    // need for a second GET per chunk (that used to double the request rate).
+    try {
+      const data = await response.json();
+      if (typeof data.bytes_received === 'number') {
+        setBytes(data.bytes_received);
+      }
+    } catch {
+      /* counter is cosmetic; ignore a non-JSON response */
     }
     return true;
   };
@@ -215,7 +220,10 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
             setStatus('识别中');
           });
       };
-      recorder.start(1000);
+      // 200ms timeslice: MediaRecorder buffers until the next tick, so a 1s
+      // timeslice adds ~0.5-1s before any audio reaches the server. 200ms keeps
+      // first-text latency close to the upstream partial gate, at ~5 req/s/client.
+      recorder.start(200);
       setIsRecording(true);
       setStatus('录音中');
       appendLog('recording_started', { mime_type: recorder.mimeType || mimeType, format });

@@ -62,7 +62,13 @@ def test_push_audio_ok(client):
         f"/asr/realtime/{sid}/audio",
         json={"seq": 1, "audio": "AAAAAAAAAAA="},
     )
-    assert r.status_code == 200 and r.json() == {"ok": True, "seq": 1}
+    body = r.json()
+    assert r.status_code == 200
+    assert body["ok"] is True
+    assert body["seq"] == 1
+    # byte/chunk counters ride along so the client skips a per-chunk status GET
+    assert body["chunks_received"] == 1
+    assert body["bytes_received"] == 8  # "AAAAAAAAAAA=" decodes to 8 bytes
 
 
 def test_push_invalid_base64_returns_400(client):

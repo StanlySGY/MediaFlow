@@ -191,7 +191,9 @@ class RealtimeManager:
         self._workers.add(task)
         task.add_done_callback(self._workers.discard)
 
-    async def push_audio(self, session_id: str, chunk: RealtimeAudioChunk) -> None:
+    async def push_audio(self, session_id: str, chunk: RealtimeAudioChunk) -> RealtimeSessionInfo:
+        """Push one audio chunk. Returns the updated session info so callers can
+        read the running byte/chunk counters without a second round-trip."""
         session = self._sessions.get(session_id)
         if session is None:
             raise KeyError("session not found")
@@ -226,6 +228,7 @@ class RealtimeManager:
             ))
             session.complete(RealtimeSessionStatus.failed, str(e))
             raise
+        return session.info
 
     async def finish(self, session_id: str) -> None:
         session = self._sessions.get(session_id)
