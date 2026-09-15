@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from app.models.schemas import RealtimeAudioChunk, RealtimeSessionCreate
+from app.services.asr.realtime_base import RealtimeASRError
 from app.services.asr.realtime_ws import RealtimeWSProvider, _normalize_language
 
 
@@ -346,3 +347,119 @@ async def test_start_frame_sends_full_language_name_upstream(monkeypatch):
         _ = [event async for event in provider.events()]
 
     assert json.loads(str(socket.sent[0]))["language"] == "Chinese"
+
+
+async def test_start_frame_carries_partial_throttle_overrides(monkeypatch):
+    """partial_interval_ms / min_partial_ms are per-session escape hatches for the
+    latency-vs-concurrency tradeoff; absent fields must stay absent upstream."""
+    plain = _FakeWebSocket(terminal_events=[{"type": "done", "text": ""}])
+    provider = await _provider_with_socket(monkeypatch, plain)
+    async with provider:
+        await provider.start(RealtimeSessionCreate(language="zh"))
+        await provider.finish()
+        _ = [event async for event in provider.events()]
+    frame = json.loads(str(plain.sent[0]))
+    assert "partial_interval_ms" not in frame
+    assert "min_partial_ms" not in frame
+
+    tuned = _FakeWebSocket(terminal_events=[{"type": "done", "text": ""}])
+    provider = await _provider_with_socket(monkeypatch, tuned)
+    async with provider:
+        await provider.start(RealtimeSessionCreate(
+            language="zh", partial_interval_ms=640, min_partial_ms=480,
+        ))
+        await provider.finish()
+        _ = [event async for event in provider.events()]
+    frame = json.loads(str(tuned.sent[0]))
+    assert frame["partial_interval_ms"] == 640
+    assert frame["min_partial_ms"] == 480
+
+
+async def test_realtime_session_appears_in_asr_monitor(monkeypatch):
+    """Regression: the call-monitor page used to show nothing but the silent
+    「测试连接」probe because realtime sessions never entered the monitor."""
+    from app.services.asr_monitoring import asr_monitor
+
+    asr_monitor.reset()
+    socket = _FakeWebSocket(
+        terminal_events=[
+            {"type": "final", "segment_id": 0, "text": "今天天气不错"},
+            {"type": "done", "text": "今天天气不错"},
+        ]
+    )
+    provider = await _provider_with_socket(monkeypatch, socket)
+    provider.bind_session("mediaflow-monitor-1")
+
+    async with provider:
+        await provider.start(
+            RealtimeSessionCreate(sample_rate=16000, format="pcm_s16le", channels=1)
+        )
+        call = next(c for c in asr_monitor.snapshot()["calls"] if c["session_id"] == "mediaflow-monitor-1")
+        assert call["status"] == "running", "session must be visible while recording"
+        assert call["source"] == "realtime_stream"
+        assert call["provider"] == "realtime_ws"
+        pcm = b"\x00\x00" * 3200  # exactly 400 ms at 16k mono s16le
+        await provider.push_audio(
+            RealtimeAudioChunk(
+                seq=1, audio=base64.b64encode(pcm).decode("ascii"), is_final=True
+            )
+        )
+        _ = [event async for event in provider.events()]
+
+    calls = asr_monitor.snapshot()["calls"]
+    assert len(calls) == 1
+    record = calls[0]
+    assert record["status"] == "ok"
+    assert record["text_preview"] == "今天天气不错"
+    assert record["text_chars"] == len("今天天气不错")
+    assert record["input_bytes"] == 6400
+    # 6400 B of s16le mono @16k is exactly 200 ms of audio
+    assert 190.0 <= record["audio_duration_ms"] <= 210.0
+    assert record["error"] is None
+
+
+async def test_realtime_connect_failure_is_recorded(monkeypatch):
+    from app.services.asr_monitoring import asr_monitor
+
+    asr_monitor.reset()
+
+    async def refusing_connect(url: str, **_kwargs: Any) -> _FakeWebSocket:
+        # 4429 (上游并发满) / 4503 (模型未就绪) 都以握手期异常的形式到达
+        raise OSError("HTTP 429")
+
+    monkeypatch.setattr(
+        "app.services.asr.realtime_ws.websockets.connect", refusing_connect
+    )
+    provider = RealtimeWSProvider(base_url="http://asr.internal:8022/v1/asr/stream")
+    provider.bind_session("mediaflow-monitor-2")
+
+    with pytest.raises(RealtimeASRError, match="failed to open websocket"):
+        async with provider:
+            pass
+
+    calls = asr_monitor.snapshot()["calls"]
+    assert len(calls) == 1
+    assert calls[0]["status"] == "error"
+    assert calls[0]["session_id"] == "mediaflow-monitor-2"
+    assert "failed to open websocket" in calls[0]["error"]
+
+
+async def test_monitor_finalizes_once_per_session(monkeypatch):
+    """done + a later __aexit__ must not double-count the session."""
+    from app.services.asr_monitoring import asr_monitor
+
+    asr_monitor.reset()
+    socket = _FakeWebSocket(terminal_events=[{"type": "done", "text": "一句话"}])
+    provider = await _provider_with_socket(monkeypatch, socket)
+    provider.bind_session("mediaflow-monitor-3")
+    async with provider:
+        await provider.start(RealtimeSessionCreate(sample_rate=16000, format="pcm_s16le"))
+        await provider.push_audio(
+            RealtimeAudioChunk(seq=1, audio=base64.b64encode(b"\x00\x00" * 3200).decode(), is_final=True)
+        )
+        _ = [event async for event in provider.events()]
+
+    snapshot = asr_monitor.snapshot()
+    assert snapshot["summary"]["total"] == 1
+    assert snapshot["summary"]["succeeded"] == 1
+    assert snapshot["summary"]["failed"] == 0

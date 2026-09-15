@@ -38,6 +38,10 @@ class SessionOptions:
     enable_partial: bool = True
     enable_vad: bool = True
     max_new_tokens: Optional[int] = None
+    # 逐会话覆盖 partial 节流（None = 用服务端全局值）。压测/多路并发场景下，
+    # 客户端可以在 start 帧里带这两个字段，不必重启服务就能改延迟-吞吐取舍。
+    partial_interval_ms: Optional[int] = None
+    min_partial_ms: Optional[int] = None
 
     @classmethod
     def from_payload(cls, payload: Dict[str, Any], settings: Settings) -> "SessionOptions":
@@ -50,7 +54,18 @@ class SessionOptions:
             enable_partial=bool(payload.get("enable_partial", settings.stream_partial_enabled)),
             enable_vad=bool(payload.get("enable_vad", settings.vad_enabled)),
             max_new_tokens=payload.get("max_new_tokens"),
+            partial_interval_ms=_positive_int_or_none(payload.get("partial_interval_ms")),
+            min_partial_ms=_positive_int_or_none(payload.get("min_partial_ms")),
         )
+
+
+def _positive_int_or_none(value) -> Optional[int]:
+    """忽略非法/缺省的覆盖值，回落到服务端配置，避免一个坏字段毁掉整条会话。"""
+    try:
+        iv = int(value)
+    except (TypeError, ValueError):
+        return None
+    return iv if iv > 0 else None
 
 
 @dataclass
@@ -94,6 +109,16 @@ class StreamSession:
     @property
     def sr(self) -> int:
         return self.settings.sample_rate
+
+    # 有效节流值：会话覆盖优先，否则读全局（全局值可被 /v1/config/stream 热改，
+    # 所以这里每次都用 property 动态取值，不能在 __post_init__ 里快照）。
+    @property
+    def partial_interval_ms(self) -> int:
+        return self.options.partial_interval_ms or self.settings.stream_partial_interval_ms
+
+    @property
+    def min_partial_ms(self) -> int:
+        return self.options.min_partial_ms or self.settings.stream_min_partial_ms
 
     def _ms(self, samples: int) -> int:
         return int(samples * 1000 / self.sr)
@@ -179,10 +204,10 @@ class StreamSession:
         if not (self.options.enable_partial and self.settings.stream_partial_enabled):
             return
         now = time.time()
-        if (now - self._last_partial_at) * 1000.0 < self.settings.stream_partial_interval_ms:
+        if (now - self._last_partial_at) * 1000.0 < self.partial_interval_ms:
             return
         seg_len = self._cursor() - self._seg_start
-        if self._ms(seg_len) < self.settings.stream_min_partial_ms:
+        if self._ms(seg_len) < self.min_partial_ms:
             return
         # 上一次 partial 还没跑完就跳过本轮，避免任务堆积压垮 NPU
         if self._partial_task is not None and not self._partial_task.done():

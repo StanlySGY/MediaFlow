@@ -84,6 +84,7 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
 
     es.addEventListener('snapshot', handleSnapshot);
     es.addEventListener('call_started', handleCallEvent);
+    es.addEventListener('call_updated', handleCallEvent);
     es.addEventListener('call_finished', handleCallEvent);
     es.addEventListener('reset', handleCallEvent);
 

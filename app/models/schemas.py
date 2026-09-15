@@ -230,6 +230,23 @@ class RealtimeSessionCreate(BaseModel):
         le=5000,
         description="VAD 静音阈值（毫秒），超过此时长的静音触发 final 分句。默认 700ms。",
     )
+    partial_interval_ms: int | None = Field(
+        default=None,
+        ge=50,
+        le=10000,
+        description=(
+            "逐会话覆盖上游 partial 推理的最小间隔（毫秒）；留空使用上游服务端的"
+            "全局配置。调大可在多路并发时把 GPU 预算让给定稿（final）。"
+        ),
+    )
+    min_partial_ms: int | None = Field(
+        default=None,
+        ge=50,
+        le=10000,
+        description=(
+            "逐会话覆盖「语音累计多久才开始出 partial」的门限（毫秒）；留空用上游全局。"
+        ),
+    )
 
 
 class RealtimeSessionInfo(BaseModel):

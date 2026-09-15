@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     stream_max_sessions: int = 8
     stream_recv_timeout_s: float = 300.0
     stream_token_level: bool = True        # generate 过程中逐 token 推送
+    # 单次会话的 partial 节流参数，允许由客户端在 start 帧里逐会话覆盖
+    # （见 session.py SessionOverrides），也可用 PUT /v1/config/stream 全局热改。
+    admin_token: str = ""                  # 非空才开放 /v1/config/stream 热改接口
 
     # ---------------- VAD（纯 numpy 能量 + 过零率，无需额外编译依赖） ----------------
     vad_enabled: bool = True

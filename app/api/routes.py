@@ -356,8 +356,11 @@ ASR_MONITOR_DOC = """
 
 - `file_task`：`POST /asr/file` 或旧版 `/asr/task` 创建的文件分片识别。
 - `realtime_offline`：实时接口结束后，用文件 ASR 封装调用 Qwen ASR。
+- `realtime_stream`：`realtime_ws` 原生 WebSocket 实时录音，一条会话对应一次调用，
+  会话期间 `status=running`，`input_bytes` / `audio_duration_ms` / `text_preview` 随流更新。
 - `stream_transcribe`：旧版流式转写入口。
-- `ping`：服务配置页「测试连接」或 `POST /asr/ping`。
+- `ping`：服务配置页「测试连接」或 `POST /asr/ping`。**该来源固定送 1 秒静音 WAV**，
+  模型对静音会吐出「嗯。」之类的占位文本，属正常现象，不代表真实业务识别结果。
 """
 
 ASR_MONITOR_EVENTS_DOC = """
@@ -375,9 +378,14 @@ data: {"summary":{...},"calls":[...],"config":{...}}
 event: call_started
 data: {"type":"call_started","call":{"call_id":"...","status":"running",...}}
 
+event: call_updated
+data: {"type":"call_updated","call":{"call_id":"...","status":"running","audio_duration_ms":12.4,...}}
+
 event: call_finished
 data: {"type":"call_finished","call":{"call_id":"...","status":"ok","elapsed_ms":320.1,...}}
 ```
+
+`call_updated` 只出现在跑过程中能增量刷新统计的来源（目前是实时录音），页面按 `call_id` 原地覆盖即可。
 
 如果调用失败，`call.status=error`，`call.error` 中会包含上游 HTTP 状态、超时或协议错误摘要。
 如果启用了访问令牌，浏览器 `EventSource` 可使用 `?token=你的token` 查询参数。

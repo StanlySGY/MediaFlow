@@ -17,6 +17,7 @@ from .config import get_settings
 from .engine import ASREngine, set_engine
 from .routers import health as health_router
 from .routers import http as http_router
+from .routers import runtime_config as runtime_config_router
 from .routers import ws as ws_router
 from .version import VERSION
 
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router.router)
     app.include_router(http_router.router)
+    app.include_router(runtime_config_router.router)
     app.include_router(ws_router.router)
 
     @app.get("/", include_in_schema=False)

@@ -13,6 +13,20 @@ from typing import Any, AsyncIterator, Iterator
 _context: ContextVar[dict[str, Any]] = ContextVar("asr_call_context", default={})
 _TEXT_PREVIEW_CHARS = 200
 
+# 会话进行中才能确定的统计字段，允许在 finish 之前由 update_call 增量刷新。
+# 白名单而非任意 setattr：防止调用方把 status/text 这类终态字段改回去。
+_MUTABLE_DURING_CALL = frozenset({
+    "task_id",
+    "session_id",
+    "segment_id",
+    "input_bytes",
+    "declared_format",
+    "detected_format",
+    "audio_duration_ms",
+    "text_chars",
+    "text_preview",
+})
+
 
 @contextmanager
 def asr_call_context(**values: Any) -> Iterator[None]:
@@ -142,6 +156,27 @@ class ASRMonitor:
             call.text_preview = text_preview[:_TEXT_PREVIEW_CHARS]
         call.error = error
         self._publish({"type": "call_finished", "call": call.to_dict()})
+
+    def update_call(self, call_id: str, **fields: Any) -> None:
+        """Patch still-known-later stats onto a running call.
+
+        实时会话的音频字节数、转写文本要等流跑完才拿得到，所以这里允许在
+        finish 之前刷新；被窗口淘汰的 call 直接静默跳过。
+        """
+        call = self._by_id.get(call_id)
+        if call is None:
+            return
+        changed = False
+        for key, value in fields.items():
+            if key in _MUTABLE_DURING_CALL and value is not None:
+                new_value = value
+                if key == "text_preview":
+                    new_value = str(value)[:_TEXT_PREVIEW_CHARS]
+                if getattr(call, key) != new_value:
+                    setattr(call, key, new_value)
+                    changed = True
+        if changed:
+            self._publish({"type": "call_updated", "call": call.to_dict()})
 
     def snapshot(self) -> dict[str, Any]:
         calls = [call.to_dict() for call in self._calls]

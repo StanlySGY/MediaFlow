@@ -23,6 +23,7 @@ from app.models.schemas import (
     RealtimeSessionCreate,
 )
 from app.services.asr.realtime_base import RealtimeASRError
+from app.services.asr_monitoring import asr_call_context, asr_monitor
 
 log = logging.getLogger(__name__)
 
@@ -150,9 +151,17 @@ class RealtimeWSProvider:
         self._pcm_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[str] | None = None
         self._input_format = ""
+        self._format_recorded = False
         self._pcm_buffer = bytearray()
         self._audio_lock = asyncio.Lock()
         self._ws_send_lock = asyncio.Lock()
+
+        # 上游调用监控：一条实时会话 = 一次调用，会话结束才落终态。
+        self._call_id = ""
+        self._call_closed = False
+        self._terminal_ok: bool | None = None
+        self._terminal_error: str | None = None
+        self._pcm_bytes_sent = 0
 
         self._finished = False
         self._terminal_received = False
@@ -174,6 +183,12 @@ class RealtimeWSProvider:
         headers: list[tuple[str, str]] = []
         if self._api_key:
             headers.append(("Authorization", f"Bearer {self._api_key}"))
+        with asr_call_context(source="realtime_stream", session_id=self._session_id):
+            self._call_id = asr_monitor.start_call(
+                provider="realtime_ws",
+                model=self._model,
+                base_url=self._base_url,
+            )
         try:
             self._ws = await websockets.connect(
                 self._base_url,
@@ -186,12 +201,20 @@ class RealtimeWSProvider:
                 proxy=None,
             )
         except (WebSocketException, OSError, TimeoutError) as e:
+            # 连不上（含上游 4429 超并发、4503 模型未就绪）也要在监控里留痕，
+            # 否则页面上只剩「测试连接」，看不出真实录音被谁挡在门外。
+            self._finalize_call(False, f"failed to open websocket: {e}")
             raise RealtimeASRError(
                 f"failed to open websocket to {self._base_url}: {e}"
             ) from e
         return self
 
     async def __aexit__(self, *exc: object) -> None:
+        if not self._call_closed:
+            self._finalize_call(
+                self._terminal_ok if self._terminal_ok is not None else False,
+                self._terminal_error or "session ended before a terminal frame",
+            )
         await self._abort_audio_pipeline()
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
@@ -256,6 +279,13 @@ class RealtimeWSProvider:
             if data:
                 async with self._audio_lock:
                     await self._ensure_audio_pipeline(chunk, data)
+                    if self._input_format and not self._format_recorded:
+                        self._format_recorded = True
+                        asr_monitor.update_call(
+                            self._call_id,
+                            declared_format=str(chunk.format or self._config.format or ""),
+                            detected_format=self._input_format,
+                        )
                     if self._ffmpeg is None:
                         await self._feed_pcm(data)
                     else:
@@ -305,6 +335,13 @@ class RealtimeWSProvider:
             "enable_partial": True,
             "enable_vad": True,
         }
+        # Per-session partial-throttle overrides; upstream ignores absent/invalid
+        # fields and falls back to its global config. Lets latency sweeps run
+        # without restarting the ASR service.
+        if config.partial_interval_ms:
+            frame["partial_interval_ms"] = config.partial_interval_ms
+        if config.min_partial_ms:
+            frame["min_partial_ms"] = config.min_partial_ms
         if config.language and config.language.strip().lower() != "auto":
             normalized = _normalize_language(config.language)
             if normalized:
@@ -458,6 +495,8 @@ class RealtimeWSProvider:
     async def _send_ws(self, data: str | bytes) -> None:
         if self._ws is None:
             raise RealtimeASRError("websocket is not connected")
+        if isinstance(data, bytes):
+            self._pcm_bytes_sent += len(data)
         try:
             async with self._ws_send_lock:
                 await self._ws.send(data)
@@ -536,9 +575,15 @@ class RealtimeWSProvider:
             self._trim_old_segments()
             full_text = self._render_text()
             self._last_final_text = full_text
+            asr_monitor.update_call(
+                self._call_id,
+                text_chars=len(full_text),
+                text_preview=full_text,
+            )
             self._emit_text("final", full_text, payload, is_final=True)
             return False
         if kind == "done":
+            self._terminal_ok = True
             full_text = str(payload.get("text") or self._render_text())
             if full_text and full_text != self._last_final_text:
                 self._last_final_text = full_text
@@ -555,12 +600,14 @@ class RealtimeWSProvider:
                     raw=payload,
                 )
             )
+            self._finalize_call(True, None)
             return True
         if kind == "error":
-            self._emit_error(
-                str(payload.get("message") or payload.get("error") or "downstream error"),
-                payload=payload,
+            message = str(
+                payload.get("message") or payload.get("error") or "downstream error"
             )
+            # _emit_error 会同时推 SSE error 事件并落监控终态
+            self._emit_error(message, payload=payload)
             return True
         log.debug("unhandled realtime_ws frame: %s", payload)
         return False
@@ -590,6 +637,7 @@ class RealtimeWSProvider:
         if self._terminal_received:
             return
         self._terminal_received = True
+        self._finalize_call(False, message)
         self._queue.put_nowait(
             RealtimeASREvent(
                 type="error",
@@ -600,6 +648,33 @@ class RealtimeWSProvider:
                 mode=REALTIME_WS_MODE,
                 raw=payload,
             )
+        )
+
+    def _finalize_call(self, ok: bool, error: str | None) -> None:
+        """Close the monitor row for this session. Idempotent — the terminal frame,
+        an exception path and ``__aexit__`` can all reach here."""
+        if self._call_closed or not self._call_id:
+            return
+        self._call_closed = True
+        text = self._last_final_text or self._render_text()
+        duration_ms = (
+            self._pcm_bytes_sent * 1000.0 / (_TARGET_SAMPLE_RATE * 2 * _TARGET_CHANNELS)
+            if self._pcm_bytes_sent
+            else None
+        )
+        asr_monitor.update_call(
+            self._call_id,
+            input_bytes=self._pcm_bytes_sent or None,
+            audio_duration_ms=duration_ms,
+            text_chars=len(text) or None,
+            text_preview=text or None,
+        )
+        asr_monitor.finish_call(
+            self._call_id,
+            ok=ok,
+            text_chars=len(text),
+            text_preview=text,
+            error=error,
         )
 
     @staticmethod

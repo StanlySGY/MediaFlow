@@ -55,8 +55,9 @@ export const upsertCall = (
 export const sourceLabel = (source: string) => ({
   file_task: '文件分片',
   realtime_offline: '实时封装',
+  realtime_stream: '实时录音',
   stream_transcribe: '流式转写',
-  ping: '测试连接',
+  ping: '测试连接（静音探针）',
 }[source] || source || '未知来源');
 
 export const formatBytes = (bytes: number) => {
