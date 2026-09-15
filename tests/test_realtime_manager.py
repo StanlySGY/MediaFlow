@@ -151,7 +151,7 @@ async def test_max_sessions_enforced(settings):
     s1 = await rm.create(RealtimeSessionCreate())
     s2 = await rm.create(RealtimeSessionCreate())
     from app.services.asr.realtime_base import RealtimeASRError
-    with pytest.raises(RealtimeASRError, match="max realtime sessions"):
+    with pytest.raises(RealtimeASRError, match="同时录音已达上限"):
         await rm.create(RealtimeSessionCreate())
     await rm.close(s1.session_id)
     await rm.close(s2.session_id)

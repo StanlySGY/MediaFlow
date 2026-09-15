@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Play, Square, Trash2, Mic, Terminal, Info } from 'lucide-react';
 import { RealtimeEvent, RealtimeSession, StandardASRStreamEvent } from '../types';
-import { errorMessage } from '../lib/errors';
+import { errorMessage, responseError } from '../lib/errors';
 import { applySplice } from '../lib/splice';
 import { RealtimeRecorderPanel } from './RealtimeRecorderPanel';
 
@@ -85,7 +85,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
         body: JSON.stringify(body),
       });
 
-      if (!r.ok) throw new Error(await r.text());
+      if (!r.ok) throw await responseError(r);
       const data = await r.json();
 
       setSession({

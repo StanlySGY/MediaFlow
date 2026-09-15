@@ -165,8 +165,11 @@ class RealtimeManager:
             if ses.info.status not in _TERMINAL_STATUSES
         )
         if live >= s.realtime_max_sessions:
+            # 这是普通用户唯一会稳定撞到的容量错误，文案直接进前端提示，
+            # 所以用中文并给出可操作信息，而不是抛出内部 key 的英文串。
             raise RealtimeASRError(
-                f"max realtime sessions ({s.realtime_max_sessions}) reached"
+                f"同时录音已达上限（{s.realtime_max_sessions} 路），"
+                "请等待他人结束录音后重试"
             )
 
         session_id = uuid.uuid4().hex
