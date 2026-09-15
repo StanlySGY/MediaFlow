@@ -54,6 +54,8 @@ def test_realtime_events_convert_to_standard_sse_messages():
         "status": None,
         "progress": None,
         "error": None,
+        "error_code": None,
+        "hint": None,
         "source_event": "online",
     }
 
@@ -104,6 +106,8 @@ def test_file_events_convert_to_same_standard_sse_message_shape():
         "status": None,
         "progress": None,
         "error": None,
+        "error_code": None,
+        "hint": None,
         "source_event": "segment",
     }
 
