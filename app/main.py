@@ -201,7 +201,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MediaFlow",
         description=API_DESCRIPTION,
-        version="1.7.1",
+        version="1.7.2",
         lifespan=_lifespan,
     )
     app.state.manager = TaskManager(settings)
