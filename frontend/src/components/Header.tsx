@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cpu, Layers, Key, Menu } from 'lucide-react';
+import { Cpu, Layers, Key, Menu, Activity } from 'lucide-react';
 import { SystemConfig } from '../types';
 
 interface HeaderProps {
@@ -17,6 +17,8 @@ export const Header: React.FC<HeaderProps> = ({
   onSetToken,
   onToggleNav,
 }) => {
+  const systemHealthy = Boolean(config?.api_key_set);
+
   return (
     <header className="h-[68px] px-5 md:px-7 flex items-center gap-3 md:gap-5 border-b border-border bg-surface/90 backdrop-blur-md sticky top-0 z-40">
       <button
@@ -43,6 +45,16 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="text-[11px] font-semibold font-mono items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-2 border border-border text-fg-dim hidden lg:flex">
           <Layers className="w-3.5 h-3.5 text-accent-2" />
           <span>接口 <b className="text-fg font-bold">{config?.provider || '未设置'}</b></span>
+        </div>
+
+        <div className="text-[11px] font-semibold font-mono items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-2 border border-border hidden xl:flex">
+          <Activity className={`w-3.5 h-3.5 ${systemHealthy ? 'text-ok' : 'text-warn'}`} />
+          <span>状态 <b className="text-fg font-bold">{systemHealthy ? '正常' : '待配置'}</b></span>
+        </div>
+
+        <div className="text-[11px] font-semibold font-mono items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-2 border border-border hidden xl:flex">
+          <Activity className={`w-3.5 h-3.5 ${systemHealthy ? 'text-ok' : 'text-warn'}`} />
+          <span>状态 <b className="text-fg font-bold">{systemHealthy ? '正常' : '待配置'}</b></span>
         </div>
 
         <button

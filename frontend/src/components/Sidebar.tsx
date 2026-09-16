@@ -22,6 +22,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'concat', label: '音视频合并', desc: '多文件无损拼接', icon: Combine },
     { id: 'realtime', label: '实时识别', desc: '边说边出字', icon: Mic },
     { id: 'monitor', label: '调用监控', desc: 'Qwen ASR 调用', icon: Activity },
+    { id: 'system-monitor', label: '系统监控', desc: '磁盘任务与会话', icon: Activity },
     { id: 'config', label: '服务配置', desc: '连接 ASR 接口', icon: Settings },
     { id: 'history', label: '历史记录', desc: '查看过往任务', icon: FolderArchive },
   ];

@@ -14,6 +14,7 @@ import { ConfigView } from './components/ConfigView';
 import { HistoryView } from './components/HistoryView';
 import { ConcatView } from './components/ConcatView';
 import { MonitorView } from './components/MonitorView';
+import { SystemMonitorView } from './components/SystemMonitorView';
 import { downloadFile } from './lib/download';
 import { SystemConfig } from './types';
 
@@ -91,6 +92,7 @@ export default function App() {
       concat: { title: '音视频合并', crumb: '多个同格式音频或视频按顺序无损合并，不重新编码' },
       realtime: { title: '实时识别', crumb: '创建会话后边发音频边出结果，适合直播、会议等实时场景' },
       monitor: { title: '调用监控', crumb: '实时查看 Qwen ASR 上游调用、耗时、状态和错误' },
+      'system-monitor': { title: '系统监控', crumb: '查看磁盘、任务、实时会话与存储占用情况' },
       config: { title: '服务配置', crumb: '填写并测试 ASR 接口，所有修改即时生效、无需重启' },
       history: { title: '历史记录', crumb: '查看以往已完成的转写任务，点击可重新打开' },
     };
@@ -446,6 +448,17 @@ export default function App() {
             )}
 
             {/* 4. CONFIG ROUTE */}
+            {currentView === 'system-monitor' && (
+              <motion.div
+                key="system-monitor"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+              >
+                <SystemMonitorView authedFetch={authedFetch} />
+              </motion.div>
+            )}
+
             {currentView === 'config' && (
               <motion.div
                 key="config"

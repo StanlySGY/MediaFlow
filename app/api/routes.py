@@ -47,6 +47,7 @@ from app.services.realtime_manager import RealtimeManager
 from app.services.stream_manager import TaskManager
 from app.services.stream_transcribe_manager import StreamTranscribeManager
 from app.services.subtitles import to_srt, to_vtt
+from app.services.system_metrics import collect_dashboard_metrics, collect_system_metrics
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/asr", tags=["asr"], dependencies=[Depends(require_token)])
@@ -959,6 +960,30 @@ async def get_asr_monitor() -> dict:
         "realtime_asr_provider": settings.realtime_asr_provider,
     }
     return snapshot
+
+
+@router.get("/metrics/system")
+async def get_system_metrics(
+    request: Request,
+    manager: TaskManager = Depends(get_manager),
+    rm: RealtimeManager = Depends(get_realtime_manager),
+) -> dict:
+    return collect_system_metrics(
+        get_settings(),
+        manager,
+        rm,
+    )
+
+
+@router.get("/metrics/dashboard")
+async def get_dashboard_metrics(
+    manager: TaskManager = Depends(get_manager),
+    rm: RealtimeManager = Depends(get_realtime_manager),
+) -> dict:
+    return collect_dashboard_metrics(
+        manager,
+        rm,
+    )
 
 
 @router.get(

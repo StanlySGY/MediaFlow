@@ -155,3 +155,22 @@ export interface ASRMonitorSnapshot {
     realtime_asr_provider: string;
   };
 }
+
+export interface SystemMetrics {
+  disk_percent: number;
+  temp_size_mb: number;
+  outputs_size_mb: number;
+  active_tasks: number;
+  realtime_sessions: number;
+  realtime_limit: number;
+  asr_running: number;
+  asr_total: number;
+}
+
+export interface DashboardMetrics {
+  total_calls: number;
+  success_rate: number;
+  avg_elapsed_ms: number;
+  active_realtime_sessions: number;
+  active_tasks: number;
+}
