@@ -45,6 +45,7 @@ async def test_post_config_persists_and_applies(client):
     assert on_disk["asr_model"] == "alt-model"
     assert on_disk["asr_hotwords"] == "foo,bar"
     assert on_disk["asr_timestamps"] is False
+    assert (rc_path.stat().st_mode & 0o777) == 0o600
 
     # GET reflects same values
     g = (await c.get("/asr/config")).json()

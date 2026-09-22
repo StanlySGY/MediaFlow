@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class TaskStatus(str, Enum):
@@ -112,7 +112,14 @@ class ASRDelta(BaseModel):
 
 
 class ASRStreamEvent(BaseModel):
-    """Unified SSE payload for standard ASR streaming endpoints."""
+    """Unified SSE payload for standard ASR streaming endpoints.
+
+    Public contract invariants:
+    - text events always carry a delta.
+    - done and error events always carry delta=null.
+    - done is terminal and therefore always has is_final=true.
+    - seq is optional but, when present, is non-negative.
+    """
 
     type: Literal["text", "done", "error"] = Field(
         description="统一事件类型：text 表示有识别文本，done 表示流结束，error 表示失败。"
@@ -175,6 +182,19 @@ class ASRStreamEvent(BaseModel):
         default=None,
         description="底层原始事件名，例如 online / final / segment / done / error。",
     )
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> "ASRStreamEvent":
+        """Enforce invariants of the public SSE contract."""
+        if self.type in {"done", "error"} and self.delta is not None:
+            raise ValueError(f"{self.type} events must have delta=null")
+        if self.type == "done" and not self.is_final:
+            raise ValueError("done events must have is_final=true")
+        if self.type == "text" and self.delta is None:
+            raise ValueError("text events must have a delta")
+        if self.seq is not None and self.seq < 0:
+            raise ValueError("seq must be >= 0 when present")
+        return self
 
 
 # ---------------- Realtime ----------------

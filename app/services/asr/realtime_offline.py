@@ -54,7 +54,13 @@ class RealtimeOfflineProvider:
         self._chunk_channels: int | None = None
         self._monitor_audio_context: dict[str, object] = {}
         self._finished = False
+        self._event_seq = 0
         self._work_dir: Path | None = None
+
+    def _next_event_seq(self) -> int:
+        seq = self._event_seq
+        self._event_seq += 1
+        return seq
 
     async def __aenter__(self) -> "RealtimeOfflineProvider":
         return self
@@ -115,6 +121,7 @@ class RealtimeOfflineProvider:
                 RealtimeASREvent(
                     type="error",
                     session_id=self._session_id,
+                    seq=self._next_event_seq(),
                     mode=SIMULATED_STREAMING,
                     error=str(e),
                 )
@@ -129,6 +136,7 @@ class RealtimeOfflineProvider:
             RealtimeASREvent(
                 type="final",
                 session_id=self._session_id,
+                seq=self._next_event_seq(),
                 text=result.text,
                 is_final=True,
                 elapsed_ms=elapsed,
@@ -139,6 +147,7 @@ class RealtimeOfflineProvider:
             RealtimeASREvent(
                 type="done",
                 session_id=self._session_id,
+                seq=self._next_event_seq(),
                 is_final=True,
                 elapsed_ms=elapsed,
                 mode=SIMULATED_STREAMING,
@@ -289,7 +298,7 @@ class RealtimeOfflineProvider:
     async def _emit_text(self, text: str) -> None:
         if not text:
             return
-        for seq, end in enumerate(
+        for _, end in enumerate(
             range(
                 _TEXT_CHARS_PER_EVENT,
                 len(text) + _TEXT_CHARS_PER_EVENT,
@@ -301,7 +310,7 @@ class RealtimeOfflineProvider:
                 RealtimeASREvent(
                     type="online",
                     session_id=self._session_id,
-                    seq=seq,
+                    seq=self._next_event_seq(),
                     text=text[:end],
                     is_final=False,
                     elapsed_ms=self._elapsed_ms(),

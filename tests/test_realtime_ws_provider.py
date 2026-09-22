@@ -184,6 +184,57 @@ async def test_pcm_stream_maps_qwen_events_to_cumulative_text(monkeypatch):
     assert events[-2].text == "今天天气不错"
     assert events[-1].text == "今天天气不错"
     assert events[-1].mode == "realtime_ws"
+    assert [event.seq for event in events] == list(range(1, len(events) + 1))
+    assert all(event.is_final is (event.type in {"final", "done"}) for event in events)
+
+
+async def test_websocket_error_is_terminal_and_emitted_once(monkeypatch):
+    socket = _FakeWebSocket(terminal_events=[{"type": "error", "error": "upstream failed"}])
+    provider = await _provider_with_socket(monkeypatch, socket)
+    provider.bind_session("mediaflow-error-1")
+
+    async with provider:
+        await provider.start(RealtimeSessionCreate())
+        await provider.finish()
+        events = [event async for event in provider.events()]
+        provider._emit_error("late duplicate", payload=None)
+
+    assert [event.type for event in events] == ["error"]
+    assert events[0].error == "upstream failed"
+    assert events[0].is_final is False
+    assert events[0].seq == 1
+    assert provider._terminal_received is True
+
+
+async def test_websocket_disconnect_before_terminal_emits_single_error(monkeypatch):
+    socket = _FakeWebSocket(terminal_events=[])
+    provider = await _provider_with_socket(monkeypatch, socket)
+    provider.bind_session("mediaflow-disconnect-1")
+
+    async with provider:
+        await provider.start(RealtimeSessionCreate())
+        await provider.finish()
+        await socket.close()
+        events = [event async for event in provider.events()]
+
+    assert [event.type for event in events] == ["error"]
+    assert events[0].error == "websocket closed before done"
+    assert events[0].is_final is False
+    assert events[0].seq == 1
+
+
+async def test_websocket_terminal_done_is_not_followed_by_error(monkeypatch):
+    socket = _FakeWebSocket(terminal_events=[{"type": "done", "text": "ok"}])
+    provider = await _provider_with_socket(monkeypatch, socket)
+
+    async with provider:
+        await provider.start(RealtimeSessionCreate())
+        await provider.finish()
+        events = [event async for event in provider.events()]
+
+    assert [event.type for event in events][-1] == "done"
+    assert all(event.type != "error" for event in events)
+    assert events[-1].is_final is True
 
 
 async def test_webm_is_transcoded_to_pcm_before_websocket_send(monkeypatch):

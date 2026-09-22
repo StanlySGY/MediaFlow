@@ -28,6 +28,12 @@ class RealtimeMockProvider:
         self._session_id = ""
         self._started_at = 0.0
         self._finished = False
+        self._event_seq = 0
+
+    def _next_event_seq(self) -> int:
+        seq = self._event_seq
+        self._event_seq += 1
+        return seq
 
     async def __aenter__(self) -> "RealtimeMockProvider":
         return self
@@ -51,7 +57,7 @@ class RealtimeMockProvider:
             self._queue.put_nowait(RealtimeASREvent(
                 type="online",
                 session_id=self._session_id,
-                seq=chunk.seq,
+                seq=self._next_event_seq(),
                 text=f"{self._online_text} ({self._chunks_seen} chunks)",
                 is_final=False,
                 elapsed_ms=(time.perf_counter() - self._started_at) * 1000.0,
@@ -67,6 +73,7 @@ class RealtimeMockProvider:
         self._queue.put_nowait(RealtimeASREvent(
             type="final",
             session_id=self._session_id,
+            seq=self._next_event_seq(),
             text=self._final_text,
             is_final=True,
             elapsed_ms=elapsed,
@@ -74,6 +81,7 @@ class RealtimeMockProvider:
         self._queue.put_nowait(RealtimeASREvent(
             type="done",
             session_id=self._session_id,
+            seq=self._next_event_seq(),
             is_final=True,
             elapsed_ms=elapsed,
         ))

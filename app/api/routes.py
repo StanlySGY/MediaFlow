@@ -174,7 +174,7 @@ STANDARD_FILE_EVENTS_RESPONSE = {
                     '"source_event":"segment"}\n\n'
                     'event: message\n'
                     'data: {"type":"done","stream":"file","id":"abc",'
-                    '"text":"","delta":"","is_final":true,"seq":null,"session_id":null,'
+                    '"text":"","delta":null,"is_final":true,"seq":null,"session_id":null,'
                     '"task_id":"abc","segment_id":null,"start":null,"end":null,'
                     '"elapsed_ms":0.0,"status":"done","progress":1.0,'
                     '"error":null,"source_event":"done"}\n\n'

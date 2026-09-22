@@ -50,6 +50,9 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
 
   useEffect(() => {
     let alive = true;
+    // The effect also establishes the external SSE subscription below; the
+    // snapshot fetch intentionally updates React state asynchronously.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadSnapshot();
 
     if (typeof EventSource === 'undefined') {

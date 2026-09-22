@@ -16,10 +16,9 @@ async def test_mock_emits_online_then_final_then_done():
             await p.push_audio(RealtimeAudioChunk(seq=i, audio="AAAA"))
         await p.finish()
 
-        types: list[str] = []
-        async for evt in p.events():
-            types.append(evt.type)
-        assert types == ["online", "online", "final", "done"]
+        evts = [evt async for evt in p.events()]
+        assert [evt.type for evt in evts] == ["online", "online", "final", "done"]
+        assert [evt.seq for evt in evts] == [0, 1, 2, 3]
 
 
 async def test_mock_is_final_chunk_triggers_completion():

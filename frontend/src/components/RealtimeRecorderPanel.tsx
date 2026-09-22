@@ -10,6 +10,16 @@ interface RealtimeRecorderPanelProps {
 }
 
 const RECORDER_MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
+type RealtimeRecorderState = 'idle' | 'connecting' | 'recording' | 'processing' | 'completed' | 'error';
+
+const RECORDER_STATUS: Record<RealtimeRecorderState, string> = {
+  idle: '未录音',
+  connecting: '连接中…',
+  recording: '录音中',
+  processing: '识别中',
+  completed: '识别完成',
+  error: '发生错误',
+};
 
 const pickRecorderMimeType = () => {
   if (typeof MediaRecorder === 'undefined') return '';
@@ -41,8 +51,10 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   authedFetch,
   sseUrl,
 }) => {
-  const [isRecording, setIsRecording] = useState(false);
-  const [status, setStatus] = useState('未录音');
+  const [state, setState] = useState<RealtimeRecorderState>('idle');
+  const isRecording = state === 'recording';
+  const isBusy = state === 'connecting' || state === 'recording' || state === 'processing';
+  const status = RECORDER_STATUS[state];
   const [transcript, setTranscript] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
   const [chunks, setChunks] = useState(0);
@@ -55,6 +67,8 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   const seqRef = useRef(0);
   const formatRef = useRef('webm');
   const pushChainRef = useRef<Promise<void>>(Promise.resolve());
+  const uploadFailedRef = useRef(false);
+  const generationRef = useRef(0);
   const committedTextRef = useRef('');
 
   const appendLog = (event: string, data: Record<string, unknown> = {}) => {
@@ -75,12 +89,13 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
 
   useEffect(() => () => cleanup(), []);
 
-  const subscribe = (sessionId: string) => {
+  const subscribe = (sessionId: string, generation: number) => {
     eventSourceRef.current?.close();
     const es = new EventSource(sseUrl(`/asr/realtime/${sessionId}/events`));
     eventSourceRef.current = es;
 
     es.addEventListener('message', (message: MessageEvent) => {
+      if (generation !== generationRef.current) return;
       const event = JSON.parse(message.data) as StandardASRStreamEvent;
       appendLog('sse', {
         type: event.type,
@@ -100,14 +115,20 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       if (event.type === 'done' || event.type === 'error') {
         es.close();
         eventSourceRef.current = null;
-        setIsRecording(false);
+        if (event.type === 'done') {
+          setState('completed');
+        } else {
+          setState('error');
+        }
       }
     });
 
     es.onerror = () => {
+      if (generation !== generationRef.current) return;
       appendLog('sse_error', { session_id: sessionId });
       es.close();
       eventSourceRef.current = null;
+      setState('error');
     };
   };
 
@@ -155,14 +176,18 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   };
 
   const startRecording = async () => {
-    if (isRecording) return;
+    if (isBusy) return;
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      setStatus('当前浏览器不支持录音');
+      setState('error');
       appendLog('unsupported');
       return;
     }
 
     cleanup();
+    setState('connecting');
+    uploadFailedRef.current = false;
     setTranscript('');
     committedTextRef.current = '';
     setLogs([]);
@@ -174,7 +199,6 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     const mimeType = pickRecorderMimeType();
     const format = formatFromMime(mimeType);
     formatRef.current = format;
-    setStatus('创建会话中…');
     appendLog('session_create_start', { mime_type: mimeType, format });
 
     try {
@@ -194,13 +218,14 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       const session = await sessionResponse.json();
       sessionIdRef.current = session.session_id;
       appendLog('session_created', { session_id: session.session_id, format });
-      subscribe(session.session_id);
+      subscribe(session.session_id, generation);
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       recorderRef.current = recorder;
       recorder.ondataavailable = (event) => {
+        if (generation !== generationRef.current) return;
         if (!event.data || event.data.size === 0) return;
         const pushJob = pushChainRef.current.then(async () => {
           const audio = await blobToBase64(event.data);
@@ -208,29 +233,42 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
           if (!uploaded) throw new Error('音频分片上传失败');
         });
         pushChainRef.current = pushJob.catch((error) => {
+          uploadFailedRef.current = true;
+          setState('error');
           appendLog('push_queue_error', { message: errorMessage(error) });
         });
       };
       recorder.onstop = () => {
+        if (generation !== generationRef.current) return;
+        setState('processing');
         void pushChainRef.current
-          .then(() => pushChunk('', true))
+          .then(async () => {
+            if (uploadFailedRef.current) return;
+            const uploaded = await pushChunk('', true);
+            if (!uploaded) {
+              uploadFailedRef.current = true;
+              setState('error');
+            }
+          })
+          .catch((error) => {
+            uploadFailedRef.current = true;
+            setState('error');
+            appendLog('final_push_error', { message: errorMessage(error) });
+          })
           .finally(() => {
             stream.getTracks().forEach((track) => track.stop());
-            setIsRecording(false);
-            setStatus('识别中');
           });
       };
       // 200ms timeslice: MediaRecorder buffers until the next tick, so a 1s
       // timeslice adds ~0.5-1s before any audio reaches the server. 200ms keeps
       // first-text latency close to the upstream partial gate, at ~5 req/s/client.
       recorder.start(200);
-      setIsRecording(true);
-      setStatus('录音中');
+      setState('recording');
       appendLog('recording_started', { mime_type: recorder.mimeType || mimeType, format });
     } catch (e) {
+      if (generation !== generationRef.current) return;
       cleanup();
-      setIsRecording(false);
-      setStatus(`录音失败：${errorMessage(e)}`);
+      setState('error');
       appendLog('recording_error', { message: errorMessage(e) });
     }
   };
@@ -239,7 +277,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     if (recorderRef.current?.state === 'recording') {
       appendLog('recording_stop');
       recorderRef.current.stop();
-      setStatus('停止录音，等待识别');
+      if (!uploadFailedRef.current) setState('processing');
     }
   };
 
@@ -261,7 +299,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       </h3>
 
       <div className="flex gap-2 flex-wrap mb-4">
-        <button onClick={startRecording} disabled={isRecording} className="primary">
+        <button onClick={startRecording} disabled={isBusy} className="primary">
           <Mic className="w-4 h-4" />
           <span>开始录音</span>
         </button>

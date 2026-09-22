@@ -45,6 +45,7 @@ class RealtimeHTTPProvider:
         self._queue: asyncio.Queue[RealtimeASREvent | None] = asyncio.Queue()
         self._reader_task: asyncio.Task | None = None
         self._finished = False
+        self._event_seq = 0
 
     async def __aenter__(self) -> "RealtimeHTTPProvider":
         headers = {"Content-Type": "application/json"}
@@ -127,12 +128,22 @@ class RealtimeHTTPProvider:
                             payload = json.loads(raw[5:].strip())
                         except json.JSONDecodeError:
                             continue
+                        if evt_type not in {"online", "final", "done", "error"}:
+                            log.debug("ignoring unsupported downstream realtime event: %s", evt_type)
+                            continue
+                        is_final = evt_type in {"final", "done"}
+                        upstream_seq = payload.get("seq")
+                        if isinstance(upstream_seq, int) and upstream_seq >= 0:
+                            seq = max(self._event_seq, upstream_seq)
+                        else:
+                            seq = self._event_seq
+                        self._event_seq = seq + 1
                         self._queue.put_nowait(RealtimeASREvent(
                             type=evt_type,
                             session_id=self._session_id,
-                            seq=payload.get("seq"),
+                            seq=seq,
                             text=payload.get("text", ""),
-                            is_final=bool(payload.get("is_final")),
+                            is_final=is_final,
                             elapsed_ms=float(payload.get("elapsed_ms", 0.0) or 0.0),
                             mode=payload.get("mode"),
                             error=payload.get("error"),
@@ -145,7 +156,9 @@ class RealtimeHTTPProvider:
         except Exception as e:  # noqa: BLE001
             self._queue.put_nowait(RealtimeASREvent(
                 type="error", session_id=self._session_id,
+                seq=self._event_seq,
                 text="", error=str(e),
+                is_final=False,
             ))
         finally:
             self._queue.put_nowait(None)

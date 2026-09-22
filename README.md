@@ -31,7 +31,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8999
 
 需要本机已安装 `ffmpeg` 与 `ffprobe`。访问 `http://localhost:8999/` 打开 Web UI，`/docs` 查看 API。
 
-> **运行时配置编辑**：UI 顶部「服务配置」面板可直接修改 provider、base URL、API key、模型、热词、切分参数、鉴权令牌等，点保存即时生效，不需重启服务。改动持久化到 `runtime_config.json`，下次启动自动恢复。点击「重置为 .env 默认」可一键清除运行时改动。注意：`runtime_config.json` 是明文且包含 API key / 访问令牌，部署时确保文件权限合理。
+> **运行时配置编辑**：UI 顶部「服务配置」面板可直接修改 provider、base URL、API key、模型、热词、切分参数、鉴权令牌等，点保存即时生效，不需重启服务。改动持久化到 `runtime_config.json`，下次启动自动恢复。点击「重置为 .env 默认」可一键清除运行时改动。`runtime_config.json` 可能包含 API key / 访问令牌，服务会在写入后将其权限收紧为仅文件所有者可读写（`0600`）；部署时仍不要把该文件提交到 Git 或暴露给其他用户。
 
 ### Docker
 

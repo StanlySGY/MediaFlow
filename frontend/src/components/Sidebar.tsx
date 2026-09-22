@@ -17,13 +17,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   footStatus,
   open = false,
 }) => {
-  const menuItems = [
+  const workspaceItems = [
     { id: 'tasks', label: '文件转写', desc: '上传音频出文本', icon: UploadCloud },
-    { id: 'concat', label: '音视频合并', desc: '多文件无损拼接', icon: Combine },
     { id: 'realtime', label: '实时识别', desc: '边说边出字', icon: Mic },
-    { id: 'monitor', label: '调用监控', desc: 'Qwen ASR 调用', icon: Activity },
-    { id: 'config', label: '服务配置', desc: '连接 ASR 接口', icon: Settings },
     { id: 'history', label: '历史记录', desc: '查看过往任务', icon: FolderArchive },
+    { id: 'concat', label: '音视频合并', desc: '多文件无损拼接', icon: Combine },
+  ];
+  const adminItems = [
+    { id: 'config', label: '服务配置', desc: 'Provider / 参数', icon: Settings },
+    { id: 'monitor', label: '调用监控', desc: 'Provider / 运行状态', icon: Activity },
   ];
 
   return (
@@ -45,24 +47,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Nav */}
       <nav className="flex-1 py-4 px-3 flex flex-col gap-1">
-        {menuItems.map((item) => {
+        <div className="px-3 pb-1.5 text-[10px] font-bold tracking-wider text-muted-2">WORKSPACE</div>
+        {workspaceItems.map((item) => {
           const Icon = item.icon;
           const isActive = currentView === item.id;
           return (
-            <button
-              key={item.id}
-              onClick={() => onViewChange(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left cursor-pointer select-none transition-all duration-150 border ${
-                isActive
-                  ? 'bg-accent-soft text-accent border-accent/20 shadow-none'
-                  : 'text-fg-dim hover:bg-surface-3 border-transparent'
-              }`}
-            >
+            <button key={item.id} onClick={() => onViewChange(item.id)} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left cursor-pointer select-none transition-all duration-150 border ${isActive ? 'bg-accent-soft text-accent border-accent/20 shadow-none' : 'text-fg-dim hover:bg-surface-3 border-transparent'}`}>
               <Icon className={`w-[18px] h-[18px] shrink-0 ${isActive ? 'text-accent' : 'text-muted'}`} />
-              <span className="flex flex-col">
-                <span className="text-[13px] font-semibold leading-tight">{item.label}</span>
-                <span className={`text-[10.5px] leading-tight ${isActive ? 'text-accent/70' : 'text-muted'}`}>{item.desc}</span>
-              </span>
+              <span className="flex flex-col"><span className="text-[13px] font-semibold leading-tight">{item.label}</span><span className={`text-[10.5px] leading-tight ${isActive ? 'text-accent/70' : 'text-muted'}`}>{item.desc}</span></span>
+            </button>
+          );
+        })}
+
+        <div className="mt-5 px-3 pb-1.5 text-[10px] font-bold tracking-wider text-muted-2">ADMIN</div>
+        {adminItems.map((item) => {
+          const Icon = item.icon;
+          const isActive = currentView === item.id;
+          return (
+            <button key={item.id} onClick={() => onViewChange(item.id)} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left cursor-pointer select-none transition-all duration-150 border ${isActive ? 'bg-accent-soft text-accent border-accent/20 shadow-none' : 'text-fg-dim hover:bg-surface-3 border-transparent'}`}>
+              <Icon className={`w-[18px] h-[18px] shrink-0 ${isActive ? 'text-accent' : 'text-muted'}`} />
+              <span className="flex flex-col"><span className="text-[13px] font-semibold leading-tight">{item.label}</span><span className={`text-[10.5px] leading-tight ${isActive ? 'text-accent/70' : 'text-muted'}`}>{item.desc}</span></span>
             </button>
           );
         })}

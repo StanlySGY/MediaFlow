@@ -68,7 +68,7 @@ describe('<RealtimeView /> browser recorder', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('starts browser recording and shows realtime text on the white board', async () => {
-    const authedFetch = vi.fn(async (url: string, opts?: RequestInit) => {
+    const authedFetch = vi.fn(async (url: string) => {
       if (url === '/asr/realtime/session') return json({ session_id: 'sess-1' });
       if (url === '/asr/realtime/sess-1') return json({ bytes_received: 128 });
       if (url === '/asr/realtime/sess-1/audio') return json({ ok: true });
@@ -80,6 +80,7 @@ describe('<RealtimeView /> browser recorder', () => {
     await userEvent.click(screen.getByRole('button', { name: '开始录音' }));
 
     expect(MockMediaRecorder.instances).toHaveLength(1);
+    expect(screen.getByText('录音中')).toBeInTheDocument();
     expect(MockEventSource.instances[0].url).toBe('/asr/realtime/sess-1/events');
     const sessionBody = JSON.parse(String(authedFetch.mock.calls[0][1]?.body));
     expect(sessionBody.format).toBe('webm');
@@ -116,5 +117,56 @@ describe('<RealtimeView /> browser recorder', () => {
     });
 
     expect(await screen.findByText('你😃正在识别。')).toBeInTheDocument();
+
+    act(() => {
+      MockEventSource.instances[0].emit('message', {
+        type: 'done',
+        stream: 'realtime',
+        id: 'sess-1',
+        session_id: 'sess-1',
+        text: '',
+        delta: null,
+        is_final: true,
+      });
+    });
+    expect(await screen.findByText('识别完成')).toBeInTheDocument();
+  });
+
+  it('enters error on SSE failure and can recover by starting again', async () => {
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/realtime/session') return json({ session_id: `sess-${MockEventSource.instances.length + 1}` });
+      return json({ ok: true });
+    });
+
+    render(<RealtimeView authedFetch={authedFetch} sseUrl={(path) => path} />);
+    await userEvent.click(screen.getByRole('button', { name: '开始录音' }));
+    expect(screen.getByText('录音中')).toBeInTheDocument();
+
+    act(() => {
+      MockEventSource.instances[0].emit('message', {
+        type: 'error',
+        stream: 'realtime',
+        id: 'sess-1',
+        session_id: 'sess-1',
+        text: '',
+        delta: null,
+        is_final: false,
+        error: 'upstream failed',
+      });
+    });
+    expect(await screen.findByText('发生错误')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: '开始录音' }));
+    expect(screen.getByText('录音中')).toBeInTheDocument();
+    expect(MockEventSource.instances).toHaveLength(2);
+
+    // Starting a new session stops the old recorder. Its stale onstop callback
+    // must not move the new session back to processing or upload a final marker.
+    const audioCalls = authedFetch.mock.calls.filter(([url]) => String(url).includes('/audio'));
+    expect(audioCalls).toHaveLength(0);
+    act(() => MockMediaRecorder.instances[0].onstop?.());
+    expect(screen.getByText('录音中')).toBeInTheDocument();
+    const audioCallsAfterStaleStop = authedFetch.mock.calls.filter(([url]) => String(url).includes('/audio'));
+    expect(audioCallsAfterStaleStop).toHaveLength(0);
   });
 });

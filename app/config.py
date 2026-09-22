@@ -175,6 +175,11 @@ def update_runtime_overrides(updates: dict) -> dict:
         json.dumps(existing, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    # Runtime overrides may contain API keys/tokens. Keep the file owner-only.
+    try:
+        s.runtime_config_path.chmod(0o600)
+    except OSError:
+        log.warning("failed to restrict runtime config permissions: %s", s.runtime_config_path)
 
     _apply_to(s, updates)
     return updates
