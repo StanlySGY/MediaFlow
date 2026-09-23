@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # MediaFlow — one-shot Docker image builder.
 # Usage:
-#   ./build.sh                build mediaflow:1.7.2 + :latest (defaults to host arch)
+#   ./build.sh                build mediaflow:1.7.3 + :latest (defaults to host arch)
 #   ./build.sh --platform P   override target platform (e.g. linux/amd64, linux/arm64)
 #   ./build.sh --save [FILE]  docker save image to a gzipped tar for offline transfer
 #   ./build.sh --no-cache     skip layer cache
@@ -17,10 +17,10 @@ set -euo pipefail
 
 # ---- defaults ----
 IMAGE_NAME="mediaflow"
-DEFAULT_TAG="1.7.2"
+DEFAULT_TAG="1.7.3"
 TAG="$DEFAULT_TAG"
-# Default to the host arch: legacy `docker build` can't cross-build, so the
-# only platform that succeeds without buildx + QEMU is the machine's own.
+# Default to the host arch. A different --platform still builds, but only if
+# qemu-user-static (binfmt) is registered; otherwise BuildKit errors at RUN.
 case "$(uname -m)" in
     aarch64|arm64) PLATFORM="linux/arm64" ;;
     *)             PLATFORM="linux/amd64" ;;
@@ -67,6 +67,8 @@ cd "$(dirname "$0")"
 
 command -v docker >/dev/null 2>&1 \
     || die "docker not found in PATH; install Docker first."
+docker buildx version >/dev/null 2>&1 \
+    || die "docker buildx is required. Install the buildx plugin (Docker Engine 23+)."
 
 [[ -f Dockerfile ]] || die "Dockerfile missing — run from project root."
 [[ -f frontend/package.json ]] || die "frontend/package.json missing — frontend not initialized."
@@ -92,9 +94,17 @@ echo "  platform : ${PLATFORM}"
 echo "  flags    : ${NO_CACHE:-} ${PULL:-}"
 echo
 
+# `docker build` on current Engine is buildx. DOCKER_BUILDKIT=0 forces the
+# legacy builder, which current daemons reject. A default BuildKit build with
+# --platform also attaches a provenance attestation, and that index cannot be
+# docker-saved and loaded on the air-gapped site. --provenance=false keeps one
+# image; --load imports it even when the active builder is docker-container.
 # shellcheck disable=SC2086
-DOCKER_BUILDKIT=0 docker build $NO_CACHE $PULL \
+docker buildx build $NO_CACHE $PULL \
     --platform "$PLATFORM" \
+    --provenance=false \
+    --sbom=false \
+    --load \
     -t "$IMG_VER" \
     -t "$IMG_LAT" \
     -f Dockerfile \
