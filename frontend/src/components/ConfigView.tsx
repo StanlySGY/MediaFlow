@@ -46,7 +46,7 @@ const GROUPS: FieldGroup[] = [
       { key: 'asr_base_url', label: '接口地址', type: 'text', hint: '形如 https://dashscope.aliyuncs.com/compatible-mode/v1', wide: true },
       { key: 'asr_api_key', label: 'API 密钥', type: 'secret', hint: '调用上游所需的 Key；内网无鉴权可留空', wide: true },
       { key: 'asr_model', label: '模型名称', type: 'text', hint: '点「获取模型」从接口地址自动读取，也可直接手填' },
-      { key: 'asr_language', label: '识别语言', type: 'text', hint: 'zh 中文 / en 英文 / 留空自动判断' },
+      { key: 'asr_language', label: '识别语言', type: 'text', hint: 'zh 中文 / en 英文，也支持 30 种语言的短码（ja、ko、yue 等）；留空自动判断' },
       { key: 'asr_hotwords', label: '热词', type: 'text', hint: '逗号分隔的专有名词，提高识别准确率（可选）', wide: true },
     ],
     advanced: [

@@ -14,6 +14,7 @@ from app.services.asr.base import (
     WordTime,
     RetryableASRError,
 )
+from app.services.asr.language import normalize_language
 from app.services.asr_monitoring import asr_monitor
 
 log = logging.getLogger(__name__)
@@ -84,10 +85,17 @@ class OpenAIChatAudioProvider:
                 },
             ],
         }]
-        body = {
+        body: dict = {
             "model": self._model,
             "messages": messages,
         }
+        # 官方 qwen-asr 客户端强制语言的做法：在 assistant 提示里前置
+        # "language Chinese<asr_text>"，模型就只输出文本、不再自判语种。
+        if language := normalize_language(self._language):
+            body["messages"] = [
+                {"role": "assistant", "content": f"language {language}<asr_text>"},
+                *messages,
+            ]
         return body
 
     async def transcribe(self, file_path: Path, *, prompt: str | None = None) -> ASRResult:

@@ -13,6 +13,7 @@ from app.services.asr.base import (
     RetryableASRError,
     WordTime,
 )
+from app.services.asr.language import normalize_language
 from app.services.asr_monitoring import asr_monitor
 
 log = logging.getLogger(__name__)
@@ -82,8 +83,8 @@ class OpenAICompatProvider:
             form["timestamp_granularities[]"] = ["word", "segment"]
         else:
             form["response_format"] = "json"
-        if self._language:
-            form["language"] = self._language
+        if language := normalize_language(self._language):
+            form["language"] = language
         final_prompt = self._build_prompt(prompt)
         if final_prompt:
             form["prompt"] = final_prompt

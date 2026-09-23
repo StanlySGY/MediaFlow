@@ -243,7 +243,7 @@ export default function App() {
                       </label>
                       <label className="field">
                         <span>识别语言</span>
-                        <input type="text" value={ovLanguage} onChange={e=>setOvLanguage(e.target.value)} placeholder="zh / en / 留空自动" />
+                        <input type="text" value={ovLanguage} onChange={e=>setOvLanguage(e.target.value)} placeholder="zh / en / 留空自动（zh 会自动按 Chinese 传给模型）" />
                       </label>
                       <label className="field">
                         <span>切分策略</span>

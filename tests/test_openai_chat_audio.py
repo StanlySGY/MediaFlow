@@ -90,9 +90,12 @@ async def test_does_not_send_system_message_for_asr_task(wav_file: Path):
         await p.transcribe(wav_file, prompt="说话人A正在讲解")
 
     msgs = captured["body"]["messages"]
-    assert len(msgs) == 1
-    assert msgs[0]["role"] == "user"
-    assert msgs[0]["content"][0]["type"] == "input_audio"
+    assert len(msgs) == 2
+    # "zh" 归一成官方要求的全称，并按官方客户端的方式强制语种：
+    # 前置一条 assistant 消息 "language Chinese<asr_text>"。
+    assert msgs[0] == {"role": "assistant", "content": "language Chinese<asr_text>"}
+    assert msgs[1]["role"] == "user"
+    assert msgs[1]["content"][0]["type"] == "input_audio"
 
 
 @respx.mock

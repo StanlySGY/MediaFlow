@@ -11,7 +11,8 @@ import pytest
 
 from app.models.schemas import RealtimeAudioChunk, RealtimeSessionCreate
 from app.services.asr.realtime_base import RealtimeASRError
-from app.services.asr.realtime_ws import RealtimeWSProvider, _normalize_language
+from app.services.asr.language import normalize_language
+from app.services.asr.realtime_ws import RealtimeWSProvider
 
 
 class _FakeWebSocket:
@@ -380,12 +381,14 @@ async def test_websocket_uses_bearer_auth_and_no_proxy(monkeypatch):
         ("Chinese", "Chinese"),
         ("english", "English"),
         ("  zh  ", "Chinese"),
+        ("yue", "Cantonese"),
         ("", ""),
+        ("auto", ""),
         ("klingon", "Klingon"),
     ],
 )
 def test_normalize_language_maps_iso_codes_to_full_names(given: str, expected: str):
-    assert _normalize_language(given) == expected
+    assert normalize_language(given) == expected
 
 
 async def test_start_frame_sends_full_language_name_upstream(monkeypatch):

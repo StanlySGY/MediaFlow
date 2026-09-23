@@ -75,7 +75,7 @@ async def test_sends_model_and_auth(wav_file: Path):
     assert captured["auth"] == "Bearer secret-key"
     body = captured["body"]
     assert b'name="model"' in body and b"qwen3-asr-flash" in body
-    assert b'name="language"' in body and b"zh" in body
+    assert b'name="language"' in body and b"Chinese" in body
 
 
 @respx.mock

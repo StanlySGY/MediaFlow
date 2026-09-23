@@ -22,6 +22,7 @@ from app.models.schemas import (
     RealtimeAudioChunk,
     RealtimeSessionCreate,
 )
+from app.services.asr.language import normalize_language
 from app.services.asr.realtime_base import RealtimeASRError
 from app.services.asr_monitoring import asr_call_context, asr_monitor
 
@@ -49,38 +50,6 @@ _CLOSE_CODE_ERRORS: dict[int, str] = {
     4429: "concurrent session limit reached",
     4503: "model still loading",
 }
-
-# 上游 qwen-asr 只认语言全称（内部会对传入值做 capitalize 再查白名单，
-# 所以 "zh" 会变成 "Zh" 被拒）。这里把常见 ISO 码翻成它认识的全称。
-_LANGUAGE_ALIASES: dict[str, str] = {
-    "zh": "Chinese",
-    "zh-cn": "Chinese",
-    "zh-hans": "Chinese",
-    "cmn": "Chinese",
-    "en": "English",
-    "en-us": "English",
-    "ja": "Japanese",
-    "jp": "Japanese",
-    "ko": "Korean",
-    "de": "German",
-    "fr": "French",
-    "es": "Spanish",
-    "it": "Italian",
-    "pt": "Portuguese",
-    "ru": "Russian",
-    "ar": "Arabic",
-}
-
-
-def _normalize_language(language: str) -> str:
-    """把语言码归一成上游认识的全称；已经是全称或未知值则原样首字母大写。"""
-    key = language.strip()
-    if not key:
-        return ""
-    mapped = _LANGUAGE_ALIASES.get(key.lower())
-    if mapped:
-        return mapped
-    return key[:1].upper() + key[1:]
 
 
 def _normalize_ws_url(url: str) -> str:
@@ -342,10 +311,8 @@ class RealtimeWSProvider:
             frame["partial_interval_ms"] = config.partial_interval_ms
         if config.min_partial_ms:
             frame["min_partial_ms"] = config.min_partial_ms
-        if config.language and config.language.strip().lower() != "auto":
-            normalized = _normalize_language(config.language)
-            if normalized:
-                frame["language"] = normalized
+        if normalized := normalize_language(config.language):
+            frame["language"] = normalized
         return frame
 
     async def _ensure_audio_pipeline(
