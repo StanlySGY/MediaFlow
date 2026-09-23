@@ -169,7 +169,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         </div>
 
         {error && (
-          <div className="p-4 rounded-xl border border-err/20 bg-err-soft text-err text-xs font-mono mb-4">
+          <div className="p-4 rounded-lg border border-err/20 bg-err-soft text-err text-xs font-mono mb-4">
             {error}
           </div>
         )}

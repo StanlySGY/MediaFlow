@@ -327,12 +327,12 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       </div>
 
       {notice && (
-        <div className="p-3 mb-4 rounded-xl border border-err/20 bg-err-soft text-err text-[13px]">
+        <div className="p-3 mb-4 rounded-lg border border-err/20 bg-err-soft text-err text-[13px]">
           {notice}
         </div>
       )}
 
-      <div className="bg-white border border-border rounded-xl min-h-[260px] p-6">
+      <div className="bg-white border border-border rounded-lg min-h-[260px] p-6">
         <div className="text-[11px] text-muted font-semibold mb-3">
           {state === 'completed' ? '最终稿' : '实时文稿'}
         </div>

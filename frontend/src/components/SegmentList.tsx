@@ -117,7 +117,7 @@ export const SegmentList: React.FC<SegmentListProps> = ({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-              className="border border-border rounded-xl bg-white hover:border-accent/30 hover:bg-accent-soft/40 transition-colors overflow-hidden"
+              className="border border-border rounded-lg bg-white hover:border-accent/30 hover:bg-accent-soft/40 transition-colors overflow-hidden"
             >
               {/* Main content row */}
               <div
@@ -128,7 +128,7 @@ export const SegmentList: React.FC<SegmentListProps> = ({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(seg.segment_id); }
                 }}
-                className="flex flex-col md:flex-row md:items-center gap-4 px-5 py-4 cursor-pointer select-none outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-xl"
+                className="flex flex-col md:flex-row md:items-center gap-4 px-5 py-4 cursor-pointer select-none outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-lg"
               >
                 <div className="flex items-center gap-3 shrink-0">
                   <span className="font-mono text-xs font-bold text-accent">#{seg.segment_id}</span>

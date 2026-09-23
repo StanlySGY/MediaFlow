@@ -401,7 +401,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
           </div>
 
           {/* Chunk Feeder controls */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6 p-4 rounded-xl panel">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6 p-4 rounded-lg panel">
             <label className="field col-span-1 md:col-span-2">
               <span className="flex items-center gap-1">
                 <Info className="w-3.5 h-3.5 text-accent" />

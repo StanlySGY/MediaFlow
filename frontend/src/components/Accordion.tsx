@@ -11,7 +11,7 @@ export const Accordion: React.FC<AccordionProps> = ({ title, children }) => {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <div className={`border rounded-xl bg-white overflow-hidden transition-all duration-200 ${isOpen ? 'border-accent/30' : 'border-border'}`}>
+    <div className={`border rounded-lg bg-white overflow-hidden transition-colors duration-150 ${isOpen ? 'border-accent/30' : 'border-border'}`}>
       <button
         onClick={() => setIsOpen(!isOpen)}
         aria-expanded={isOpen}

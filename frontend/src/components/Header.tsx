@@ -18,7 +18,7 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleNav,
 }) => {
   return (
-    <header className="h-[68px] px-5 md:px-7 flex items-center gap-3 md:gap-5 border-b border-border bg-surface/90 backdrop-blur-md sticky top-0 z-40">
+    <header className="h-16 px-5 md:px-7 flex items-center gap-3 md:gap-5 border-b border-border bg-surface sticky top-0 z-40">
       <button
         onClick={onToggleNav}
         aria-label="打开菜单"
@@ -35,21 +35,21 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="flex-1" />
 
       <div className="flex items-center gap-2.5">
-        <div className="text-[11px] font-semibold font-mono items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-2 border border-border text-fg-dim hidden lg:flex">
+        <div className="text-[12px] font-medium items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-2 border border-border text-fg-dim hidden lg:flex">
           <Cpu className="w-3.5 h-3.5 text-accent" />
-          <span>模型 <b className="text-fg font-bold">{config?.model || '未设置'}</b></span>
+          <span>模型 <b className="text-fg font-semibold">{config?.model || '未设置'}</b></span>
         </div>
 
-        <div className="text-[11px] font-semibold font-mono items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-2 border border-border text-fg-dim hidden lg:flex">
+        <div className="text-[12px] font-medium items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-2 border border-border text-fg-dim hidden lg:flex">
           <Layers className="w-3.5 h-3.5 text-accent-2" />
-          <span>接口 <b className="text-fg font-bold">{config?.provider || '未设置'}</b></span>
+          <span>接口 <b className="text-fg font-semibold">{config?.provider || '未设置'}</b></span>
         </div>
 
         <button
           onClick={onSetToken}
           title="设置访问令牌"
           aria-label="设置访问令牌"
-          className="w-9 h-9 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-fg-dim hover:text-fg flex items-center justify-center transition-all cursor-pointer p-0"
+          className="w-9 h-9 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-fg-dim hover:text-fg flex items-center justify-center transition-colors duration-150 cursor-pointer p-0"
         >
           <Key className="w-4 h-4" />
         </button>

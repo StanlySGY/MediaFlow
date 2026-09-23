@@ -70,20 +70,19 @@ export const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, disabled }) =>
         onKeyDown={(e) => {
           if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); }
         }}
-        className={`border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all duration-200 flex flex-col items-center justify-center gap-4 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+        className={`border border-dashed rounded-lg p-12 text-center cursor-pointer transition-colors duration-150 flex flex-col items-center justify-center gap-4 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
           isDragActive
             ? 'border-accent bg-accent-soft text-accent'
             : 'border-border-strong bg-surface-2 hover:border-accent/50 hover:bg-accent-soft/50 text-fg-dim'
         } ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
-        whileHover={disabled ? {} : { scale: 1.005 }}
-        whileTap={disabled ? {} : { scale: 0.995 }}
+        whileHover={disabled ? {} : { scale: 1 }}
+        whileTap={disabled ? {} : { scale: 1 }}
       >
         <motion.div
-          className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${
+          className={`w-14 h-14 rounded-full flex items-center justify-center transition-colors ${
             isDragActive ? 'bg-accent text-white' : 'bg-accent-soft text-accent'
           }`}
-          animate={isDragActive ? { y: -4, scale: 1.05 } : { y: 0 }}
-          transition={{ type: 'spring', stiffness: 300, damping: 15 }}
+          animate={{ y: 0 }}
         >
           <UploadCloud className="w-6 h-6" />
         </motion.div>

@@ -111,13 +111,13 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
           onDrop={(e: React.DragEvent) => { e.preventDefault(); setIsDragActive(false); addFiles(e.dataTransfer.files); }}
           onClick={() => inputRef.current?.click()}
           onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inputRef.current?.click(); } }}
-          className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all flex flex-col items-center gap-3 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+          className={`border border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors duration-150 flex flex-col items-center gap-3 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
             isDragActive
               ? 'border-accent bg-accent-soft text-accent'
               : 'border-border-strong bg-surface-2 hover:border-accent/50 text-fg-dim'
           }`}
-          whileHover={{ scale: 1.005 }}
-          whileTap={{ scale: 0.995 }}
+          whileHover={{ scale: 1 }}
+          whileTap={{ scale: 1 }}
         >
           <div className="w-12 h-12 rounded-full flex items-center justify-center bg-accent-soft text-accent">
             <UploadCloud className="w-5 h-5" />
@@ -130,7 +130,7 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
         {files.length > 0 && (
           <div className="mt-4 flex flex-col gap-2">
             {files.map((f, i) => (
-              <div key={`${f.name}-${f.size}-${i}`} className="flex items-center gap-3 p-2.5 rounded-xl border border-border bg-surface-2">
+              <div key={`${f.name}-${f.size}-${i}`} className="flex items-center gap-3 p-2.5 rounded-lg border border-border bg-surface-2">
                 <span className="badge font-mono shrink-0">{i + 1}</span>
                 <span className="flex-1 min-w-0 truncate text-[13px] text-fg" title={f.name}>{f.name}</span>
                 <span className="text-[11px] text-muted font-mono shrink-0">{formatBytes(f.size)}</span>

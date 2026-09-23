@@ -361,7 +361,7 @@ export default function App() {
                             onEditText={handleEditSegment}
                           />
                           {segments.length === 0 && (
-                            <div className="empty flex flex-col items-center justify-center py-14 border border-dashed border-border rounded-xl">
+                            <div className="empty flex flex-col items-center justify-center py-14 border border-dashed border-border rounded-lg">
                               <span className="ico text-3xl">⏳</span>
                               <p className="text-muted text-xs mt-3">
                                 正在切分音频，马上开始逐片识别…
@@ -381,7 +381,7 @@ export default function App() {
                             value={fullText}
                             onChange={(e) => setFullText(e.target.value)}
                             placeholder="识别完成后，这里会显示拼接好的完整文本，可在此校对修改…"
-                            className="w-full min-h-[300px] border border-border bg-surface-2 p-5 rounded-xl text-sm leading-relaxed text-fg"
+                            className="w-full min-h-[300px] border border-border bg-surface-2 p-5 rounded-lg text-sm leading-relaxed text-fg"
                           />
 
                           <div className="flex gap-2.5 flex-wrap">
