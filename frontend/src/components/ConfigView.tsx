@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, RotateCcw, Activity, Eye, EyeOff, Server, Scissors, Radio, ShieldCheck, RefreshCw } from 'lucide-react';
+import { Save, RotateCcw, Activity, Eye, EyeOff, Server, Scissors, Radio, ShieldCheck, RefreshCw, ChevronDown } from 'lucide-react';
 import { SystemConfig } from '../types';
 import { errorMessage } from '../lib/errors';
 
@@ -8,21 +8,48 @@ interface ConfigViewProps {
   refreshTopbar: () => Promise<void>;
 }
 
-// [apiKey, 中文标签, 类型, 提示]
-type FieldType = 'select' | 'select-split' | 'select-realtime' | 'text' | 'secret' | 'bool' | 'int' | 'float';
+const PROVIDER_LABELS: Record<string, string> = {
+  openai_compat: '标准语音接口（兼容 Whisper / OpenAI）',
+  openai_chat_audio: '对话式语音接口（Qwen3-ASR 等）',
+};
+const SPLIT_LABELS: Record<string, string> = {
+  silence: '按静音切分（推荐）',
+  fixed: '固定时长切分',
+  overlap: '重叠切分',
+};
+const REALTIME_LABELS: Record<string, string> = {
+  realtime_ws: 'WebSocket 直连（边说边出字）',
+  realtime_http: 'HTTP 流式（边说边出字）',
+  realtime_offline: '录完再识别',
+  realtime_mock: '演示数据（不调用真实服务）',
+};
+
+// Byte counts are stored as raw numbers but shown in GB or MB, whichever
+// keeps the value readable.
+const byteUnit = (n: number) => (n >= 1024 ** 3 ? [1024 ** 3, 'GB'] : [1024 ** 2, 'MB']) as const;
+const formatBytes = (n: number) => {
+  const [div] = byteUnit(n);
+  return String(Math.round((n / div) * 100) / 100);
+};
+
+const labeledOptions = (ids: string[], labels: Record<string, string>) =>
+  ids.map(id => <option key={id} value={id}>{labels[id] ?? id}</option>);
+type FieldType = 'select' | 'select-split' | 'select-realtime' | 'text' | 'secret' | 'bool' | 'int' | 'float' | 'bytes';
 interface FieldDef { key: string; label: string; type: FieldType; hint?: string; wide?: boolean; }
-interface FieldGroup { title: string; icon: React.ComponentType<{ className?: string }>; desc: string; fields: FieldDef[]; }
+interface FieldGroup { title: string; icon: React.ComponentType<{ className?: string }>; desc: string; fields: FieldDef[]; advanced?: FieldDef[]; collapsed?: boolean; }
 
 const GROUPS: FieldGroup[] = [
   {
-    title: '语音识别接口', icon: Server, desc: '文件转写要用到的 ASR 服务，必须先填好这里才能开始转写',
+    title: '语音识别接口', icon: Server, desc: '给「文件转写」用：上传一段已经录好的音频或视频，识别成文字',
     fields: [
-      { key: 'asr_provider', label: '接口类型', type: 'select', hint: 'openai_compat = Whisper 风格；openai_chat_audio = vLLM Qwen3-ASR 等多模态对话接口', wide: true },
+      { key: 'asr_provider', label: '接口类型', type: 'select', hint: '不确定选哪个时，绝大多数兼容 OpenAI 的语音接口都用第一种', wide: true },
       { key: 'asr_base_url', label: '接口地址', type: 'text', hint: '形如 https://dashscope.aliyuncs.com/compatible-mode/v1', wide: true },
       { key: 'asr_api_key', label: 'API 密钥', type: 'secret', hint: '调用上游所需的 Key；内网无鉴权可留空', wide: true },
       { key: 'asr_model', label: '模型名称', type: 'text', hint: '点「获取模型」从接口地址自动读取，也可直接手填' },
       { key: 'asr_language', label: '识别语言', type: 'text', hint: 'zh 中文 / en 英文 / 留空自动判断' },
       { key: 'asr_hotwords', label: '热词', type: 'text', hint: '逗号分隔的专有名词，提高识别准确率（可选）', wide: true },
+    ],
+    advanced: [
       { key: 'asr_prompt_hints', label: '上下文提示', type: 'text', hint: '自由文本，告诉模型这段音频的背景（可选）', wide: true },
       { key: 'asr_timestamps', label: '请求逐字时间戳', type: 'bool', hint: '开启后字幕更精准；上游不支持时请关闭', wide: true },
       { key: 'asr_timeout', label: '单次超时（秒）', type: 'float' },
@@ -32,24 +59,26 @@ const GROUPS: FieldGroup[] = [
     ],
   },
   {
-    title: '音频切分', icon: Scissors, desc: '长音频会先切成小片再并发识别',
+    title: '音频切分', icon: Scissors, desc: '只影响「文件转写」：长录音会先切成小段再识别，出厂值通常不用改', collapsed: true,
     fields: [
-      { key: 'split_strategy', label: '切分策略', type: 'select-split', hint: 'silence 按静音切（推荐）/ fixed 固定时长 / overlap 重叠切' },
+      { key: 'split_strategy', label: '切分策略', type: 'select-split', hint: '按静音切最适合讲话录音；固定时长切分最稳妥' },
       { key: 'split_chunk_seconds', label: '每片时长（秒）', type: 'float' },
       { key: 'split_overlap_seconds', label: '重叠时长（秒）', type: 'float', hint: '仅 overlap 策略生效' },
       { key: 'silence_noise_db', label: '静音判定阈值（dB）', type: 'float', hint: '越小越严格，常用 -30' },
       { key: 'silence_min_duration', label: '最短静音时长（秒）', type: 'float' },
-      { key: 'max_upload_bytes', label: '单次上传上限（字节）', type: 'int' },
+      { key: 'max_upload_bytes', label: '单次上传上限（GB）', type: 'bytes' },
     ],
   },
   {
-    title: '实时识别', icon: Radio, desc: '「实时识别」页面使用的下游服务',
+    title: '实时识别', icon: Radio, desc: '给「实时识别」用：不上传文件，对着麦克风说话、边说边出字',
     fields: [
-      { key: 'realtime_asr_provider', label: '实时接口类型', type: 'select-realtime', hint: 'realtime_ws = 直连 Qwen3-ASR WebSocket；realtime_http = 对接标准 HTTP+SSE 流式服务；realtime_offline = 录完再识别；realtime_mock = 演示数据' },
+      { key: 'realtime_asr_provider', label: '实时接口类型', type: 'select-realtime', hint: '边说边出字选前两种；只想录完再识别选第三种' },
       { key: 'realtime_asr_base_url', label: '实时接口地址', type: 'text', hint: 'WebSocket 示例：ws://<服务器IP>:8022/v1/asr/stream；HTTP+SSE 示例：http://<服务器IP>:8023' },
       { key: 'realtime_asr_api_key', label: '实时接口密钥', type: 'secret' },
       { key: 'realtime_asr_model', label: '实时模型名称', type: 'text' },
-      { key: 'realtime_max_chunk_bytes', label: '单包最大字节', type: 'int' },
+    ],
+    advanced: [
+      { key: 'realtime_max_chunk_bytes', label: '单包上限（MB）', type: 'bytes' },
       { key: 'realtime_session_ttl_seconds', label: '会话超时（秒）', type: 'int' },
     ],
   },
@@ -72,7 +101,7 @@ const CFG_KEY_TO_API: { [key: string]: string } = {
   silence_min_duration: 'silence_min_duration', max_upload_bytes: 'max_upload_bytes',
 };
 
-const ALL_FIELDS = GROUPS.flatMap(g => g.fields);
+const ALL_FIELDS = GROUPS.flatMap(g => [...g.fields, ...(g.advanced ?? [])]);
 
 export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopbar }) => {
   const [config, setConfig] = useState<SystemConfig | null>(null);
@@ -313,17 +342,17 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
 
         {f.type === 'select' && (
           <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
-            {(config?.available_providers || []).map(p => <option key={p} value={p}>{p}</option>)}
+            {(config?.available_providers || []).map(p => <option key={p} value={p}>{PROVIDER_LABELS[p] ?? p}</option>)}
           </select>
         )}
         {f.type === 'select-split' && (
           <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
-            {['fixed', 'silence', 'overlap'].map(v => <option key={v} value={v}>{v}</option>)}
+            {labeledOptions(['fixed', 'silence', 'overlap'], SPLIT_LABELS)}
           </select>
         )}
         {f.type === 'select-realtime' && (
           <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
-            {realtimeProviders.map(p => <option key={p} value={p}>{p}</option>)}
+            {labeledOptions(realtimeProviders, REALTIME_LABELS)}
           </select>
         )}
         {f.type === 'bool' && (
@@ -339,14 +368,26 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
               onChange={e => handleChange(f.key, e.target.value)}
               placeholder="输入新值以覆盖，留空表示不修改" className="pr-10" />
             <button onClick={() => setShowSecrets(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
+              aria-label={showSecrets[f.key] ? '隐藏密钥' : '显示密钥'}
               className="absolute right-2 text-muted hover:text-fg p-1 border-none bg-transparent hover:bg-transparent">
               {showSecrets[f.key] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
         )}
         {(f.type === 'int' || f.type === 'float') && (
-          <input type="number" step={f.type === 'float' ? '0.1' : '1'} value={sval}
+          <input type="number" step={f.type === 'float' ? 'any' : '1'} value={sval}
             onChange={e => handleChange(f.key, e.target.value)} />
+        )}
+        {f.type === 'bytes' && (
+          <div className="flex items-center gap-2">
+            <input type="number" step="0.1" min="0"
+              value={formatBytes(Number(sval) || 0)}
+              onChange={e => {
+                const [div] = byteUnit(Number(sval) || 0);
+                handleChange(f.key, Math.round((Number(e.target.value) || 0) * div));
+              }} />
+            <span className="text-[12px] text-muted shrink-0">{byteUnit(Number(sval) || 0)[1]}</span>
+          </div>
         )}
         {f.type === 'text' && knownModels.length > 0 && (
           <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
@@ -379,21 +420,13 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       {GROUPS.map((g) => {
         const Icon = g.icon;
         return (
-          <div key={g.title} className="card p-6">
-            <h3 className="section-title mb-1">
-              <Icon className="w-5 h-5 text-accent" />
-              <span>{g.title}</span>
-            </h3>
-            <p className="hint mb-5">{g.desc}</p>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {g.fields.map(renderField)}
-            </div>
-            {g.title === '实时识别' && (
+          <GroupCard key={g.title} group={g} icon={Icon} renderField={renderField}
+            extra={g.title === '实时识别' ? (
               <div className="mt-4 p-3.5 rounded-lg border border-border bg-surface-2 flex flex-col gap-2">
                 <div className="text-xs font-semibold text-fg-dim">Qwen3-ASR 真流式（边说边出字）</div>
                 <p className="text-[11px] text-muted font-normal leading-snug">
-                  可用 realtime_ws 直连 Qwen3-ASR 的 /v1/asr/stream，或用 realtime_http 对接标准
-                  HTTP+SSE streaming 服务；两种方式都会在录音期间持续返回文字。
+                  选「WebSocket 直连」对接 Qwen3-ASR 的流式接口，或选「HTTP 流式」对接标准
+                  流式服务；两种都会在录音期间持续返回文字。
                 </p>
                 <div className="flex items-center gap-2 flex-wrap">
                   <button type="button" onClick={applyStreamingPreset}>一键填入流式服务配置</button>
@@ -403,13 +436,13 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
                   {streamStatus && <span className="toast">{streamStatus}</span>}
                 </div>
               </div>
-            )}
-          </div>
+            ) : undefined}
+          />
         );
       })}
 
       {/* Sticky action bar */}
-      <div className="fixed bottom-0 left-0 md:left-[244px] right-0 bg-surface border-t border-border px-5 md:px-7 py-3.5 flex items-center gap-3 flex-wrap z-30">
+      <div className="fixed bottom-0 left-0 md:left-[220px] right-0 bg-surface border-t border-border px-5 md:px-7 py-3.5 flex items-center gap-3 flex-wrap z-30">
         <button onClick={handleSave} className="primary">
           <Save className="w-4 h-4" /><span>保存配置</span>
         </button>
@@ -422,6 +455,50 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         {pingStatus !== '未测试' && <span className={`toast ${pingClass}`}>{pingStatus}</span>}
         {saveStatus && <span className="toast ok ml-auto">{saveStatus}</span>}
       </div>
+    </div>
+  );
+};
+
+const GroupCard: React.FC<{
+  group: FieldGroup;
+  icon: React.ComponentType<{ className?: string }>;
+  renderField: (f: FieldDef) => React.ReactNode;
+  extra?: React.ReactNode;
+}> = ({ group, icon: Icon, renderField, extra }) => {
+  const [open, setOpen] = useState(!group.collapsed);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const grid = (fields: FieldDef[]) => (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {fields.map(renderField)}
+    </div>
+  );
+  return (
+    <div className="card p-6">
+      <button type="button" onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-2 text-left bg-transparent border-none p-0 hover:bg-transparent">
+        <Icon className="w-5 h-5 text-accent" />
+        <h3 className="section-title flex-1">{group.title}</h3>
+        <ChevronDown className={`w-4 h-4 text-muted transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="mt-4">
+          <p className="hint mb-5">{group.desc}</p>
+          {grid(group.fields)}
+          {extra}
+          {group.advanced && (
+            <div className="mt-4">
+              <button type="button" onClick={() => setAdvancedOpen(v => !v)}
+                aria-expanded={advancedOpen}
+                className="text-[12px] text-muted bg-transparent border-none p-0 hover:bg-transparent hover:text-fg">
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform ${advancedOpen ? 'rotate-180' : ''}`} />
+                <span>{advancedOpen ? '收起高级参数' : `高级参数（${group.advanced.length} 项，一般不用改）`}</span>
+              </button>
+              {advancedOpen && <div className="mt-3">{grid(group.advanced)}</div>}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

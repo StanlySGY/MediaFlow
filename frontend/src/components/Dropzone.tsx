@@ -61,7 +61,7 @@ export const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, disabled }) =>
       <motion.div
         role="button"
         tabIndex={disabled ? -1 : 0}
-        aria-label="选择或拖拽音频/视频文件上传"
+        aria-label="点击选择文件，或把音频/视频拖到这里"
         onDragEnter={handleDrag}
         onDragOver={handleDrag}
         onDragLeave={handleDrag}

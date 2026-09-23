@@ -156,10 +156,10 @@ export default function App() {
                 {/* Beginner step guide */}
                 {!taskId && (
                   <div className="card p-6">
-                    <h3 className="section-title mb-1">
-                      <span className="text-accent">快速上手</span>
+                    <div className="flex items-baseline gap-2 mb-1">
+                      <h2 className="font-title text-[15px] font-bold text-accent">快速上手</h2>
                       <span className="section-sub">第一次使用？按下面三步来</span>
-                    </h3>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
                       <div className="step" style={{ borderColor: isReady ? 'var(--color-ok)' : 'var(--color-accent)' }}>
                         <span className="num" style={{ background: isReady ? 'var(--color-ok-soft)' : 'var(--color-accent-soft)', color: isReady ? 'var(--color-ok)' : 'var(--color-accent)' }}>
