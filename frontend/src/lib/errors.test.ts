@@ -29,8 +29,18 @@ describe('responseError', () => {
     expect(err.message).toBe('HTTP 429');
   });
 
-  it('ignores a JSON body whose detail is not a string', async () => {
+  it('falls back to the raw body when structured detail has no message', async () => {
     const err = await responseError(fakeResponse('{"detail":{"code":7}}', 500));
     expect(err.message).toBe('{"detail":{"code":7}}');
+  });
+
+  it('shows structured detail.message and appends hint', async () => {
+    const err = await responseError(
+      fakeResponse(
+        '{"detail":{"code":"session_limit","message":"同时录音已达上限","hint":"请等待他人结束录音后重试","retryable":true}}',
+        503,
+      ),
+    );
+    expect(err.message).toBe('同时录音已达上限（请等待他人结束录音后重试）');
   });
 });

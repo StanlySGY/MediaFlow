@@ -97,10 +97,14 @@ class ASRMonitor:
         self._calls: deque[ASRCallRecord] = deque(maxlen=max_calls)
         self._by_id: dict[str, ASRCallRecord] = {}
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self.calls_total = 0
+        self.errors_total = 0
 
     def reset(self) -> None:
         self._calls.clear()
         self._by_id.clear()
+        self.calls_total = 0
+        self.errors_total = 0
         for queue in list(self._subscribers):
             queue.put_nowait({"type": "reset", "snapshot": self.snapshot()})
 
@@ -133,6 +137,7 @@ class ASRMonitor:
             self._by_id.pop(evicted.call_id, None)
         self._calls.appendleft(call)
         self._by_id[call.call_id] = call
+        self.calls_total += 1
         self._publish({"type": "call_started", "call": call.to_dict()})
         return call.call_id
 
@@ -151,6 +156,8 @@ class ASRMonitor:
         call.ended_at = time.time()
         call.elapsed_ms = max(0.0, (call.ended_at - call.started_at) * 1000.0)
         call.status = "ok" if ok else "error"
+        if not ok:
+            self.errors_total += 1
         call.text_chars = text_chars
         if text_preview:
             call.text_preview = text_preview[:_TEXT_PREVIEW_CHARS]

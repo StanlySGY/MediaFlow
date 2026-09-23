@@ -16,7 +16,7 @@ from app.models.schemas import (
 )
 from app.services.asr import ASRError, create_provider
 from app.services.asr_monitoring import asr_call_context
-from app.services.asr.realtime_base import RealtimeASRError
+from app.services.asr.realtime_base import RealtimeASRError, classify_message
 from app.services.ffmpeg_service import normalize_to_wav
 
 log = logging.getLogger(__name__)
@@ -136,16 +136,32 @@ class StreamTranscribeManager:
             session.publish(RealtimeASREvent(type="done", session_id=session_id))
 
         except asyncio.CancelledError:
+            code, hint, retryable = classify_message("转录任务被取消")
             session.publish(
                 RealtimeASREvent(
-                    type="error", session_id=session_id, error="转录任务被取消"
+                    type="error",
+                    session_id=session_id,
+                    error="转录任务被取消",
+                    error_code="cancelled",
+                    hint=hint,
+                    retryable=retryable,
                 )
             )
             raise
         except Exception as e:
             log.exception("transcription failed for session %s", session_id)
+            code, hint, retryable = classify_message(str(e))
+            if isinstance(e, ASRError) and code == "internal_error":
+                code, hint, retryable = "provider_rejected", hint or "上游识别失败", True
             session.publish(
-                RealtimeASREvent(type="error", session_id=session_id, error=str(e))
+                RealtimeASREvent(
+                    type="error",
+                    session_id=session_id,
+                    error=str(e),
+                    error_code=code,
+                    hint=hint,
+                    retryable=retryable,
+                )
             )
         finally:
             # Always release subscribers: without a terminal sentinel every SSE

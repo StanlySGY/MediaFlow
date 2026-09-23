@@ -296,7 +296,10 @@ curl -X POST http://localhost:8999/media/concat \
 | POST | `/asr/file` | 标准文件 ASR 入口，上传 WAV/音视频文件并返回 `status_url`、`events_url`、`result_url` |
 | GET  | `/asr/file/{task_id}/events` | 标准文件 ASR SSE 流式结果（内部复用 `/asr/task/{task_id}/stream`） |
 | GET  | `/asr/file/{task_id}/result` | 标准文件 ASR 最终 JSON 结果 |
-| GET  | `/asr/tasks` | 历史任务列表（内存中 + outputs/ 持久化） |
+| GET  | `/asr/tasks` | 历史任务。查询参数：`q`、`status`（queued/processing/done/failed/cancelled）、`since`、`until`（unix 秒）、`offset`、`limit` |
+| POST | `/asr/task/{task_id}/cancel` | 取消尚未完成的文件任务（阶段之间生效，不自动续跑） |
+| DELETE | `/asr/task/{task_id}` | 删除已结束的历史任务。进行中返回 409 |
+| GET  | `/metrics` | Prometheus 文本指标（无需令牌） |
 | POST | `/asr/realtime/session` | 创建实时会话（body：`RealtimeSessionCreate`） |
 | GET  | `/asr/realtime/sessions` | 当前活跃会话与可用 realtime providers |
 | GET  | `/asr/realtime/{session_id}` | 单个会话状态 |

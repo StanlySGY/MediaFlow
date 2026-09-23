@@ -14,7 +14,14 @@ export const responseError = async (r: Response): Promise<Error> => {
   let detail = '';
   try {
     const parsed = JSON.parse(raw);
-    if (typeof parsed?.detail === 'string') detail = parsed.detail;
+    const body = parsed?.detail;
+    if (typeof body === 'string') {
+      detail = body;
+    } else if (body && typeof body === 'object') {
+      const message = typeof body.message === 'string' ? body.message : '';
+      const hint = typeof body.hint === 'string' ? body.hint : '';
+      detail = message && hint ? `${message}（${hint}）` : message;
+    }
   } catch {
     /* not JSON; use the raw body below */
   }

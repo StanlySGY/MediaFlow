@@ -54,6 +54,9 @@ export interface RealtimeEvent {
   elapsed_ms?: number;
   mode?: string;
   error?: string;
+  error_code?: string | null;
+  hint?: string | null;
+  retryable?: boolean | null;
   raw?: unknown;
 }
 
@@ -79,7 +82,23 @@ export interface StandardASRStreamEvent {
   status?: string | null;
   progress?: number | null;
   error?: string | null;
+  error_code?: string | null;
+  hint?: string | null;
+  retryable?: boolean | null;
   source_event?: string | null;
+}
+
+export interface HistoryTask {
+  task_id: string;
+  status: string;
+  phase?: string;
+  duration?: number;
+  text?: string;
+  error?: string | null;
+  original_name?: string;
+  created_at?: number;
+  finished_segments?: number;
+  total_segments?: number;
 }
 
 export interface SystemConfig {

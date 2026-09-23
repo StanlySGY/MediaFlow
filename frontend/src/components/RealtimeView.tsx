@@ -4,6 +4,7 @@ import { Play, Square, Trash2, Mic, Terminal, Info } from 'lucide-react';
 import { RealtimeEvent, RealtimeSession, StandardASRStreamEvent } from '../types';
 import { errorMessage, responseError } from '../lib/errors';
 import { applySplice } from '../lib/splice';
+import { Accordion } from './Accordion';
 import { RealtimeRecorderPanel } from './RealtimeRecorderPanel';
 
 interface RealtimeViewProps {
@@ -313,6 +314,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
     <div className="flex flex-col gap-6">
       <RealtimeRecorderPanel authedFetch={authedFetch} sseUrl={sseUrl} />
 
+      <Accordion title="高级设置 · 手动会话、文件模拟、事件日志">
       {/* Intro hint */}
       <div className="panel p-4 flex items-start gap-3">
         <Info className="w-4 h-4 text-accent shrink-0 mt-0.5" />
@@ -481,6 +483,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
           </div>
         </motion.div>
       )}
+      </Accordion>
     </div>
   );
 };

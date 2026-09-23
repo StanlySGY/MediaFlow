@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ClipboardCopy, Mic, Square, Trash2 } from 'lucide-react';
 import { StandardASRStreamEvent } from '../types';
-import { errorMessage } from '../lib/errors';
+import { errorMessage, responseError } from '../lib/errors';
 import { applySplice } from '../lib/splice';
 
 interface RealtimeRecorderPanelProps {
@@ -56,6 +56,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   const isBusy = state === 'connecting' || state === 'recording' || state === 'processing';
   const status = RECORDER_STATUS[state];
   const [transcript, setTranscript] = useState('');
+  const [notice, setNotice] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
   const [chunks, setChunks] = useState(0);
   const [bytes, setBytes] = useState(0);
@@ -118,6 +119,8 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         if (event.type === 'done') {
           setState('completed');
         } else {
+          const message = event.error || '识别失败';
+          setNotice(event.hint ? `${message}（${event.hint}）` : message);
           setState('error');
         }
       }
@@ -157,7 +160,9 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      appendLog('push_error', { status: response.status, body: await response.text() });
+      const err = await responseError(response);
+      appendLog('push_error', { status: response.status, message: err.message });
+      setNotice(err.message);
       return false;
     }
     setChunks(seq);
@@ -189,6 +194,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     setState('connecting');
     uploadFailedRef.current = false;
     setTranscript('');
+    setNotice('');
     committedTextRef.current = '';
     setLogs([]);
     setChunks(0);
@@ -214,7 +220,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
           hotwords: [],
         }),
       });
-      if (!sessionResponse.ok) throw new Error(await sessionResponse.text());
+      if (!sessionResponse.ok) throw await responseError(sessionResponse);
       const session = await sessionResponse.json();
       sessionIdRef.current = session.session_id;
       appendLog('session_created', { session_id: session.session_id, format });
@@ -269,6 +275,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       if (generation !== generationRef.current) return;
       cleanup();
       setState('error');
+      setNotice(errorMessage(e));
       appendLog('recording_error', { message: errorMessage(e) });
     }
   };
@@ -290,7 +297,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       <h3 className="section-title justify-between mb-4">
         <div className="flex items-center gap-2">
           <Mic className="w-5 h-5 text-accent" />
-          <span>浏览器录音测试</span>
+          <span>实时录音</span>
         </div>
         <span className={`badge ${isRecording ? 'warn' : transcript ? 'ok' : ''}`}>
           <span className={`dot ${isRecording ? 'pulse' : ''}`} />
@@ -311,39 +318,42 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         <span className="badge">累计 <b className="text-fg ml-1 font-mono">{bytes.toLocaleString()}</b> 字节</span>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_420px] gap-4">
-        <div className="bg-white border border-border rounded-xl min-h-[260px] p-6">
-          <div className="text-[11px] text-muted font-semibold mb-3">转写白屏</div>
-          <div className="text-[22px] leading-relaxed text-fg whitespace-pre-wrap break-words">
-            {transcript || <span className="text-muted-2">等待识别文本…</span>}
-          </div>
+      {notice && (
+        <div className="p-3 mb-4 rounded-xl border border-err/20 bg-err-soft text-err text-[13px]">
+          {notice}
         </div>
+      )}
 
-        <div className="panel p-4 min-w-0">
-          <div className="flex items-center justify-between gap-2 mb-3">
-            <h4 className="section-title text-sm">
-              <ClipboardCopy className="w-4 h-4 text-accent-2" />
-              <span>调试日志</span>
-            </h4>
-            <div className="flex gap-2">
-              <button onClick={copyLogs} disabled={logs.length === 0}>
-                <ClipboardCopy className="w-3.5 h-3.5" />
-                <span>复制日志</span>
-              </button>
-              <button onClick={() => setLogs([])} disabled={logs.length === 0}>
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>清空</span>
-              </button>
-            </div>
+      <div className="bg-white border border-border rounded-xl min-h-[260px] p-6">
+        <div className="text-[11px] text-muted font-semibold mb-3">
+          {state === 'completed' ? '最终稿' : '实时文稿'}
+        </div>
+        <div className="text-[22px] leading-relaxed text-fg whitespace-pre-wrap break-words">
+          {transcript || <span className="text-muted-2">等待识别文本…</span>}
+        </div>
+      </div>
+
+      <details className="mt-4">
+        <summary className="cursor-pointer text-[12px] text-muted">调试日志</summary>
+        <div className="panel p-4 min-w-0 mt-2">
+          <div className="flex items-center justify-end gap-2 mb-3">
+            <button onClick={copyLogs} disabled={logs.length === 0}>
+              <ClipboardCopy className="w-3.5 h-3.5" />
+              <span>复制日志</span>
+            </button>
+            <button onClick={() => setLogs([])} disabled={logs.length === 0}>
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>清空</span>
+            </button>
           </div>
           <textarea
             readOnly
             value={logs.join('\n')}
-            className="w-full h-[210px] font-mono text-[11px] leading-relaxed bg-white"
+            className="w-full h-[160px] font-mono text-[11px] leading-relaxed bg-white"
             placeholder="录音、上传、SSE 事件和错误会显示在这里。"
           />
         </div>
-      </div>
+      </details>
     </div>
   );
 };

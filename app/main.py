@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import media_router, meta_router, router as asr_router
 from app.config import get_settings
+from app.services.metrics import request_metrics
 from app.services.realtime_manager import RealtimeManager
 from app.services.stream_manager import TaskManager
 from app.services.stream_transcribe_manager import StreamTranscribeManager
@@ -210,6 +212,21 @@ def create_app() -> FastAPI:
     app.include_router(asr_router)
     app.include_router(media_router)
     app.include_router(meta_router)
+
+    @app.middleware("http")
+    async def _observe_requests(request: Request, call_next):
+        started = time.perf_counter()
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            return response
+        finally:
+            route = request.scope.get("route")
+            path = getattr(route, "path", None) or "unmatched"
+            request_metrics.observe(
+                request.method, path, status, time.perf_counter() - started
+            )
 
     if not settings.asr_api_key:
         logging.getLogger(__name__).warning(

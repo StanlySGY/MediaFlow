@@ -40,15 +40,41 @@ from app.services.asr import (
     list_providers,
     list_realtime_providers,
 )
+from app.services.asr.realtime_base import RealtimeASRError, classify_message, error_payload
 from app.services.asr_monitoring import asr_call_context, asr_monitor
-from app.services.asr.realtime_base import RealtimeASRError
 from app.services.ffmpeg_service import FFmpegError, concat_media
+from app.services.metrics import request_metrics
 from app.services.realtime_manager import RealtimeManager
-from app.services.stream_manager import TaskManager
+from app.services.stream_manager import TaskBusy, TaskManager
 from app.services.stream_transcribe_manager import StreamTranscribeManager
 from app.services.subtitles import to_srt, to_vtt
 
 log = logging.getLogger(__name__)
+
+
+def _http_error(status: int, exc: BaseException) -> HTTPException:
+    payload = error_payload(exc)
+    return HTTPException(status, payload)
+
+
+def _http_message(
+    status: int,
+    message: str,
+    *,
+    code: str | None = None,
+    hint: str | None = None,
+    retryable: bool | None = None,
+) -> HTTPException:
+    inferred_code, inferred_hint, inferred_retryable = classify_message(message)
+    return HTTPException(
+        status,
+        {
+            "code": code or inferred_code,
+            "message": message,
+            "hint": inferred_hint if hint is None else hint,
+            "retryable": inferred_retryable if retryable is None else retryable,
+        },
+    )
 router = APIRouter(prefix="/asr", tags=["asr"], dependencies=[Depends(require_token)])
 meta_router = APIRouter(tags=["meta"])
 media_router = APIRouter(
@@ -414,13 +440,21 @@ def _standard_file_segment_sse_message(evt: SegmentEvent) -> dict[str, str]:
             end=evt.end,
             elapsed_ms=evt.elapsed_ms,
             error=evt.error,
+            error_code=_segment_error_code(evt.error),
             source_event="segment",
         )
     )
 
 
+def _segment_error_code(error: str | None) -> str | None:
+    if not error:
+        return None
+    code, _, _ = classify_message(error)
+    return code
+
+
 def _standard_file_done_sse_message(info: TaskInfo) -> dict[str, str]:
-    event_type = "error" if info.status == TaskStatus.failed else "done"
+    event_type = "error" if info.status in {TaskStatus.failed, TaskStatus.cancelled} else "done"
     return _sse_message(
         ASRStreamEvent(
             type=event_type,
@@ -431,6 +465,9 @@ def _standard_file_done_sse_message(info: TaskInfo) -> dict[str, str]:
             status=info.status.value,
             progress=info.progress,
             error=info.error,
+            error_code=info.error_code,
+            hint=info.hint,
+            retryable=info.retryable,
             source_event="done" if event_type == "done" else "error",
         )
     )
@@ -518,6 +555,11 @@ def _standard_realtime_sse_message(
         event_type = "text"
 
     delta = _realtime_delta(previous_text, evt.text) if event_type == "text" else None
+    error_code = evt.error_code
+    hint = evt.hint
+    retryable = evt.retryable
+    if event_type == "error" and not error_code:
+        error_code, hint, retryable = classify_message(evt.error or "")
 
     return _sse_message(
         ASRStreamEvent(
@@ -531,6 +573,9 @@ def _standard_realtime_sse_message(
             session_id=evt.session_id,
             elapsed_ms=evt.elapsed_ms,
             error=evt.error,
+            error_code=error_code,
+            hint=hint,
+            retryable=retryable,
             source_event=evt.type,
         )
     )
@@ -848,6 +893,30 @@ async def get_file_subtitle(
     return await get_subtitle(task_id=task_id, format=format, manager=manager)
 
 
+@meta_router.get("/metrics")
+async def prometheus_metrics(request: Request) -> PlainTextResponse:
+    """Prometheus text exposition. No auth: scrape it from the private network."""
+    manager: TaskManager = request.app.state.manager
+    realtime: RealtimeManager = request.app.state.realtime_manager
+    active_tasks = sum(
+        1
+        for task in manager._tasks.values()  # noqa: SLF001
+        if task.info.status not in {TaskStatus.done, TaskStatus.failed, TaskStatus.cancelled}
+    )
+    active_realtime = sum(
+        1
+        for info in realtime.list()
+        if info.status.value not in {"done", "failed", "closed"}
+    )
+    body = request_metrics.render(
+        provider_calls=asr_monitor.calls_total,
+        provider_errors=asr_monitor.errors_total,
+        active_tasks=active_tasks,
+        active_realtime_sessions=active_realtime,
+    )
+    return PlainTextResponse(body, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
 @meta_router.get("/auth/info")
 async def auth_info() -> dict[str, bool]:
     return {"auth_required": bool(get_settings().access_tokens_list)}
@@ -1033,61 +1102,67 @@ async def ping_upstream() -> dict:
 @router.get("/tasks")
 async def list_tasks(
     manager: TaskManager = Depends(get_manager),
+    q: str = "",
+    status: str | None = None,
+    since: float | None = None,
+    until: float | None = None,
+    offset: int = 0,
     limit: int = 50,
 ) -> dict:
-    """List completed tasks (from outputs/ + in-memory active ones)."""
-    s = get_settings()
-    seen: set[str] = set()
-    items: list[dict] = []
-
-    # In-memory tasks (active + recently completed)
-    for tid, t in list(manager._tasks.items()):  # noqa: SLF001
-        seen.add(tid)
-        items.append(
-            {
-                "task_id": tid,
-                "status": t.info.status.value,
-                "progress": t.info.progress,
-                "total_segments": t.info.total_segments,
-                "finished_segments": t.info.finished_segments,
-                "duration": t.result.duration,
-                "text_preview": (t.result.text or "")[:120],
-                "error": t.info.error,
-                "in_memory": True,
-            }
+    """List file tasks. `status` is the public lifecycle, not the internal phase."""
+    if status is not None and status not in {
+        "queued",
+        "processing",
+        "done",
+        "failed",
+        "cancelled",
+    }:
+        raise _http_message(
+            400,
+            "status must be queued|processing|done|failed|cancelled",
+            code="invalid_request",
         )
+    return manager.list_history(
+        q=q,
+        status=status,
+        since=since,
+        until=until,
+        offset=offset,
+        limit=limit,
+    )
 
-    # Persisted task results
-    out_dir = s.output_dir
-    if out_dir.is_dir():
-        import json as _json
 
-        for path in sorted(
-            out_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
-        ):
-            tid = path.stem
-            if tid in seen:
-                continue
-            try:
-                data = _json.loads(path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                continue
-            items.append(
-                {
-                    "task_id": tid,
-                    "status": data.get("status", "done"),
-                    "progress": 1.0,
-                    "total_segments": len(data.get("segments", [])),
-                    "finished_segments": len(data.get("segments", [])),
-                    "duration": data.get("duration", 0.0),
-                    "text_preview": (data.get("text") or "")[:120],
-                    "error": data.get("error"),
-                    "in_memory": False,
-                    "mtime": path.stat().st_mtime,
-                }
-            )
+@router.post("/task/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    manager: TaskManager = Depends(get_manager),
+) -> dict:
+    """Stop an in-flight file task between pipeline stages. Does not resume it later."""
+    result = manager.request_cancel(task_id)
+    if result == "missing":
+        raise _http_message(404, "task not found", code="invalid_request")
+    return {"ok": True, "status": result}
 
-    return {"tasks": items[:limit], "total": len(items)}
+
+@router.delete("/task/{task_id}")
+async def delete_task(
+    task_id: str,
+    manager: TaskManager = Depends(get_manager),
+) -> dict:
+    """Delete a finished file task from history. Running tasks must be cancelled first."""
+    try:
+        removed = manager.delete_task(task_id)
+    except TaskBusy:
+        raise _http_message(
+            409,
+            "任务进行中，请先取消",
+            code="invalid_request",
+            hint="取消后再删除",
+            retryable=True,
+        )
+    if not removed:
+        raise _http_message(404, "task not found", code="invalid_request")
+    return {"ok": True}
 
 
 @router.get("/task/{task_id}/segments/{segment_id}/raw")
@@ -1129,7 +1204,7 @@ async def create_realtime_session(
     try:
         return await rm.create(config)
     except RealtimeASRError as e:
-        raise HTTPException(503, str(e))
+        raise _http_error(503, e)
 
 
 @router.get(
@@ -1159,7 +1234,7 @@ async def get_realtime_session(
 ) -> RealtimeSessionInfo:
     info = rm.get(session_id)
     if info is None:
-        raise HTTPException(404, "session not found")
+        raise _http_message(404, "session not found", code="session_not_found")
     return info
 
 
@@ -1177,11 +1252,11 @@ async def push_realtime_audio(
     try:
         info = await rm.push_audio(session_id, chunk)
     except KeyError:
-        raise HTTPException(404, "session not found")
+        raise _http_message(404, "session not found", code="session_not_found")
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise _http_message(400, str(e))
     except RealtimeASRError as e:
-        raise HTTPException(502, str(e))
+        raise _http_error(502, e)
     return {
         "ok": True,
         "seq": chunk.seq,
@@ -1201,7 +1276,7 @@ async def stream_realtime_session(
     rm: RealtimeManager = Depends(get_realtime_manager),
 ) -> EventSourceResponse:
     if rm.get(session_id) is None:
-        raise HTTPException(404, "session not found")
+        raise _http_message(404, "session not found", code="session_not_found")
 
     async def event_gen():
         previous_text = ""
@@ -1233,7 +1308,7 @@ async def end_realtime_session(
     try:
         await rm.finish(session_id)
     except KeyError:
-        raise HTTPException(404, "session not found")
+        raise _http_message(404, "session not found", code="session_not_found")
     return {"ok": True}
 
 
@@ -1248,7 +1323,7 @@ async def delete_realtime_session(
 ) -> dict:
     removed = await rm.close(session_id)
     if not removed:
-        raise HTTPException(404, "session not found")
+        raise _http_message(404, "session not found", code="session_not_found")
     return {"ok": True}
 
 

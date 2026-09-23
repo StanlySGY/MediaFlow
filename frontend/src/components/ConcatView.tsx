@@ -167,6 +167,11 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
       {result && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="card p-6">
           <h3 className="section-title mb-4"><span>合并完成</span></h3>
+          {/\.(mp4|webm|mkv|mov|avi)$/i.test(result.name) ? (
+            <video controls src={result.url} className="w-full max-h-80 rounded-xl bg-black mb-4" />
+          ) : (
+            <audio controls src={result.url} className="w-full mb-4" />
+          )}
           <div className="flex items-center gap-3 flex-wrap">
             <span className="badge ok"><span className="dot" />已生成</span>
             <span className="text-[13px] text-fg font-mono truncate">{result.name}</span>

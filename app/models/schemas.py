@@ -15,6 +15,7 @@ class TaskStatus(str, Enum):
     merging = "merging"
     done = "done"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class Word(BaseModel):
@@ -66,6 +67,9 @@ class TaskResult(BaseModel):
     text: str = ""
     segments: list[Segment] = Field(default_factory=list)
     error: str | None = None
+    error_code: str | None = None
+    hint: str | None = None
+    retryable: bool | None = None
 
 
 class TaskInfo(BaseModel):
@@ -75,6 +79,9 @@ class TaskInfo(BaseModel):
     total_segments: int = 0
     finished_segments: int = 0
     error: str | None = None
+    error_code: str | None = None
+    hint: str | None = None
+    retryable: bool | None = None
 
 
 # ---------------- Standard SSE stream ----------------
@@ -170,13 +177,18 @@ class ASRStreamEvent(BaseModel):
         default=None,
         description=(
             "结构化错误代码，仅 type=error 时有值。便于客户端程序化处理。"
-            "常见值：'provider_error'（上游服务错误）、'invalid_audio'（音频格式不支持）、"
-            "'session_expired'（会话已过期）、'internal_error'（内部错误）。"
+            "常见值：invalid_request、unauthorized、session_not_found、session_expired、"
+            "session_limit、provider_unavailable、provider_timeout、provider_rejected、"
+            "audio_invalid、internal_error、cancelled、interrupted。"
         ),
     )
     hint: str | None = Field(
         default=None,
         description="用户友好的错误提示或建议，仅 type=error 时有值。辅助 error_code 提供操作指引。",
+    )
+    retryable: bool | None = Field(
+        default=None,
+        description="客户端是否值得用同样的请求再试一次。仅 type=error 时有意义。",
     )
     source_event: str | None = Field(
         default=None,
@@ -330,5 +342,8 @@ class RealtimeASREvent(BaseModel):
         ),
     )
     error: str | None = Field(default=None, description="错误信息；仅 error 事件有值。")
+    error_code: str | None = Field(default=None, description="结构化错误代码，仅 error 事件有值。")
+    hint: str | None = Field(default=None, description="给用户看的下一步建议，仅 error 事件有值。")
+    retryable: bool | None = Field(default=None, description="同样的请求是否值得重试。")
     raw: dict | None = Field(default=None, description="下游原始事件，调试用。")
     speaker: str | None = Field(default=None, description="说话人标签；开启说话人分离时返回。")

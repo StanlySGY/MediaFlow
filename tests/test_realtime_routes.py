@@ -78,7 +78,9 @@ def test_push_invalid_base64_returns_400(client):
         json={"seq": 1, "audio": "!!!bad!!!"},
     )
     assert r.status_code == 400
-    assert "base64" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["code"] == "audio_invalid"
+    assert "base64" in detail["message"]
 
 
 def test_push_empty_chunk_without_final_returns_400(client):

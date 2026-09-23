@@ -16,9 +16,25 @@ from app.models.schemas import (
     RealtimeSessionStatus,
 )
 from app.services.asr import create_realtime_provider
-from app.services.asr.realtime_base import RealtimeASRError, RealtimeASRProvider
+from app.services.asr.realtime_base import RealtimeASRError, RealtimeASRProvider, classify_message
 
 log = logging.getLogger(__name__)
+
+
+def _error_event(session_id: str, exc: BaseException) -> RealtimeASREvent:
+    if isinstance(exc, RealtimeASRError):
+        code, hint, retryable, message = exc.code, exc.hint, exc.retryable, str(exc)
+    else:
+        code, hint, retryable = classify_message(str(exc))
+        message = str(exc)
+    return RealtimeASREvent(
+        type="error",
+        session_id=session_id,
+        error=message,
+        error_code=code,
+        hint=hint,
+        retryable=retryable,
+    )
 
 # Statuses whose sessions no longer hold an upstream connection. They linger in
 # the map only for SSE replay until TTL eviction, so they don't count against
@@ -169,7 +185,10 @@ class RealtimeManager:
             # 所以用中文并给出可操作信息，而不是抛出内部 key 的英文串。
             raise RealtimeASRError(
                 f"同时录音已达上限（{s.realtime_max_sessions} 路），"
-                "请等待他人结束录音后重试"
+                "请等待他人结束录音后重试",
+                code="session_limit",
+                hint="请等待他人结束录音后重试",
+                retryable=True,
             )
 
         session_id = uuid.uuid4().hex
@@ -217,7 +236,7 @@ class RealtimeManager:
         if session is None:
             raise KeyError("session not found")
         if session.done.is_set():
-            raise RealtimeASRError("session already closed")
+            raise RealtimeASRError("session already closed", code="session_expired")
 
         # validate base64 payload (empty allowed only on final marker)
         if not chunk.audio and not chunk.is_final:
@@ -242,9 +261,7 @@ class RealtimeManager:
         try:
             await session.provider.push_audio(chunk)
         except RealtimeASRError as e:
-            session.publish(RealtimeASREvent(
-                type="error", session_id=session_id, error=str(e),
-            ))
+            session.publish(_error_event(session_id, e))
             session.complete(RealtimeSessionStatus.failed, str(e))
             raise
         return session.info
@@ -260,9 +277,7 @@ class RealtimeManager:
         try:
             await session.provider.finish()
         except RealtimeASRError as e:
-            session.publish(RealtimeASREvent(
-                type="error", session_id=session_id, error=str(e),
-            ))
+            session.publish(_error_event(session_id, e))
             session.complete(RealtimeSessionStatus.failed, str(e))
 
     async def stream(self, session_id: str) -> AsyncIterator[RealtimeASREvent]:
@@ -315,6 +330,13 @@ class RealtimeManager:
             return
         try:
             async for evt in session.provider.events():
+                if evt.type == "error" and not evt.error_code:
+                    code, hint, retryable = classify_message(evt.error or "")
+                    evt = evt.model_copy(update={
+                        "error_code": code,
+                        "hint": hint,
+                        "retryable": retryable,
+                    })
                 session.publish(evt)
                 if evt.type == "done":
                     session.complete(RealtimeSessionStatus.done)
@@ -324,9 +346,7 @@ class RealtimeManager:
                     return
         except Exception as e:  # noqa: BLE001
             log.exception("event pump failed for %s", session_id)
-            session.publish(RealtimeASREvent(
-                type="error", session_id=session_id, error=str(e),
-            ))
+            session.publish(_error_event(session_id, e))
             session.complete(RealtimeSessionStatus.failed, str(e))
         finally:
             if not session.done.is_set():
