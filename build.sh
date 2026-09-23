@@ -8,7 +8,7 @@
 #   ./build.sh --pull         pull fresh base images first
 #   ./build.sh --test         run backend pytest before building (requires .venv)
 #   ./build.sh --tag x.y.z    override image version tag
-#   ./build.sh --up           start `docker compose up -d` after a successful build
+#   ./build.sh --up           start the built image (compose, or docker run if none)
 #   ./build.sh --push REG     docker push REG/mediaflow:<tag> after build
 #
 # Offline delivery: ./build.sh --save → copy .tar.gz → docker load -i → compose -f docker-compose.prod.yml up -d
@@ -148,6 +148,46 @@ echo "  ${C_DIM}id${C_RST}        $IMG_ID"
 echo "  ${C_DIM}size${C_RST}      $HUMAN_SIZE"
 echo
 
+# Compose V2 is the `docker compose` plugin. This host's CLI has no such
+# command, so `docker compose -f …` is parsed as a docker flag and dies with
+# "unknown shorthand flag: 'f'". Standalone docker-compose 1.27+ can read the
+# prod file; older ones cannot. Otherwise start the same container with docker run.
+up_mode() {
+    if docker compose version >/dev/null 2>&1; then
+        echo compose-v2
+    elif command -v docker-compose >/dev/null 2>&1 \
+        && docker-compose -f docker-compose.prod.yml config >/dev/null 2>&1; then
+        echo compose-v1
+    else
+        echo run
+    fi
+}
+
+start_built_image() {
+    if [[ ! -f .env ]]; then
+        warn ".env not found — copying .env.example. Remember to set ASR_API_KEY."
+        cp .env.example .env
+    fi
+    mkdir -p temp outputs
+    case "$(up_mode)" in
+        compose-v2)
+            docker compose -f docker-compose.prod.yml up -d ;;
+        compose-v1)
+            docker-compose -f docker-compose.prod.yml up -d ;;
+        *)
+            warn "No usable compose command; starting with docker run (host network)."
+            docker rm -f mediaflow >/dev/null 2>&1 || true
+            docker run -d \
+                --name mediaflow \
+                --restart unless-stopped \
+                --network host \
+                --env-file .env \
+                -v "$PWD/temp:/app/temp" \
+                -v "$PWD/outputs:/app/outputs" \
+                "$IMG_VER" ;;
+    esac
+}
+
 # ---- optional save (offline transfer) ----
 if [[ "$SAVE" -eq 1 ]]; then
     ARCH="${PLATFORM##*/}"
@@ -163,7 +203,11 @@ if [[ "$SAVE" -eq 1 ]]; then
     ok "Saved ${SAVE_FILE} (${SAVED_SIZE})"
     echo "  ${C_DIM}offline next:${C_RST} copy ${SAVE_FILE} to the site, then:"
     echo "    docker load -i ${SAVE_FILE}"
-    echo "    docker compose -f docker-compose.prod.yml up -d"
+    case "$(up_mode)" in
+        compose-v2) echo "    docker compose -f docker-compose.prod.yml up -d" ;;
+        compose-v1) echo "    docker-compose -f docker-compose.prod.yml up -d" ;;
+        *) echo "    docker rm -f mediaflow; docker run -d --name mediaflow --restart unless-stopped --network host --env-file .env -v \"\$PWD/temp:/app/temp\" -v \"\$PWD/outputs:/app/outputs\" ${IMG_VER}" ;;
+    esac
     echo
 fi
 
@@ -181,16 +225,21 @@ fi
 
 # ---- optional up ----
 if [[ "$RUN_UP" -eq 1 ]]; then
-    info "Starting via docker compose…"
-    if [[ ! -f .env ]]; then
-        warn ".env not found — copying .env.example. Remember to set ASR_API_KEY."
-        cp .env.example .env
-    fi
-    docker compose up -d
+    info "Starting ${IMG_VER}…"
+    start_built_image
     ok "Up. Visit http://localhost:8999/"
 else
     echo "${C_GRN}Next:${C_RST}"
-    [[ -f .env ]] || echo "  1. cp .env.example .env && \$EDITOR .env  ${C_DIM}# set ASR_API_KEY${C_RST}"
-    echo "  $([ -f .env ] && echo 1 || echo 2). docker compose up -d"
-    echo "  $([ -f .env ] && echo 2 || echo 3). open http://localhost:8999/"
+    step=1
+    if [[ ! -f .env ]]; then
+        echo "  ${step}. cp .env.example .env && \$EDITOR .env  ${C_DIM}# set ASR_API_KEY${C_RST}"
+        step=$((step + 1))
+    fi
+    case "$(up_mode)" in
+        compose-v2) echo "  ${step}. docker compose -f docker-compose.prod.yml up -d" ;;
+        compose-v1) echo "  ${step}. docker-compose -f docker-compose.prod.yml up -d" ;;
+        *) echo "  ${step}. docker rm -f mediaflow; docker run -d --name mediaflow --restart unless-stopped --network host --env-file .env -v \"\$PWD/temp:/app/temp\" -v \"\$PWD/outputs:/app/outputs\" ${IMG_VER}" ;;
+    esac
+    step=$((step + 1))
+    echo "  ${step}. open http://localhost:8999/"
 fi
