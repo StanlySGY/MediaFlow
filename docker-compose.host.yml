@@ -13,7 +13,7 @@
 # Usage:
 #   docker compose -f docker-compose.host.yml up -d --build
 #
-# The listening port is whatever PORT is set to in .env (default 8999).
+# The listening port is whatever PORT is set to in .env (default 8080).
 # External access still depends on the host firewall allowing that port.
 
 services:
@@ -29,7 +29,7 @@ services:
       - ./temp:/app/temp
       - ./outputs:/app/outputs
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8999/health',timeout=2).status==200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=2).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3

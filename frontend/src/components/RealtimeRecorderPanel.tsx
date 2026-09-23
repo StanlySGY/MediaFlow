@@ -131,6 +131,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       appendLog('sse_error', { session_id: sessionId });
       es.close();
       eventSourceRef.current = null;
+      setNotice('实时结果连接中断，请重试');
       setState('error');
     };
   };
@@ -186,7 +187,12 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     generationRef.current = generation;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       setState('error');
-      appendLog('unsupported');
+      setNotice(
+        window.isSecureContext
+          ? '当前浏览器不支持录音，请换用 Chrome 或 Edge'
+          : '浏览器禁止在非安全页面录音。请用 https 访问，或在本机用 http://localhost 访问',
+      );
+      appendLog('unsupported', { secure_context: window.isSecureContext });
       return;
     }
 
@@ -240,6 +246,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         });
         pushChainRef.current = pushJob.catch((error) => {
           uploadFailedRef.current = true;
+          setNotice(errorMessage(error));
           setState('error');
           appendLog('push_queue_error', { message: errorMessage(error) });
         });
@@ -253,6 +260,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
             const uploaded = await pushChunk('', true);
             if (!uploaded) {
               uploadFailedRef.current = true;
+              setNotice((prev) => prev || '结束录音失败');
               setState('error');
             }
           })

@@ -227,7 +227,7 @@ fi
 if [[ "$RUN_UP" -eq 1 ]]; then
     info "Starting ${IMG_VER}…"
     start_built_image
-    ok "Up. Visit http://localhost:8999/"
+    ok "Up. Visit http://localhost:8080/"
 else
     echo "${C_GRN}Next:${C_RST}"
     step=1
@@ -241,5 +241,5 @@ else
         *) echo "  ${step}. docker rm -f mediaflow; docker run -d --name mediaflow --restart unless-stopped --network host --env-file .env -v \"\$PWD/temp:/app/temp\" -v \"\$PWD/outputs:/app/outputs\" ${IMG_VER}" ;;
     esac
     step=$((step + 1))
-    echo "  ${step}. open http://localhost:8999/"
+    echo "  ${step}. open http://localhost:8080/"
 fi

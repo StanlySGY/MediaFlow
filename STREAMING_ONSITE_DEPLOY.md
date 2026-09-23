@@ -226,7 +226,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 ## 六、浏览器测试边说边出字
 
-打开 `http://<服务器IP>:8999/` → 进「实时识别」页面 → 服务配置核对:
+打开 `http://<服务器IP>:8080/` → 进「实时识别」页面 → 服务配置核对:
 
 | 配置项       | 值                         |
 | ------------ | -------------------------- |
@@ -268,7 +268,7 @@ cd /path/to/MediaFlow
 vi .env                 # REALTIME_ASR_BASE_URL=http://localhost:8023
 docker compose -f docker-compose.prod.yml restart
 
-# 6. 浏览器 http://<服务器IP>:8999/ → 实时识别 → 开始录音
+# 6. 浏览器 http://<服务器IP>:8080/ → 实时识别 → 开始录音
 ```
 
 ---

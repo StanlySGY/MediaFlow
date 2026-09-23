@@ -259,11 +259,11 @@ docker compose -f docker-compose.prod.yml up -d
 docker compose -f docker-compose.prod.yml ps
 # mediaflow 状态 Up
 
-curl http://localhost:8999/health
+curl http://localhost:8080/health
 # 应返回健康状态
 ```
 
-浏览器打开 `http://<服务器IP>:8999/`。
+浏览器打开 `http://<服务器IP>:8080/`。
 
 ---
 
@@ -373,7 +373,7 @@ docker exec -it qwen3-asr ls /data/models/Qwen3-ASR-1.7B/  # 容器内是否挂�
 ```bash
 lsof -i:8022   # 文件识别端口
 lsof -i:8023   # 流式端口
-lsof -i:8999   # MediaFlow 端口
+lsof -i:8080   # MediaFlow 端口
 # 改 docker-compose.yml 的 ports 映射到空闲端口
 ```
 
@@ -425,9 +425,9 @@ curl http://localhost:8023/health
 cd /home/deploy/MediaFlow
 cp .env.example .env && vi .env      # 填 ASR / REALTIME 地址
 docker compose -f docker-compose.prod.yml up -d
-curl http://localhost:8999/health
+curl http://localhost:8080/health
 
-# 8. 浏览器 http://<服务器IP>:8999/ → 服务配置核对 → 实时识别测试
+# 8. 浏览器 http://<服务器IP>:8080/ → 服务配置核对 → 实时识别测试
 ```
 
 ---

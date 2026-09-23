@@ -20,7 +20,7 @@
 ## 二、前置要求
 
 - 目标主机 **arm64（aarch64）** 架构，已安装 Docker（含 `docker compose` 插件）
-- 一个空闲端口（默认 **8999**），宿主防火墙 / 安全组允许该端口
+- 一个空闲端口（默认 **8080**），宿主防火墙 / 安全组允许该端口
 - 部署目录有写权限（容器会在此创建 `temp/`、`outputs/`、`runtime_config.json`）
 
 > 确认架构：`uname -m` 应为 `aarch64`。若为 `x86_64`，本 arm64 镜像无法运行，需向构建方索取 amd64 包。
@@ -41,10 +41,10 @@ vi .env                 # 至少把 ASR_BASE_URL 改成内网 ASR 地址
 docker compose -f docker-compose.prod.yml up -d
 
 # 4. 验证
-curl -sf http://localhost:8999/health && echo "  ← 服务已启动"
+curl -sf http://localhost:8080/health && echo "  ← 服务已启动"
 ```
 
-启动后浏览器打开 `http://<本机IP>:8999/`（用 `hostname -I` 查看本机 IP）。
+启动后浏览器打开 `http://<本机IP>:8080/`（用 `hostname -I` 查看本机 IP）。
 
 ---
 
@@ -80,7 +80,7 @@ curl -sf http://localhost:8999/health && echo "  ← 服务已启动"
 
 ### 其他常用项（有合理默认，按需调）
 
-- `PORT`：监听端口，默认 `8999`
+- `PORT`：监听端口，默认 `8080`
 - `ACCESS_TOKENS`：访问令牌，逗号分隔；**留空 = 不鉴权**（内网可信环境通常留空）
 - `MAX_UPLOAD_BYTES`：单文件上传上限，默认 `2147483648`（2 GiB）
 - `FFMPEG_TIMEOUT` / `FFMPEG_CONCURRENCY`：单 ffmpeg 进程超时（默认 1800s）/ 并发切片进程数（默认 4，按 CPU 核数调）
@@ -93,16 +93,16 @@ curl -sf http://localhost:8999/health && echo "  ← 服务已启动"
 
 prod.yml 使用 **host 网络**——容器直接绑宿主端口，绕开 docker bridge（MAAS/OpenStack、firewalld 主机的 bridge 端口发布会**静默失效**，这是离线节点最常见的"服务起了却连不上"原因）。因此：
 
-- 服务监听宿主的 `PORT`（默认 8999），**外网能否访问取决于宿主防火墙 / 安全组**。
+- 服务监听宿主的 `PORT`（默认 8080），**外网能否访问取决于宿主防火墙 / 安全组**。
 - 放行端口：
 
 ```bash
 # Ubuntu
-sudo ufw allow 8999/tcp
+sudo ufw allow 8080/tcp
 # RHEL / Rocky
-sudo firewall-cmd --add-port=8999/tcp --permanent && sudo firewall-cmd --reload
+sudo firewall-cmd --add-port=8080/tcp --permanent && sudo firewall-cmd --reload
 ```
-> 若主机是 **OpenStack 虚机**，还需在**安全组**放行入站 TCP 8999——这条最容易漏。
+> 若主机是 **OpenStack 虚机**，还需在**安全组**放行入站 TCP 8080——这条最容易漏。
 
 ---
 
@@ -110,15 +110,15 @@ sudo firewall-cmd --add-port=8999/tcp --permanent && sudo firewall-cmd --reload
 
 ```bash
 # 1. 服务存活（无需 token）
-curl -sf http://localhost:8999/health
+curl -sf http://localhost:8080/health
 #    期望：{"status":"ok"}
 
 # 2. ASR 连通性自检 —— 发一段 1s 静音到上游 ASR，验证地址/密钥/协议是否正确
-curl -sf -X POST http://localhost:8999/asr/ping | python3 -m json.tool
+curl -sf -X POST http://localhost:8080/asr/ping | python3 -m json.tool
 #    期望：{"ok": true, "base_url": "...", "model": "...", "elapsed_ms": ...}
 #    若 ok=false 或超时 → ASR 地址/密钥/协议配错，或宿主到 ASR 网络不通
 
-# 3. 端到端：浏览器开 http://<本机IP>:8999/ ，上传一小段音频，看是否出字幕
+# 3. 端到端：浏览器开 http://<本机IP>:8080/ ，上传一小段音频，看是否出字幕
 ```
 
 > 若设置了 `ACCESS_TOKENS`，上面 `/asr/ping` 需加 `-H "Authorization: Bearer <你的token>"`；`/health` 不需要。
@@ -154,9 +154,9 @@ docker compose -f docker-compose.prod.yml up -d        # 自动用新镜像重�
 
 | 症状 | 可能原因 | 处理 |
 |---|---|---|
-| 本机 `curl localhost:8999/health` 不通 | 容器没起来 | `... logs` 看报错、`... ps` 看状态 |
+| 本机 `curl localhost:8080/health` 不通 | 容器没起来 | `... logs` 看报错、`... ps` 看状态 |
 | 启动报 `image not found` | 镜像没加载或版本号不符 | `docker images` 确认有 `mediaflow:1.7.3`，与 compose 的 `image:` 一致 |
-| 本机通、外部电脑打不开 | 防火墙 / 安全组没放行 | 见第五节放行 8999 |
+| 本机通、外部电脑打不开 | 防火墙 / 安全组没放行 | 见第五节放行 8080 |
 | `/asr/ping` 返回 `ok=false` 或超时 | ASR 地址 / 密钥 / 协议错，或网络不通 | 核对 `ASR_BASE_URL`/`ASR_API_KEY`/`ASR_PROVIDER`；在宿主上 `curl` 内网 ASR 地址确认可达 |
 | 字幕没有词级时间戳 | 用了 `openai_chat_audio` | 内网 ASR 支持 transcriptions 端点时改用 `openai_compat` |
 | 上传大文件报 413 | 超过 `MAX_UPLOAD_BYTES` | 调大该值后重建生效 |

@@ -5,13 +5,13 @@ MediaFlow 的 Web UI：React 19 + TypeScript + Vite + Tailwind CSS。提供文�
 ## 与后端的关系
 
 - 生产构建产物输出到 `../app/web/`（见 `vite.config.ts` 的 `build.outDir`），由 FastAPI 在根路径 `/` 直接托管。**前端不单独部署**——`docker compose up` 时由多阶段 Dockerfile 在镜像内 `npm run build`。
-- 开发模式下 `vite dev` 已在 `vite.config.ts` 配好 proxy，把 `/asr`、`/auth`、`/health` 转发到 `http://localhost:8999`。因此本地开发需先在 8999 端口起后端（`uvicorn app.main:app --port 8999`）。
+- 开发模式下 `vite dev` 已在 `vite.config.ts` 配好 proxy，把 `/asr`、`/auth`、`/health` 转发到 `http://localhost:8080`。因此本地开发需先在 8080 端口起后端（`uvicorn app.main:app --port 8080`）。
 
 ## 开发
 
 ```bash
 npm install
-npm run dev          # http://localhost:5173 ，API 自动代理到 8999
+npm run dev          # http://localhost:5173 ，API 自动代理到 8080
 ```
 
 ## 构建 / 测试 / 检查

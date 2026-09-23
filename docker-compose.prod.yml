@@ -14,8 +14,8 @@
 # Networking: host mode — MAAS/OpenStack & firewalld hosts drop traffic to the
 # docker bridge, so published ports silently fail; binding the host port direct
 # works everywhere. A plain Docker host may instead drop `network_mode: host`
-# and use `ports: ["8999:8999"]`. Either way the host firewall must allow 8999
-# (ufw allow 8999/tcp · firewall-cmd · OpenStack security group).
+# and use `ports: ["8080:8080"]`. Either way the host firewall must allow 8080
+# (ufw allow 8080/tcp · firewall-cmd · OpenStack security group).
 services:
   mediaflow:
     image: mediaflow:1.7.3
@@ -28,7 +28,7 @@ services:
       - ./temp:/app/temp
       - ./outputs:/app/outputs
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8999/health',timeout=2).status==200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=2).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3

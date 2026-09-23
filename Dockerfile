@@ -31,7 +31,7 @@ COPY app ./app
 # Copy built static assets from the node build stage
 COPY --from=frontend-builder /app/web ./app/web
 
-ENV HOST=0.0.0.0 PORT=8999
-EXPOSE 8999
+ENV HOST=0.0.0.0 PORT=8080
+EXPOSE 8080
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8999"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
