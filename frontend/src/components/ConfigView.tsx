@@ -442,7 +442,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       })}
 
       {/* Sticky action bar */}
-      <div className="fixed bottom-0 left-0 md:left-[220px] right-0 bg-surface border-t border-border px-5 md:px-7 py-3.5 flex items-center gap-3 flex-wrap z-30">
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 md:left-[calc(220px+(100%-220px)/2)] bg-surface border border-border shadow-lg rounded-lg px-3 py-2.5 flex items-center gap-2.5 z-30">
         <button onClick={handleSave} className="primary">
           <Save className="w-4 h-4" /><span>保存配置</span>
         </button>
@@ -453,7 +453,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
           <Activity className="w-4 h-4" /><span>测试连接</span>
         </button>
         {pingStatus !== '未测试' && <span className={`toast ${pingClass}`}>{pingStatus}</span>}
-        {saveStatus && <span className="toast ok ml-auto">{saveStatus}</span>}
+        {saveStatus && <span className="toast ok">{saveStatus}</span>}
       </div>
     </div>
   );
