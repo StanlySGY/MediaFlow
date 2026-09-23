@@ -17,8 +17,12 @@ from starlette.background import BackgroundTask
 from app.config import (
     SENSITIVE_FIELDS,
     WRITABLE_FIELDS,
+    activate_profile,
+    delete_profile,
+    get_profiles,
     get_settings,
     reset_runtime_overrides,
+    save_profile,
     update_runtime_overrides,
 )
 from app.models.schemas import (
@@ -1003,6 +1007,59 @@ async def post_config(body: dict) -> dict:
         raise HTTPException(400, f"invalid update: {e}")
 
     return await get_config()
+
+
+@router.get("/profiles")
+async def list_profiles() -> dict:
+    """Saved ASR endpoint profiles and which pipeline each one serves."""
+    return get_profiles()
+
+
+@router.post("/profiles")
+async def create_profile(body: dict) -> dict:
+    if not isinstance(body, dict):
+        raise HTTPException(400, "body must be a JSON object")
+    try:
+        profile = save_profile(None, body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"profile": profile, **get_profiles()}
+
+
+@router.put("/profiles/{profile_id}")
+async def update_profile(profile_id: str, body: dict) -> dict:
+    if not isinstance(body, dict):
+        raise HTTPException(400, "body must be a JSON object")
+    try:
+        profile = save_profile(profile_id, body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    # Editing the profile a pipeline runs on must reach that pipeline immediately.
+    state = get_profiles()
+    for target in ("file", "realtime"):
+        if state[target] == profile_id:
+            activate_profile(profile_id, target)
+    return {"profile": profile, **get_profiles()}
+
+
+@router.delete("/profiles/{profile_id}")
+async def remove_profile(profile_id: str) -> dict:
+    try:
+        delete_profile(profile_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return get_profiles()
+
+
+@router.post("/profiles/{profile_id}/activate")
+async def activate_profile_route(profile_id: str, body: dict) -> dict:
+    """Point the file or realtime pipeline at a saved profile."""
+    target = body.get("target") if isinstance(body, dict) else None
+    try:
+        activate_profile(profile_id, str(target or ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return get_profiles()
 
 
 @router.get("/models")

@@ -43,13 +43,18 @@ async def test_post_config_persists_and_applies(client):
     # persisted
     on_disk = json.loads(rc_path.read_text("utf-8"))
     assert on_disk["asr_model"] == "alt-model"
-    assert on_disk["asr_hotwords"] == "foo,bar"
-    assert on_disk["asr_timestamps"] is False
-    assert (rc_path.stat().st_mode & 0o777) == 0o600
+
+    # a later save keeps the previous copy, so a bad save is recoverable
+    r2 = await c.post("/asr/config", json={"asr_model": "newer-model"})
+    assert r2.status_code == 200
+    backup = rc_path.with_name(rc_path.name + ".bak")
+    assert json.loads(backup.read_text("utf-8"))["asr_model"] == "alt-model"
+    assert (backup.stat().st_mode & 0o777) == 0o600
+    assert json.loads(rc_path.read_text("utf-8"))["asr_model"] == "newer-model"
 
     # GET reflects same values
     g = (await c.get("/asr/config")).json()
-    assert g["model"] == "alt-model"
+    assert g["model"] == "newer-model"
     assert g["hotwords"] == "foo,bar"
 
 
@@ -147,6 +152,122 @@ async def test_reset_clears_overrides_and_restores_env_defaults(client):
     assert r.status_code == 200
     assert r.json()["model"] == "qwen3-asr-flash"  # back to .env default
     assert not rc_path.exists()
+
+
+def _profile_body(name: str, url: str = "https://a.test/v1", **extra) -> dict:
+    return {"name": name, "asr_base_url": url, **extra}
+
+
+async def test_profiles_seed_default_from_flat_settings(client):
+    c, rc_path = client
+    r = await c.get("/asr/profiles")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data["profiles"]) == 1
+    seeded = data["profiles"][0]
+    assert seeded["name"] == "默认配置"
+    assert seeded["asr_base_url"] == "https://default.test/v1"
+    assert seeded["api_key_set"] is False
+    assert "asr_api_key" not in seeded
+    # the id is stable across reads, and it is the file pipeline's profile
+    again = (await c.get("/asr/profiles")).json()
+    assert again["profiles"][0]["id"] == seeded["id"]
+    assert data["file"] == seeded["id"]
+    assert data["realtime"] is None
+    assert rc_path.is_file()
+
+
+async def test_profile_create_update_keeps_blank_secret(client):
+    c, rc_path = client
+    r = await c.post("/asr/profiles", json=_profile_body("内网A", asr_api_key="sk-keep"))
+    assert r.status_code == 200, r.text
+    created = r.json()["profile"]
+    assert created["api_key_set"] is True
+    assert "sk-keep" not in r.text
+
+    r = await c.put(f"/asr/profiles/{created['id']}", json={"name": "内网A改名"})
+    assert r.status_code == 200, r.text
+    assert r.json()["profile"]["name"] == "内网A改名"
+    assert r.json()["profile"]["api_key_set"] is True
+    stored = json.loads(rc_path.read_text("utf-8"))
+    saved = next(p for p in stored["profiles"] if p["id"] == created["id"])
+    assert saved["asr_api_key"] == "sk-keep"
+
+
+async def test_profile_rejects_duplicate_name_and_empty_url(client):
+    c, _ = client
+    assert (await c.post("/asr/profiles", json=_profile_body("内网A"))).status_code == 200
+    dup = await c.post("/asr/profiles", json=_profile_body("内网A", "https://b.test/v1"))
+    assert dup.status_code == 400
+    assert "同名" in dup.json()["detail"]
+    blank = await c.post("/asr/profiles", json={"name": "没地址", "asr_base_url": "  "})
+    assert blank.status_code == 400
+    assert "接口地址" in blank.json()["detail"]
+
+
+async def test_activate_profile_drives_the_pipeline_it_targets(client):
+    c, _ = client
+    first = (await c.get("/asr/profiles")).json()["profiles"][0]["id"]
+    made = (await c.post(
+        "/asr/profiles",
+        json=_profile_body("实时用", "https://rt.test/v1", asr_model="rt-model",
+                           asr_provider="openai_compat"),
+    )).json()["profile"]["id"]
+
+    r = await c.post(f"/asr/profiles/{made}/activate", json={"target": "realtime"})
+    assert r.status_code == 200, r.text
+    assert r.json()["realtime"] == made
+    cfg = (await c.get("/asr/config")).json()
+    assert cfg["realtime_asr_base_url"] == "https://rt.test/v1"
+    assert cfg["realtime_asr_model"] == "rt-model"
+    # the file pipeline keeps its own profile
+    assert cfg["base_url"] == "https://default.test/v1"
+    assert r.json()["file"] == first
+
+    bad = await c.post(f"/asr/profiles/{made}/activate", json={"target": "nope"})
+    assert bad.status_code == 400
+
+
+async def test_cannot_delete_last_or_in_use_profile(client):
+    c, _ = client
+    only = (await c.get("/asr/profiles")).json()["profiles"][0]["id"]
+    r = await c.delete(f"/asr/profiles/{only}")
+    assert r.status_code == 400
+    assert "至少保留" in r.json()["detail"]
+
+    spare = (await c.post("/asr/profiles", json=_profile_body("备用"))).json()["profile"]["id"]
+    in_use = await c.delete(f"/asr/profiles/{only}")
+    assert in_use.status_code == 400
+    assert "正在使用" in in_use.json()["detail"]
+    assert (await c.delete(f"/asr/profiles/{spare}")).status_code == 200
+
+
+async def test_editing_active_profile_reaches_the_pipeline(client):
+    c, _ = client
+    active = (await c.get("/asr/profiles")).json()["file"]
+    r = await c.put(
+        f"/asr/profiles/{active}",
+        json={"name": "默认配置", "asr_model": "switched-model"},
+    )
+    assert r.status_code == 200, r.text
+    assert (await c.get("/asr/config")).json()["model"] == "switched-model"
+
+
+async def test_flat_config_save_and_reset_keep_profiles(client):
+    c, rc_path = client
+    made = (await c.post("/asr/profiles", json=_profile_body("内网A"))).json()
+    ids = {p["id"] for p in made["profiles"]}
+
+    saved = await c.post("/asr/config", json={"asr_concurrency": 2})
+    assert saved.status_code == 200
+    on_disk = json.loads(rc_path.read_text("utf-8"))
+    assert {p["id"] for p in on_disk["profiles"]} == ids
+
+    reset = await c.post("/asr/config/reset")
+    assert reset.status_code == 200
+    assert reset.json()["concurrency"] == 4  # back to the default
+    after = (await c.get("/asr/profiles")).json()
+    assert {p["id"] for p in after["profiles"]} == ids
 
 
 async def test_overrides_loaded_on_fresh_startup(tmp_path: Path, monkeypatch):

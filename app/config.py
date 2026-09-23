@@ -8,7 +8,16 @@ from pathlib import Path
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+def _profiles():
+    """Imported lazily: the asr package imports Settings at module load."""
+    from app.services.asr import profiles
+    return profiles
+
 log = logging.getLogger(__name__)
+
+# Stored next to the flat overrides in the runtime config file, but not a
+# Settings field, so the flat loader must skip them.
+_PROFILE_STORE_KEYS: frozenset[str] = frozenset({"profiles", "active_profile"})
 
 
 class Settings(BaseSettings):
@@ -170,25 +179,172 @@ def update_runtime_overrides(updates: dict) -> dict:
 
     existing = _load_runtime_overrides(s.runtime_config_path)
     existing.update(updates)
-    s.runtime_config_path.parent.mkdir(parents=True, exist_ok=True)
-    s.runtime_config_path.write_text(
-        json.dumps(existing, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    # Runtime overrides may contain API keys/tokens. Keep the file owner-only.
-    try:
-        s.runtime_config_path.chmod(0o600)
-    except OSError:
-        log.warning("failed to restrict runtime config permissions: %s", s.runtime_config_path)
+    # The file also holds the profile list, which is not a Settings field and
+    # would be erased by rewriting it from the flat overrides alone.
+    store = _read_store(s.runtime_config_path)
+    for key in _PROFILE_STORE_KEYS:
+        if key in store:
+            existing[key] = store[key]
+    _write_store(s.runtime_config_path, existing)
 
     _apply_to(s, updates)
     return updates
 
 
-def reset_runtime_overrides() -> None:
-    """Delete the runtime config file and restore .env defaults on the live Settings."""
+def _read_store(path: Path) -> dict:
+    """The whole runtime config file, profile keys included."""
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        log.warning("failed to read runtime config %s", path, exc_info=True)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_store(path: Path, data: dict) -> None:
+    """Rewrite the runtime config, keeping the previous copy as ``<name>.bak``.
+
+    The file holds API keys and the saved endpoint profiles, none of which are
+    in git, so a bad write or a hand-edit must be recoverable from disk.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        backup = path.with_name(path.name + ".bak")
+        backup.write_bytes(path.read_bytes())
+        try:
+            backup.chmod(0o600)
+        except OSError:
+            log.warning("failed to restrict backup permissions: %s", backup)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        log.warning("failed to restrict runtime config permissions: %s", path)
+
+
+def _stored_profiles(store: dict) -> list[dict]:
+    raw = store.get("profiles")
+    if not isinstance(raw, list):
+        return []
+    return [p for p in raw if isinstance(p, dict) and isinstance(p.get("id"), str)]
+
+
+def get_profiles() -> dict:
+    """Profiles plus which one each pipeline currently runs on.
+
+    A deployment that predates profiles has none saved; its flat settings are
+    persisted as a single "默认配置" on first read, so the id stays stable and
+    the page is never empty.
+    """
     s = get_settings()
-    s.runtime_config_path.unlink(missing_ok=True)
+    store = _read_store(s.runtime_config_path)
+    profiles = _stored_profiles(store)
+    if not profiles:
+        profiles = [_profiles().profile_from_settings(s, name="默认配置")]
+        store["profiles"] = profiles
+        store["active_profile"] = {"file": profiles[0]["id"], "realtime": None}
+        _write_store(s.runtime_config_path, store)
+    active = store.get("active_profile")
+    if not isinstance(active, dict):
+        active = {}
+    return {
+        "profiles": [_profiles().public_profile(p) for p in profiles],
+        "file": active.get("file") if active.get("file") in {p["id"] for p in profiles} else profiles[0]["id"],
+        "realtime": active.get("realtime") if active.get("realtime") in {p["id"] for p in profiles} else None,
+    }
+
+
+def save_profile(profile_id: str | None, fields: dict) -> dict:
+    """Create or update a profile. An omitted key keeps its stored value, so a
+    secret left blank in the form is not wiped."""
+    s = get_settings()
+    store = _read_store(s.runtime_config_path)
+    profiles = _stored_profiles(store)
+
+    name = _profiles().clean_name(fields.get("name"))
+    if any(p["name"] == name and p["id"] != profile_id for p in profiles):
+        raise ValueError(f"已有同名配置：{name}")
+
+    current = next((p for p in profiles if p["id"] == profile_id), None)
+    if profile_id is not None and current is None:
+        raise ValueError("配置不存在")
+    base = dict(current) if current else _profiles().profile_from_settings(s, name=name)
+
+    updated = {
+        "id": base["id"] if current else _profiles().new_profile_id(),
+        "name": name,
+    }
+    for field in _profiles().PROFILE_FIELDS:
+        updated[field] = fields[field] if field in fields else base.get(field)
+    if not str(updated.get("asr_base_url") or "").strip():
+        raise ValueError("接口地址不能为空")
+
+    if current:
+        profiles = [updated if p["id"] == current["id"] else p for p in profiles]
+    else:
+        profiles.append(updated)
+
+    # The first profile ever saved becomes the file pipeline's profile, so the
+    # flat settings the rest of the app reads keep matching what the page shows.
+    active = store.get("active_profile")
+    if not isinstance(active, dict) or "file" not in active:
+        store["active_profile"] = {"file": updated["id"], "realtime": None}
+        store.update(_profiles().apply_profile(s, updated, target="file"))
+
+    store["profiles"] = profiles
+    _write_store(s.runtime_config_path, store)
+    return _profiles().public_profile(updated)
+
+
+def delete_profile(profile_id: str) -> None:
+    s = get_settings()
+    store = _read_store(s.runtime_config_path)
+    profiles = _stored_profiles(store)
+    if not any(p["id"] == profile_id for p in profiles):
+        raise ValueError("配置不存在")
+    if len(profiles) == 1:
+        raise ValueError("至少保留一份配置")
+    active = store.get("active_profile")
+    if isinstance(active, dict) and profile_id in (active.get("file"), active.get("realtime")):
+        raise ValueError("这份配置正在使用，先切换到别的再删除")
+    store["profiles"] = [p for p in profiles if p["id"] != profile_id]
+    _write_store(s.runtime_config_path, store)
+
+
+def activate_profile(profile_id: str, target: str) -> dict:
+    """Point a pipeline at a profile and copy it onto the flat settings."""
+    s = get_settings()
+    store = _read_store(s.runtime_config_path)
+    profiles = _stored_profiles(store)
+    profile = next((p for p in profiles if p["id"] == profile_id), None)
+    if profile is None:
+        raise ValueError("配置不存在")
+    updates = _profiles().apply_profile(s, profile, target=target)
+    active = store.get("active_profile")
+    if not isinstance(active, dict):
+        active = {}
+    active[target] = profile_id
+    store["active_profile"] = active
+    store.update(updates)
+    _write_store(s.runtime_config_path, store)
+    return updates
+
+
+def reset_runtime_overrides() -> None:
+    """Restore .env defaults on the live Settings.
+
+    Saved profiles survive: "恢复默认" reverts the flat fields, not the list of
+    endpoints the user set up.
+    """
+    s = get_settings()
     env_only = Settings()
     for field in WRITABLE_FIELDS:
         setattr(s, field, getattr(env_only, field))
+    store = _read_store(s.runtime_config_path)
+    kept = {k: store[k] for k in _PROFILE_STORE_KEYS if k in store}
+    if kept:
+        _write_store(s.runtime_config_path, kept)
+    else:
+        s.runtime_config_path.unlink(missing_ok=True)

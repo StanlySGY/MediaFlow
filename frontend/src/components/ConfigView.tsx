@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, RotateCcw, Activity, Eye, EyeOff, Server, Scissors, Radio, ShieldCheck, RefreshCw, ChevronDown } from 'lucide-react';
+import { Save, RotateCcw, Activity, Eye, EyeOff, Server, Scissors, Radio, ShieldCheck, RefreshCw, ChevronDown, Plus, Trash2, Check } from 'lucide-react';
 import { SystemConfig } from '../types';
 import { errorMessage } from '../lib/errors';
 
@@ -103,6 +103,33 @@ const CFG_KEY_TO_API: { [key: string]: string } = {
 };
 
 const ALL_FIELDS = GROUPS.flatMap(g => [...g.fields, ...(g.advanced ?? [])]);
+// These describe the machine, not an upstream, so they stay global and are
+// saved through /asr/config instead of with a profile.
+const GLOBAL_FIELD_KEYS = new Set([
+  'asr_concurrency', 'asr_max_retries', 'asr_retry_backoff',
+  'realtime_max_chunk_bytes', 'realtime_session_ttl_seconds',
+  'split_strategy', 'split_chunk_seconds', 'split_overlap_seconds',
+  'silence_noise_db', 'silence_min_duration', 'max_upload_bytes', 'access_tokens',
+]);
+const PROFILE_FIELDS = ALL_FIELDS.filter(f => !GLOBAL_FIELD_KEYS.has(f.key));
+
+// A profile stores the file-pipeline field names; the realtime group edits the
+// same profile through its own keys, so the two map onto each other.
+const PROFILE_KEY_MAP: Record<string, string> = {
+  realtime_asr_provider: 'asr_provider',
+  realtime_asr_base_url: 'asr_base_url',
+  realtime_asr_api_key: 'asr_api_key',
+  realtime_asr_model: 'asr_model',
+};
+const profileKeyOf = (fieldKey: string) => PROFILE_KEY_MAP[fieldKey] ?? fieldKey;
+
+interface Profile {
+  id: string;
+  name: string;
+  api_key_set: boolean;
+  [key: string]: string | number | boolean;
+}
+interface ProfileState { profiles: Profile[]; file: string; realtime: string | null; }
 
 export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopbar }) => {
   const [config, setConfig] = useState<SystemConfig | null>(null);
@@ -120,6 +147,13 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const [realtimeModelOptions, setRealtimeModelOptions] = useState<string[]>([]);
   const [fetchingModelsFor, setFetchingModelsFor] = useState<string | null>(null);
   const [modelStatus, setModelStatus] = useState<{ key: string; text: string } | null>(null);
+  const [profiles, setProfiles] = useState<ProfileState | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [profileName, setProfileName] = useState('');
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [profileStatus, setProfileStatus] = useState<string | null>(null);
+
+  const selected = profiles?.profiles.find(p => p.id === selectedId) ?? null;
 
   const loadConfig = async () => {
     try {
@@ -129,6 +163,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         setConfig(cfg);
         const initialForm: Record<string, string | number | boolean> = {};
         for (const f of ALL_FIELDS) {
+          if (!GLOBAL_FIELD_KEYS.has(f.key)) continue;
           const apiKey = CFG_KEY_TO_API[f.key];
           if (f.type === 'bool') initialForm[f.key] = !!cfg[apiKey];
           else if (f.type === 'secret') initialForm[f.key] = '';
@@ -145,13 +180,46 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
     } catch {}
   };
 
-  // Load once on mount; loadConfig is stable for this view's lifetime.
+  const loadProfiles = async (preferId?: string) => {
+    const r = await authedFetch('/asr/profiles');
+    if (!r.ok) return;
+    const data: ProfileState = await r.json();
+    setProfiles(data);
+    const keep = preferId && data.profiles.some(p => p.id === preferId) ? preferId : null;
+    setSelectedId(prev => keep ?? (prev && data.profiles.some(p => p.id === prev) ? prev : data.file));
+  };
+
+  // Load once on mount; both loaders are stable for this view's lifetime.
   // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
-  useEffect(() => { loadConfig(); }, []);
+  useEffect(() => { loadConfig(); loadProfiles(); }, []);
+
+  // Editing follows whichever profile is selected, so switching one discards the
+  // unsaved draft of the previous one.
+  useEffect(() => {
+    if (!selected) return;
+    const next: Record<string, string | number | boolean> = {};
+    for (const f of PROFILE_FIELDS) {
+      const stored = selected[profileKeyOf(f.key)];
+      if (f.type === 'secret') next[f.key] = '';
+      else if (f.type === 'bool') next[f.key] = !!stored;
+      else next[f.key] = stored ?? '';
+    }
+    setFormState(prev => ({ ...prev, ...next }));
+    setDirtyFields(prev => {
+      const cleared = { ...prev };
+      for (const f of PROFILE_FIELDS) delete cleared[f.key];
+      return cleared;
+    });
+    setProfileName(selected.name);
+    setProfileDirty(false);
+    setModelOptions([]);
+    setRealtimeModelOptions([]);
+  }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleChange = (key: string, value: string | number | boolean) => {
     setFormState(prev => ({ ...prev, [key]: value }));
     setDirtyFields(prev => ({ ...prev, [key]: true }));
+    if (!GLOBAL_FIELD_KEYS.has(key)) setProfileDirty(true);
   };
 
   // Ask the upstream at the typed address which models it serves, so the name
@@ -208,7 +276,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
     })();
     handleChange('realtime_asr_provider', 'realtime_ws');
     handleChange('realtime_asr_base_url', `ws://${host}:8022/v1/asr/stream`);
-    setStreamStatus('已填入流式服务地址，记得点「保存配置」');
+    setStreamStatus('已填入流式服务地址，记得点「保存这份配置」');
     setTimeout(() => setStreamStatus(null), 5000);
   };
 
@@ -254,7 +322,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const collectDiff = () => {
     const out: Record<string, string | number | boolean> = {};
     for (const f of ALL_FIELDS) {
-      if (!dirtyFields[f.key]) continue;
+      if (!GLOBAL_FIELD_KEYS.has(f.key) || !dirtyFields[f.key]) continue;
       const val = formState[f.key];
       if (f.type === 'secret') { if (val !== '') out[f.key] = val; }
       else if (f.type === 'bool') out[f.key] = !!val;
@@ -263,6 +331,88 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       else out[f.key] = val;
     }
     return out;
+  };
+
+  const noteProfile = (text: string) => {
+    setProfileStatus(text);
+    setTimeout(() => setProfileStatus(null), 4000);
+  };
+
+  const profileBody = () => {
+    const body: Record<string, string | number | boolean> = { name: profileName.trim() };
+    const conflicts: string[] = [];
+    for (const f of PROFILE_FIELDS) {
+      const key = profileKeyOf(f.key);
+      let val: string | number | boolean | undefined;
+      if (f.type === 'secret') { if (formState[f.key] !== '') val = formState[f.key]; }
+      else if (f.type === 'bool') val = !!formState[f.key];
+      else if (f.type === 'int') { const n = parseInt(String(formState[f.key]), 10); if (Number.isFinite(n)) val = n; }
+      else if (f.type === 'float') { const fl = parseFloat(String(formState[f.key])); if (Number.isFinite(fl)) val = fl; }
+      else val = formState[f.key] ?? '';
+      if (val === undefined) continue;
+      // The file group and the realtime group edit the same stored value. When
+      // both were changed to different things, neither can silently win.
+      if (key in body && body[key] !== val && dirtyFields[f.key]) {
+        conflicts.push(f.label);
+        continue;
+      }
+      if (!(key in body) || dirtyFields[f.key]) body[key] = val;
+    }
+    return { body, conflicts };
+  };
+
+  const saveProfile = async () => {
+    if (!profileName.trim()) { noteProfile('✗ 配置名称不能为空'); return; }
+    const { body, conflicts } = profileBody();
+    if (conflicts.length) {
+      noteProfile(`✗ ${conflicts.join('、')} 和上面填的不一致，两处只能留一个值`);
+      return;
+    }
+    setProfileStatus('保存中…');
+    try {
+      const creating = !selectedId;
+      const r = await authedFetch(creating ? '/asr/profiles' : `/asr/profiles/${selectedId}`, {
+        method: creating ? 'POST' : 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      await loadProfiles(d.profile?.id);
+      await refreshTopbar();
+      noteProfile(creating ? '✓ 已新增配置' : '✓ 已保存这份配置');
+    } catch (e) {
+      noteProfile(`✗ 保存失败：${errorMessage(e)}`);
+    }
+  };
+
+  const addProfile = () => {
+    setSelectedId(null);
+    setProfileName('');
+    setProfileDirty(true);
+  };
+
+  const removeProfile = async (id: string) => {
+    const target = profiles?.profiles.find(p => p.id === id);
+    if (!target || !confirm(`删除配置「${target.name}」？`)) return;
+    const r = await authedFetch(`/asr/profiles/${id}`, { method: 'DELETE' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { noteProfile(`✗ ${d.detail || '删除失败'}`); return; }
+    await loadProfiles();
+    noteProfile('✓ 已删除');
+  };
+
+  const activate = async (target: 'file' | 'realtime') => {
+    if (!selectedId) { noteProfile('先保存这份配置，再指定给某个功能'); return; }
+    const r = await authedFetch(`/asr/profiles/${selectedId}/activate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { noteProfile(`✗ ${d.detail || '切换失败'}`); return; }
+    setProfiles(d);
+    await refreshTopbar();
+    noteProfile(target === 'file' ? '✓ 文件转写已改用这份配置' : '✓ 实时识别已改用这份配置');
   };
 
   const handleSave = async () => {
@@ -328,9 +478,8 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
 
   const secretBadge = (key: string) => {
     if (!config) return null;
-    if (key === 'asr_api_key') return config.api_key_set ? '已配置' : '未配置';
+    if (profileKeyOf(key) === 'asr_api_key') return selected?.api_key_set ? '已配置' : '未配置';
     if (key === 'access_tokens') return (config.access_tokens_count || 0) > 0 ? `已配置 ${config.access_tokens_count} 个` : '未启用';
-    if (key === 'realtime_asr_api_key') return config.realtime_api_key_set ? '已配置' : '未配置';
     return null;
   };
 
@@ -423,16 +572,62 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         {(f.key === 'asr_model' || f.key === 'realtime_asr_model') && modelStatus?.key === f.key && (
           <span className="text-[11px] text-fg-dim font-normal">{modelStatus.text}</span>
         )}
+        {(f.key === 'asr_base_url' || f.key === 'realtime_asr_base_url') && profiles && selectedId && (
+          <UsageToggle profiles={profiles} selectedId={selectedId}
+            target={f.key === 'asr_base_url' ? 'file' : 'realtime'} onActivate={activate} />
+        )}
       </div>
     );
   };
 
-  if (!config) {
+  const nameDirty = !!selected && profileName.trim() !== selected.name;
+
+  if (!config || !profiles) {
     return <div className="text-muted text-sm text-center py-20">正在读取服务配置…</div>;
   }
 
   return (
     <div className="flex flex-col gap-6 pb-24">
+      <div className="card p-6">
+        <div className="flex items-center gap-2">
+          <Server className="w-5 h-5 text-accent" />
+          <h3 className="section-title flex-1">接入配置</h3>
+        </div>
+        <p className="hint mt-4 mb-4">一份配置对应一个语音识别服务。文件转写和实时识别可以各选一份，互不影响。</p>
+        <div className="flex flex-wrap gap-2">
+          {profiles.profiles.map(p => (
+            <div key={p.id}
+              className={`flex items-center gap-1.5 pl-3 pr-1.5 py-1.5 rounded-lg border text-[13px] ${p.id === selectedId ? 'border-accent bg-accent-soft/60' : 'border-border bg-white'}`}>
+              <button type="button" onClick={() => setSelectedId(p.id)}
+                className="bg-transparent border-none p-0 hover:bg-transparent font-semibold">
+                {p.name}
+              </button>
+              {profiles.file === p.id && <span className="badge text-[9px]">文件</span>}
+              {profiles.realtime === p.id && <span className="badge text-[9px]">实时</span>}
+              <button type="button" onClick={() => removeProfile(p.id)} aria-label={`删除 ${p.name}`}
+                className="text-muted hover:text-danger bg-transparent border-none p-1 hover:bg-transparent">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+          <button type="button" onClick={addProfile}
+            className={`border-dashed ${selectedId === null ? 'border-accent' : ''}`}>
+            <Plus className="w-4 h-4" /><span>新增配置</span>
+          </button>
+        </div>
+        <div className="mt-4 flex items-end gap-2 flex-wrap">
+          <label className="flex flex-col gap-1.5 text-xs font-semibold text-fg-dim">
+            配置名称
+            <input type="text" value={profileName} maxLength={40} placeholder="例如：内网 Qwen3"
+              onChange={e => { setProfileName(e.target.value); setProfileDirty(true); }} className="w-64" />
+          </label>
+          <button type="button" onClick={saveProfile} className="primary" disabled={!profileDirty && !nameDirty}>
+            <Save className="w-4 h-4" /><span>{selectedId ? '保存这份配置' : '保存为新配置'}</span>
+          </button>
+          {profileStatus && <span className="toast">{profileStatus}</span>}
+        </div>
+      </div>
+
       {GROUPS.map((g) => {
         const Icon = g.icon;
         return (
@@ -472,6 +667,29 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         {saveStatus && <span className="toast ok">{saveStatus}</span>}
       </div>
     </div>
+  );
+};
+
+const UsageToggle: React.FC<{
+  profiles: ProfileState;
+  selectedId: string;
+  target: 'file' | 'realtime';
+  onActivate: (target: 'file' | 'realtime') => void;
+}> = ({ profiles, selectedId, target, onActivate }) => {
+  const active = target === 'file' ? profiles.file : profiles.realtime;
+  const label = target === 'file' ? '文件转写' : '实时识别';
+  if (active === selectedId) {
+    return (
+      <span className="text-[11px] text-ok font-semibold inline-flex items-center gap-1">
+        <Check className="w-3.5 h-3.5" />{label}正在使用这份配置
+      </span>
+    );
+  }
+  const other = profiles.profiles.find(p => p.id === active);
+  return (
+    <button type="button" onClick={() => onActivate(target)} className="self-start text-[12px]">
+      让{label}改用这份{other ? `（现在用的是「${other.name}」）` : ''}
+    </button>
   );
 };
 

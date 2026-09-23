@@ -17,6 +17,7 @@ build/
 temp/
 outputs/
 runtime_config.json
+runtime_config.json.bak
 task.md
 .ace-tool/
 .antigravitycli/
