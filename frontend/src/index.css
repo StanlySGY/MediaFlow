@@ -50,8 +50,7 @@ body {
 
 /* ---------------- Cards & layout ---------------- */
 .card {
-  @apply bg-surface border border-border rounded-2xl;
-  box-shadow: 0 1px 2px rgba(20, 30, 60, 0.04), 0 4px 16px rgba(20, 30, 60, 0.03);
+  @apply bg-surface border border-border rounded-lg;
 }
 
 .panel {
@@ -93,7 +92,7 @@ input[type=password],
 input[type=number],
 select,
 textarea {
-  @apply bg-white border border-border text-fg text-[13px] font-normal px-3.5 py-2.5 rounded-lg outline-none w-full transition-all duration-150;
+  @apply bg-white border border-border text-fg text-[13px] font-normal px-3.5 py-2.5 rounded-lg outline-none w-full transition-colors duration-150;
 }
 
 input::placeholder, textarea::placeholder { @apply text-muted-2; }
@@ -123,7 +122,7 @@ input:focus, select:focus, textarea:focus {
 
 /* ---------------- Buttons ---------------- */
 button, .btn {
-  @apply bg-white hover:bg-surface-3 border border-border hover:border-border-strong text-fg-dim font-semibold text-[13px] px-4 py-2.5 rounded-lg cursor-pointer inline-flex items-center justify-center gap-2 transition-all duration-150 select-none;
+  @apply bg-white hover:bg-surface-3 border border-border hover:border-border-strong text-fg-dim font-semibold text-[13px] px-4 py-2.5 rounded-lg cursor-pointer inline-flex items-center justify-center gap-2 transition-colors duration-150 select-none;
 }
 button.primary {
   @apply bg-accent border-accent text-white hover:bg-accent-2 hover:border-accent-2;
@@ -141,7 +140,7 @@ button:disabled {
 
 /* ---------------- Badges ---------------- */
 .badge {
-  @apply inline-flex items-center gap-1.5 font-mono text-[11px] font-semibold px-2.5 py-1 rounded-full bg-surface-3 border border-border text-fg-dim;
+  @apply inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-md bg-surface-3 border border-border text-fg-dim;
 }
 .badge.ok   { @apply text-ok   border-ok/20   bg-ok-soft; }
 .badge.warn { @apply text-warn border-warn/25 bg-warn-soft; }
@@ -152,7 +151,7 @@ button:disabled {
 
 /* ---------------- Toast ---------------- */
 .toast {
-  @apply font-mono text-xs px-3.5 py-2 border border-border rounded-lg bg-surface-2 text-muted inline-flex items-center gap-2 transition-all duration-200;
+  @apply text-xs px-3.5 py-2 border border-border rounded-lg bg-surface-2 text-muted inline-flex items-center gap-2 transition-colors duration-200;
 }
 .toast.ok  { @apply text-ok  border-ok/20  bg-ok-soft; }
 .toast.err { @apply text-err border-err/20 bg-err-soft; }
@@ -186,7 +185,7 @@ button:disabled {
 
 /* ---------------- History items ---------------- */
 .hist-item {
-  @apply grid grid-cols-[1fr_auto_auto_auto] gap-4 p-4 bg-white border border-border rounded-xl cursor-pointer items-center transition-all duration-200;
+  @apply grid grid-cols-[1fr_auto_auto_auto] gap-4 p-4 bg-white border border-border rounded-lg cursor-pointer items-center transition-colors duration-200;
 }
 .hist-item:hover {
   @apply border-accent/40 bg-accent-soft;
@@ -199,7 +198,7 @@ button:disabled {
   @apply flex items-center justify-center gap-1 h-12 my-4 bg-surface-2 border border-border rounded-lg px-6;
 }
 .soundwave-container .bar {
-  @apply w-1 h-2 bg-gradient-to-t from-accent to-accent-2 rounded-sm transition-all duration-200;
+  @apply w-1 h-2 bg-accent rounded-sm;
 }
 .soundwave-container.active .bar { animation: bounce 0.8s ease-in-out infinite alternate; }
 .soundwave-container.active .bar:nth-child(1) { animation-delay: 0.1s; }
@@ -221,7 +220,7 @@ button:disabled {
   @apply h-2 bg-surface-3 rounded-full overflow-hidden flex-1 min-w-[180px] border border-border;
 }
 .progress > div {
-  @apply h-full bg-gradient-to-r from-accent to-accent-2 rounded-full transition-all duration-300 ease-out;
+  @apply h-full bg-accent rounded-full;
 }
 
 /* ---------------- Step guide ---------------- */

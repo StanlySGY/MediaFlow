@@ -22,6 +22,7 @@ def _make_silent_wav(path: Path, seconds: float = 0.5) -> None:
 async def client(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("TEMP_DIR", str(tmp_path / "tmp"))
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("RUNTIME_CONFIG_PATH", str(tmp_path / "runtime_config.json"))
     monkeypatch.setenv("ASR_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("ASR_API_KEY", "secret")
     monkeypatch.setenv("ASR_MODEL", "qwen3-asr-flash")
@@ -120,6 +121,51 @@ async def test_ping_reports_upstream_error(client):
     data = r.json()
     assert data["ok"] is False
     assert "401" in data["error"] or "bad key" in data["error"]
+
+
+@respx.mock
+async def test_models_lists_openai_ids(client):
+    respx.get("https://example.test/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "qwen3-asr-flash"}, {"id": "  "}, {"id": 3}, "nope"]},
+        ),
+    )
+    r = await client.get("/asr/models")
+    assert r.status_code == 200
+    assert r.json()["models"] == ["qwen3-asr-flash"]
+    # the saved key is used but never echoed back
+    assert "secret" not in r.text
+
+
+@respx.mock
+async def test_models_falls_back_to_qwen_info(client):
+    respx.get("https://example.test/v1/models").mock(return_value=httpx.Response(404))
+    respx.get("https://example.test/v1/info").mock(
+        return_value=httpx.Response(
+            200, json={"model_path": "/data/models/Qwen3-ASR-1.7B/"},
+        ),
+    )
+    r = await client.get("/asr/models", params={"base_url": "https://example.test/v1"})
+    assert r.status_code == 200
+    assert r.json()["models"] == ["Qwen3-ASR-1.7B"]
+
+
+@respx.mock
+async def test_models_reports_upstream_failure(client):
+    respx.get("https://example.test/v1/models").mock(return_value=httpx.Response(401))
+    r = await client.get("/asr/models")
+    assert r.status_code == 502
+    assert "401" in r.json()["detail"]
+
+
+async def test_models_requires_a_base_url(client, monkeypatch):
+    monkeypatch.setenv("ASR_BASE_URL", "")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    r = await client.get("/asr/models")
+    assert r.status_code == 400
+    get_settings.cache_clear()
 
 
 async def test_task_overrides_propagate(

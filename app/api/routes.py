@@ -41,6 +41,7 @@ from app.services.asr import (
     list_realtime_providers,
 )
 from app.services.asr.realtime_base import RealtimeASRError, classify_message, error_payload
+from app.services.asr.models import list_models
 from app.services.asr_monitoring import asr_call_context, asr_monitor
 from app.services.ffmpeg_service import FFmpegError, concat_media
 from app.services.metrics import request_metrics
@@ -1002,6 +1003,27 @@ async def post_config(body: dict) -> dict:
         raise HTTPException(400, f"invalid update: {e}")
 
     return await get_config()
+
+
+@router.get("/models")
+async def get_models(base_url: str = "", api_key: str = "") -> dict:
+    """List model ids the upstream advertises at {base_url}/models.
+
+    `base_url` and `api_key` default to the saved file-ASR config, so the
+    settings page can ask before anything is saved. The key is never echoed back.
+    """
+    s = get_settings()
+    url = base_url.strip() or s.asr_base_url
+    key = api_key or s.asr_api_key
+    if not url:
+        raise HTTPException(400, "未填写接口地址")
+    try:
+        models = await list_models(url, key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # noqa: BLE001 — upstream transport/protocol failure
+        raise HTTPException(502, f"读取模型列表失败：{e}")
+    return {"base_url": url, "models": models}
 
 
 @router.post("/config/reset")

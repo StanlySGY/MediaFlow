@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Save, RotateCcw, Activity, Eye, EyeOff, Server, Scissors, Radio, ShieldCheck } from 'lucide-react';
+import { Save, RotateCcw, Activity, Eye, EyeOff, Server, Scissors, Radio, ShieldCheck, RefreshCw } from 'lucide-react';
 import { SystemConfig } from '../types';
 import { errorMessage } from '../lib/errors';
 
@@ -10,21 +10,21 @@ interface ConfigViewProps {
 
 // [apiKey, 中文标签, 类型, 提示]
 type FieldType = 'select' | 'select-split' | 'select-realtime' | 'text' | 'secret' | 'bool' | 'int' | 'float';
-interface FieldDef { key: string; label: string; type: FieldType; hint?: string; }
+interface FieldDef { key: string; label: string; type: FieldType; hint?: string; wide?: boolean; }
 interface FieldGroup { title: string; icon: React.ComponentType<{ className?: string }>; desc: string; fields: FieldDef[]; }
 
 const GROUPS: FieldGroup[] = [
   {
     title: '语音识别接口', icon: Server, desc: '文件转写要用到的 ASR 服务，必须先填好这里才能开始转写',
     fields: [
-      { key: 'asr_provider', label: '接口类型', type: 'select', hint: 'openai_compat = Whisper 风格；openai_chat_audio = vLLM Qwen3-ASR 等多模态对话接口' },
-      { key: 'asr_base_url', label: '接口地址', type: 'text', hint: '形如 https://dashscope.aliyuncs.com/compatible-mode/v1' },
-      { key: 'asr_api_key', label: 'API 密钥', type: 'secret', hint: '调用上游所需的 Key；内网无鉴权可留空' },
-      { key: 'asr_model', label: '模型名称', type: 'text', hint: '例如 qwen3-asr-flash' },
+      { key: 'asr_provider', label: '接口类型', type: 'select', hint: 'openai_compat = Whisper 风格；openai_chat_audio = vLLM Qwen3-ASR 等多模态对话接口', wide: true },
+      { key: 'asr_base_url', label: '接口地址', type: 'text', hint: '形如 https://dashscope.aliyuncs.com/compatible-mode/v1', wide: true },
+      { key: 'asr_api_key', label: 'API 密钥', type: 'secret', hint: '调用上游所需的 Key；内网无鉴权可留空', wide: true },
+      { key: 'asr_model', label: '模型名称', type: 'text', hint: '点「获取模型」从接口地址自动读取，也可直接手填' },
       { key: 'asr_language', label: '识别语言', type: 'text', hint: 'zh 中文 / en 英文 / 留空自动判断' },
-      { key: 'asr_hotwords', label: '热词', type: 'text', hint: '逗号分隔的专有名词，提高识别准确率（可选）' },
-      { key: 'asr_prompt_hints', label: '上下文提示', type: 'text', hint: '自由文本，告诉模型这段音频的背景（可选）' },
-      { key: 'asr_timestamps', label: '请求逐字时间戳', type: 'bool', hint: '开启后字幕更精准；上游不支持时请关闭' },
+      { key: 'asr_hotwords', label: '热词', type: 'text', hint: '逗号分隔的专有名词，提高识别准确率（可选）', wide: true },
+      { key: 'asr_prompt_hints', label: '上下文提示', type: 'text', hint: '自由文本，告诉模型这段音频的背景（可选）', wide: true },
+      { key: 'asr_timestamps', label: '请求逐字时间戳', type: 'bool', hint: '开启后字幕更精准；上游不支持时请关闭', wide: true },
       { key: 'asr_timeout', label: '单次超时（秒）', type: 'float' },
       { key: 'asr_concurrency', label: '并发分片数', type: 'int', hint: '同时识别的分片数量，越大越快但更耗资源' },
       { key: 'asr_max_retries', label: '失败重试次数', type: 'int' },
@@ -86,6 +86,9 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const [isTesting, setIsTesting] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [modelStatus, setModelStatus] = useState<string | null>(null);
 
   const loadConfig = async () => {
     try {
@@ -118,6 +121,41 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const handleChange = (key: string, value: string | number | boolean) => {
     setFormState(prev => ({ ...prev, [key]: value }));
     setDirtyFields(prev => ({ ...prev, [key]: true }));
+  };
+
+  // Ask the upstream at the typed address which models it serves, so the name
+  // doesn't have to be typed from memory. Works before the form is saved.
+  const fetchModels = async () => {
+    const base = String(formState['asr_base_url'] || '').trim();
+    if (!base) {
+      setModelStatus('请先填写接口地址');
+      setTimeout(() => setModelStatus(null), 4000);
+      return;
+    }
+    setFetchingModels(true);
+    setModelStatus(null);
+    try {
+      const params = new URLSearchParams({ base_url: base });
+      const key = String(formState['asr_api_key'] || '');
+      if (key) params.set('api_key', key);
+      const r = await authedFetch(`/asr/models?${params}`);
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      const ids: string[] = Array.isArray(d.models) ? d.models : [];
+      if (ids.length === 0) {
+        setModelOptions([]);
+        setModelStatus('接口没有返回可用模型，请手填');
+        return;
+      }
+      setModelOptions(ids);
+      if (ids.length === 1) handleChange('asr_model', ids[0]);
+      setModelStatus(`读取到 ${ids.length} 个模型`);
+    } catch (e) {
+      setModelStatus(`读取失败：${errorMessage(e)}`);
+    } finally {
+      setFetchingModels(false);
+      setTimeout(() => setModelStatus(null), 5000);
+    }
   };
 
   // 一键填入 Qwen3-ASR 原生 WebSocket 流式服务配置。
@@ -261,8 +299,11 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
     const isDirty = !!dirtyFields[f.key];
     const val = formState[f.key];
     const sval = (val ?? '') as string | number;
+    const knownModels = f.key === 'asr_model' && modelOptions.length > 0
+      ? Array.from(new Set([String(sval), ...modelOptions].filter(Boolean)))
+      : [];
     return (
-      <div key={f.key} className={`flex flex-col gap-1.5 p-3.5 rounded-xl border transition-colors ${isDirty ? 'border-accent/40 bg-accent-soft/50' : 'border-border bg-white'}`}>
+      <div key={f.key} className={`flex flex-col gap-1.5 p-3.5 rounded-lg border transition-colors ${f.wide ? 'md:col-span-2 lg:col-span-3' : ''} ${isDirty ? 'border-accent/40 bg-accent-soft/50' : 'border-border bg-white'}`}>
         {f.type !== 'bool' && (
           <div className="flex justify-between items-center text-xs font-semibold text-fg-dim">
             <span>{f.label}{isDirty && <span className="text-accent ml-1">·已改</span>}</span>
@@ -307,17 +348,30 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
           <input type="number" step={f.type === 'float' ? '0.1' : '1'} value={sval}
             onChange={e => handleChange(f.key, e.target.value)} />
         )}
-        {f.type === 'text' && (
-          <input type="text" value={sval} onChange={e => handleChange(f.key, e.target.value)} />
+        {f.type === 'text' && knownModels.length > 0 && (
+          <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
+            {knownModels.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+        )}
+        {f.type === 'text' && knownModels.length === 0 && (
+          <div className="flex items-center gap-2">
+            <input type="text" value={sval} onChange={e => handleChange(f.key, e.target.value)} />
+            {f.key === 'asr_model' && (
+              <button type="button" onClick={fetchModels} disabled={fetchingModels} className="shrink-0">
+                <RefreshCw className={`w-4 h-4 ${fetchingModels ? 'animate-spin' : ''}`} /><span>获取模型</span>
+              </button>
+            )}
+          </div>
         )}
 
         {f.hint && <span className="text-[11px] text-muted font-normal leading-snug">{f.hint}</span>}
+        {f.key === 'asr_model' && modelStatus && <span className="text-[11px] text-fg-dim font-normal">{modelStatus}</span>}
       </div>
     );
   };
 
   if (!config) {
-    return <div className="text-muted font-mono text-xs text-center py-20 animate-pulse">正在读取服务配置…</div>;
+    return <div className="text-muted text-sm text-center py-20">正在读取服务配置…</div>;
   }
 
   return (
@@ -335,7 +389,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
               {g.fields.map(renderField)}
             </div>
             {g.title === '实时识别' && (
-              <div className="mt-4 p-3.5 rounded-xl border border-border bg-accent-soft/30 flex flex-col gap-2">
+              <div className="mt-4 p-3.5 rounded-lg border border-border bg-surface-2 flex flex-col gap-2">
                 <div className="text-xs font-semibold text-fg-dim">Qwen3-ASR 真流式（边说边出字）</div>
                 <p className="text-[11px] text-muted font-normal leading-snug">
                   可用 realtime_ws 直连 Qwen3-ASR 的 /v1/asr/stream，或用 realtime_http 对接标准
@@ -355,7 +409,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       })}
 
       {/* Sticky action bar */}
-      <div className="fixed bottom-0 left-0 md:left-[244px] right-0 bg-surface/95 backdrop-blur border-t border-border px-5 md:px-7 py-3.5 flex items-center gap-3 flex-wrap z-30">
+      <div className="fixed bottom-0 left-0 md:left-[244px] right-0 bg-surface border-t border-border px-5 md:px-7 py-3.5 flex items-center gap-3 flex-wrap z-30">
         <button onClick={handleSave} className="primary">
           <Save className="w-4 h-4" /><span>保存配置</span>
         </button>
