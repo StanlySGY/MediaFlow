@@ -67,8 +67,6 @@ cd "$(dirname "$0")"
 
 command -v docker >/dev/null 2>&1 \
     || die "docker not found in PATH; install Docker first."
-docker buildx version >/dev/null 2>&1 \
-    || die "docker buildx is required. Install the buildx plugin (Docker Engine 23+)."
 
 [[ -f Dockerfile ]] || die "Dockerfile missing — run from project root."
 [[ -f frontend/package.json ]] || die "frontend/package.json missing — frontend not initialized."
@@ -94,21 +92,29 @@ echo "  platform : ${PLATFORM}"
 echo "  flags    : ${NO_CACHE:-} ${PULL:-}"
 echo
 
-# `docker build` on current Engine is buildx. DOCKER_BUILDKIT=0 forces the
-# legacy builder, which current daemons reject. A default BuildKit build with
-# --platform also attaches a provenance attestation, and that index cannot be
-# docker-saved and loaded on the air-gapped site. --provenance=false keeps one
-# image; --load imports it even when the active builder is docker-container.
+# Do not inherit DOCKER_BUILDKIT=0: that selects the legacy builder, which
+# current Engine rejects. Hosts without the buildx plugin still have plain
+# `docker build`, which does not accept --provenance/--sbom. Those flags exist
+# only on the BuildKit CLI; leaving them on attaches an attestation index that
+# air-gapped `docker load` cannot import.
+unset DOCKER_BUILDKIT
 # shellcheck disable=SC2086
-docker buildx build $NO_CACHE $PULL \
-    --platform "$PLATFORM" \
-    --provenance=false \
-    --sbom=false \
-    --load \
-    -t "$IMG_VER" \
-    -t "$IMG_LAT" \
-    -f Dockerfile \
-    .
+if docker build --help 2>&1 | grep -q -- '--provenance'; then
+    docker build $NO_CACHE $PULL \
+        --platform "$PLATFORM" \
+        --provenance=false --sbom=false \
+        -t "$IMG_VER" \
+        -t "$IMG_LAT" \
+        -f Dockerfile \
+        .
+else
+    docker build $NO_CACHE $PULL \
+        --platform "$PLATFORM" \
+        -t "$IMG_VER" \
+        -t "$IMG_LAT" \
+        -f Dockerfile \
+        .
+fi
 
 ok "Built ${IMG_VER}"
 
