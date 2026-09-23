@@ -71,7 +71,9 @@ class Settings(BaseSettings):
 
     temp_dir: Path = Path("./temp")
     output_dir: Path = Path("./outputs")
-    runtime_config_path: Path = Path("./runtime_config.json")
+    # 放在单独挂载的目录里：容器只持久化挂载出去的路径，放在镜像层里的话
+    # `docker rm -f` 重建容器会把页面上保存的接入配置和密钥一起清掉。
+    runtime_config_path: Path = Path("./config/runtime_config.json")
 
     host: str = "0.0.0.0"
     port: int = 8080

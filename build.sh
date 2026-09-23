@@ -168,7 +168,7 @@ start_built_image() {
         warn ".env not found — copying .env.example. Remember to set ASR_API_KEY."
         cp .env.example .env
     fi
-    mkdir -p temp outputs
+    mkdir -p temp outputs config
     case "$(up_mode)" in
         compose-v2)
             docker compose -f docker-compose.prod.yml up -d ;;
@@ -184,6 +184,7 @@ start_built_image() {
                 --env-file .env \
                 -v "$PWD/temp:/app/temp" \
                 -v "$PWD/outputs:/app/outputs" \
+                -v "$PWD/config:/app/config" \
                 "$IMG_VER" ;;
     esac
 }
@@ -206,7 +207,7 @@ if [[ "$SAVE" -eq 1 ]]; then
     case "$(up_mode)" in
         compose-v2) echo "    docker compose -f docker-compose.prod.yml up -d" ;;
         compose-v1) echo "    docker-compose -f docker-compose.prod.yml up -d" ;;
-        *) echo "    docker rm -f mediaflow; docker run -d --name mediaflow --restart unless-stopped --network host --env-file .env -v \"\$PWD/temp:/app/temp\" -v \"\$PWD/outputs:/app/outputs\" ${IMG_VER}" ;;
+        *) echo "    docker rm -f mediaflow; docker run -d --name mediaflow --restart unless-stopped --network host --env-file .env -v \"\$PWD/temp:/app/temp\" -v \"\$PWD/outputs:/app/outputs\" -v \"\$PWD/config:/app/config\" ${IMG_VER}" ;;
     esac
     echo
 fi
@@ -238,7 +239,7 @@ else
     case "$(up_mode)" in
         compose-v2) echo "  ${step}. docker compose -f docker-compose.prod.yml up -d" ;;
         compose-v1) echo "  ${step}. docker-compose -f docker-compose.prod.yml up -d" ;;
-        *) echo "  ${step}. docker rm -f mediaflow; docker run -d --name mediaflow --restart unless-stopped --network host --env-file .env -v \"\$PWD/temp:/app/temp\" -v \"\$PWD/outputs:/app/outputs\" ${IMG_VER}" ;;
+        *) echo "  ${step}. docker rm -f mediaflow; docker run -d --name mediaflow --restart unless-stopped --network host --env-file .env -v \"\$PWD/temp:/app/temp\" -v \"\$PWD/outputs:/app/outputs\" -v \"\$PWD/config:/app/config\" ${IMG_VER}" ;;
     esac
     step=$((step + 1))
     echo "  ${step}. open http://localhost:8080/"

@@ -21,7 +21,7 @@
 
 - 目标主机 **arm64（aarch64）** 架构，已安装 Docker（含 `docker compose` 插件）
 - 一个空闲端口（默认 **8080**），宿主防火墙 / 安全组允许该端口
-- 部署目录有写权限（容器会在此创建 `temp/`、`outputs/`、`runtime_config.json`）
+- 部署目录有写权限（容器会在此创建 `temp/`、`outputs/`、`config/`）
 
 > 确认架构：`uname -m` 应为 `aarch64`。若为 `x86_64`，本 arm64 镜像无法运行，需向构建方索取 amd64 包。
 
@@ -58,7 +58,7 @@ curl -sf http://localhost:8080/health && echo "  ← 服务已启动"
 
 ### 方式 B — 网页设置面板（方便，用于临时调参）
 浏览器进入页面后，在**设置面板**里改 ASR 地址、模型、切片策略、并发等，保存后**即时生效、无需重启**。
-> ⚠️ **坑**：网页改的值存到容器内 `/app/runtime_config.json`，**不在数据卷里**——`docker restart` 不丢，但**升级镜像或 down/up 重建容器会丢失**。所以连接信息建议仍写进 `.env`。
+网页改的值存在宿主机的 `config/runtime_config.json` 里（compose 已把 `./config` 挂进容器），**升级镜像或重建容器都不会丢**。该文件含密钥，权限是 `0600`，不要提交到 Git 或拷给别人。
 
 ### 必须配置的项
 
@@ -138,7 +138,7 @@ docker compose -f docker-compose.prod.yml up -d         # 启动
 **数据位置**（均在 compose 文件所在目录下）：
 - `outputs/` — 转写结果 JSON，**永久累积**，需定期清理老文件以免占满磁盘
 - `temp/` — 处理中转文件，服务停止时可清空
-- `.env` — 你的配置；`runtime_config.json` — 网页端改的配置（重建会丢，见第四节）
+- `.env` — 你的配置；`config/runtime_config.json` — 网页端改的配置（含密钥，重建不丢）
 
 **升级镜像**（拿到新版本 tar 包时）：
 ```bash
@@ -146,7 +146,7 @@ docker load -i mediaflow-<新版本>-arm64.tar.gz
 # 若版本号变了，改 docker-compose.prod.yml 里 image: 的 tag
 docker compose -f docker-compose.prod.yml up -d        # 自动用新镜像重建容器
 ```
-> ⚠️ 升级重建容器会**丢失网页端配置**（`runtime_config.json`）。ASR 连接信息务必写在 `.env` 里——它重建不丢。`outputs/`、`temp/` 是数据卷，升级不受影响。
+> `outputs/`、`temp/`、`config/` 都是数据卷，升级镜像重建容器不受影响，网页端配置不会丢。
 
 ---
 

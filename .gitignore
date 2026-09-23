@@ -16,8 +16,8 @@ build/
 .vscode/
 temp/
 outputs/
-runtime_config.json
-runtime_config.json.bak
+config/*
+!config/.gitkeep
 task.md
 .ace-tool/
 .antigravitycli/
@@ -34,6 +34,7 @@ app/web/icons.svg
 
 !temp/.gitkeep
 !outputs/.gitkeep
+!config/.gitkeep
 .codegraph/
 
 # Offline delivery artifacts: multi-GB image tarballs (`./build.sh --save`,

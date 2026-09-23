@@ -31,7 +31,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080
 
 需要本机已安装 `ffmpeg` 与 `ffprobe`。访问 `http://localhost:8080/` 打开 Web UI，`/docs` 查看 API。
 
-> **运行时配置编辑**：UI 顶部「服务配置」面板可直接修改 provider、base URL、API key、模型、热词、切分参数、鉴权令牌等，点保存即时生效，不需重启服务。改动持久化到 `runtime_config.json`，下次启动自动恢复。点击「重置为 .env 默认」可一键清除运行时改动。`runtime_config.json` 可能包含 API key / 访问令牌，服务会在写入后将其权限收紧为仅文件所有者可读写（`0600`）；部署时仍不要把该文件提交到 Git 或暴露给其他用户。
+> **运行时配置编辑**：UI 顶部「服务配置」面板可直接修改 provider、base URL、API key、模型、热词、切分参数、鉴权令牌等，点保存即时生效，不需重启服务。改动持久化到 `config/runtime_config.json`（容器里挂载为 `/app/config`），重建容器后仍在，下次启动自动恢复。点击「重置为 .env 默认」可一键清除运行时改动。该文件可能包含 API key / 访问令牌，服务会在写入后将其权限收紧为仅文件所有者可读写（`0600`）；部署时仍不要把该文件提交到 Git 或暴露给其他用户。
 
 ### Docker
 
@@ -79,7 +79,7 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.7.3`，多次交付时现场版本可追溯。`./outputs`、`./temp` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果。
+`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.7.3`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
 
 > `docker-compose.prod.yml` 默认用 `network_mode: host`：MAAS/OpenStack、firewalld 节点会丢弃发往 docker bridge 的流量、令发布端口静默失效，host 网络直接绑宿主端口在各类环境都通。外网访问仍需宿主防火墙/安全组放行 8080（`ufw allow 8080/tcp`、`firewall-cmd`、OpenStack 安全组）。普通主机若想要端口隔离，可把 `network_mode: host` 换回 `ports: ["8080:8080"]`。
 
@@ -284,7 +284,7 @@ curl -X POST http://localhost:8080/media/concat \
 | GET  | `/` | Web UI |
 | GET  | `/auth/info` | 查询是否启用鉴权（`{auth_required: bool}`） |
 | GET  | `/asr/config` | 当前生效配置（不含 API key / access tokens 明文，只暴露 `*_set` / `*_count`） |
-| POST | `/asr/config` | 更新运行时配置（白名单字段）；自动持久化到 `runtime_config.json`，**不需重启** |
+| POST | `/asr/config` | 更新运行时配置（白名单字段）；自动持久化到 `config/runtime_config.json`，**不需重启** |
 | POST | `/asr/config/reset` | 清除运行时改动，所有白名单字段回到 `.env` 默认 |
 | POST | `/asr/ping` | 用 1s 静音 WAV 试探上游 ASR |
 | POST | `/asr/task` | `multipart/form-data` 上传音频，返回 `task_id`。可选覆盖字段：`model`、`language`、`split_strategy`、`chunk_seconds`、`overlap_seconds`、`hotwords`、`prompt_hints`、`timestamps`，仅作用于本次任务 |

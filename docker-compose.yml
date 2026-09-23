@@ -19,6 +19,8 @@ services:
       - ./temp:/app/temp
       # 输出文件目录挂载（转写结果等）
       - ./outputs:/app/outputs
+      # 运行时配置（页面上保存的接入配置和密钥），重建容器后仍在
+      - ./config:/app/config
     # 健康检查：每 30 秒检测一次服务是否正常
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=2).status==200 else 1)"]

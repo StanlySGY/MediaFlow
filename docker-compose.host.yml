@@ -28,6 +28,8 @@ services:
     volumes:
       - ./temp:/app/temp
       - ./outputs:/app/outputs
+      # 运行时配置（页面上保存的接入配置和密钥），重建容器后仍在
+      - ./config:/app/config
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=2).status==200 else 1)"]
       interval: 30s
