@@ -2,7 +2,7 @@
 # MediaFlow — one-shot Docker image builder.
 # Usage:
 #   ./build.sh                build mediaflow:1.7.3 + :latest (defaults to host arch)
-#   ./build.sh --platform P   override target platform (e.g. linux/amd64, linux/arm64)
+#   ./build.sh --platform P   cross-build (e.g. linux/arm64). Native builds omit --platform.
 #   ./build.sh --save [FILE]  docker save image to a gzipped tar for offline transfer
 #   ./build.sh --no-cache     skip layer cache
 #   ./build.sh --pull         pull fresh base images first
@@ -19,12 +19,14 @@ set -euo pipefail
 IMAGE_NAME="mediaflow"
 DEFAULT_TAG="1.7.3"
 TAG="$DEFAULT_TAG"
-# Default to the host arch. A different --platform still builds, but only if
-# qemu-user-static (binfmt) is registered; otherwise BuildKit errors at RUN.
+# Used for the offline tarball name. Not passed to `docker build` unless the
+# user asked: the legacy builder rejects --platform unless the daemon has
+# experimental features on, and a native build does not need the flag.
 case "$(uname -m)" in
     aarch64|arm64) PLATFORM="linux/arm64" ;;
     *)             PLATFORM="linux/amd64" ;;
 esac
+PLATFORM_SET=0
 NO_CACHE=""
 PULL=""
 RUN_TESTS=0
@@ -53,7 +55,7 @@ while [[ $# -gt 0 ]]; do
         --test)     RUN_TESTS=1;          shift ;;
         --up)       RUN_UP=1;             shift ;;
         --tag)      TAG="${2:?--tag needs a value}"; shift 2 ;;
-        --platform) PLATFORM="${2:?--platform needs a value}"; shift 2 ;;
+        --platform) PLATFORM="${2:?--platform needs a value}"; PLATFORM_SET=1; shift 2 ;;
         --save)     SAVE=1
                     if [[ $# -ge 2 && "$2" != -* ]]; then SAVE_FILE="$2"; shift 2; else shift; fi ;;
         --push)     PUSH_REG="${2:?--push needs a registry}"; shift 2 ;;
@@ -88,32 +90,44 @@ IMG_LAT="${IMAGE_NAME}:latest"
 
 info "Building ${C_DIM}${IMG_VER}${C_RST} (also tagging ${C_DIM}${IMG_LAT}${C_RST})…"
 echo "  context  : $(pwd)"
-echo "  platform : ${PLATFORM}"
+if [[ "$PLATFORM_SET" -eq 1 ]]; then
+    echo "  platform : ${PLATFORM}"
+else
+    echo "  platform : native (${PLATFORM}, --platform omitted)"
+fi
 echo "  flags    : ${NO_CACHE:-} ${PULL:-}"
 echo
 
-# Do not inherit DOCKER_BUILDKIT=0: that selects the legacy builder, which
-# current Engine rejects. Hosts without the buildx plugin still have plain
+# Drop an inherited DOCKER_BUILDKIT=0 only. That pins the legacy builder, which
+# current Engine rejects. Leave DOCKER_BUILDKIT=1 alone so an old daemon can
+# still opt into BuildKit. Hosts without the buildx plugin still have plain
 # `docker build`, which does not accept --provenance/--sbom. Those flags exist
 # only on the BuildKit CLI; leaving them on attaches an attestation index that
 # air-gapped `docker load` cannot import.
-unset DOCKER_BUILDKIT
+if [[ "${DOCKER_BUILDKIT:-}" == "0" ]]; then
+    unset DOCKER_BUILDKIT
+fi
+
 # shellcheck disable=SC2086
+build_image() {
+    docker build $NO_CACHE $PULL "$@" \
+        -t "$IMG_VER" \
+        -t "$IMG_LAT" \
+        -f Dockerfile \
+        .
+}
 if docker build --help 2>&1 | grep -q -- '--provenance'; then
-    docker build $NO_CACHE $PULL \
-        --platform "$PLATFORM" \
-        --provenance=false --sbom=false \
-        -t "$IMG_VER" \
-        -t "$IMG_LAT" \
-        -f Dockerfile \
-        .
+    if [[ "$PLATFORM_SET" -eq 1 ]]; then
+        build_image --platform "$PLATFORM" --provenance=false --sbom=false
+    else
+        build_image --provenance=false --sbom=false
+    fi
 else
-    docker build $NO_CACHE $PULL \
-        --platform "$PLATFORM" \
-        -t "$IMG_VER" \
-        -t "$IMG_LAT" \
-        -f Dockerfile \
-        .
+    if [[ "$PLATFORM_SET" -eq 1 ]]; then
+        build_image --platform "$PLATFORM"
+    else
+        build_image
+    fi
 fi
 
 ok "Built ${IMG_VER}"
