@@ -42,6 +42,15 @@ async def list_models(base_url: str, api_key: str = "") -> list[str]:
     root = base_url.strip().rstrip("/")
     if not root:
         raise ValueError("base_url is empty")
+    # Realtime config stores the full websocket path (…/v1/asr/stream); the model
+    # list lives on the OpenAI-compatible root, one level above that path, and
+    # is only reachable over HTTP.
+    parsed = httpx.URL(root)
+    if parsed.scheme in ("ws", "wss"):
+        parsed = parsed.copy_with(scheme="https" if parsed.scheme == "wss" else "http")
+        root = str(parsed).rstrip("/")
+    if root.endswith("/asr/stream"):
+        root = root[: -len("/asr/stream")]
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
         resp = await client.get(f"{root}/models")

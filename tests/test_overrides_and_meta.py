@@ -152,6 +152,24 @@ async def test_models_falls_back_to_qwen_info(client):
 
 
 @respx.mock
+async def test_models_strips_realtime_stream_path(client):
+    """The realtime config stores the full websocket path, but the model list
+    lives on the OpenAI-compatible root above it."""
+    respx.get("https://example.test/v1/models").mock(return_value=httpx.Response(404))
+    respx.get("https://example.test/v1/info").mock(
+        return_value=httpx.Response(
+            200, json={"model_path": "/data/models/Qwen3-ASR-1.7B"},
+        ),
+    )
+    r = await client.get(
+        "/asr/models",
+        params={"base_url": "wss://example.test/v1/asr/stream"},
+    )
+    assert r.status_code == 200
+    assert r.json()["models"] == ["Qwen3-ASR-1.7B"]
+
+
+@respx.mock
 async def test_models_reports_upstream_failure(client):
     respx.get("https://example.test/v1/models").mock(return_value=httpx.Response(401))
     r = await client.get("/asr/models")

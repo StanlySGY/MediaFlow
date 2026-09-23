@@ -26,7 +26,8 @@ const REALTIME_LABELS: Record<string, string> = {
 
 // Byte counts are stored as raw numbers but shown in GB or MB, whichever
 // keeps the value readable.
-const byteUnit = (n: number) => (n >= 1024 ** 3 ? [1024 ** 3, 'GB'] : [1024 ** 2, 'MB']) as const;
+const byteUnit = (n: number): [number, string] =>
+  n >= 1024 ** 3 ? [1024 ** 3, 'GB'] : [1024 ** 2, 'MB'];
 const formatBytes = (n: number) => {
   const [div] = byteUnit(n);
   return String(Math.round((n / div) * 100) / 100);
@@ -75,7 +76,7 @@ const GROUPS: FieldGroup[] = [
       { key: 'realtime_asr_provider', label: '实时接口类型', type: 'select-realtime', hint: '边说边出字选前两种；只想录完再识别选第三种' },
       { key: 'realtime_asr_base_url', label: '实时接口地址', type: 'text', hint: 'WebSocket 示例：ws://<服务器IP>:8022/v1/asr/stream；HTTP+SSE 示例：http://<服务器IP>:8023' },
       { key: 'realtime_asr_api_key', label: '实时接口密钥', type: 'secret' },
-      { key: 'realtime_asr_model', label: '实时模型名称', type: 'text' },
+      { key: 'realtime_asr_model', label: '实时模型名称', type: 'text', hint: '点「获取模型」从实时接口地址自动读取，也可直接手填' },
     ],
     advanced: [
       { key: 'realtime_max_chunk_bytes', label: '单包上限（MB）', type: 'bytes' },
@@ -116,8 +117,9 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
-  const [fetchingModels, setFetchingModels] = useState(false);
-  const [modelStatus, setModelStatus] = useState<string | null>(null);
+  const [realtimeModelOptions, setRealtimeModelOptions] = useState<string[]>([]);
+  const [fetchingModelsFor, setFetchingModelsFor] = useState<string | null>(null);
+  const [modelStatus, setModelStatus] = useState<{ key: string; text: string } | null>(null);
 
   const loadConfig = async () => {
     try {
@@ -154,36 +156,44 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
 
   // Ask the upstream at the typed address which models it serves, so the name
   // doesn't have to be typed from memory. Works before the form is saved.
-  const fetchModels = async () => {
-    const base = String(formState['asr_base_url'] || '').trim();
+  // WebSocket addresses are probed over HTTP: the model list lives on the same
+  // host, and the realtime path differs from the file path only in protocol.
+  const fetchModels = async (fieldKey: 'asr_model' | 'realtime_asr_model') => {
+    const baseKey = fieldKey === 'asr_model' ? 'asr_base_url' : 'realtime_asr_base_url';
+    const keyKey = fieldKey === 'asr_model' ? 'asr_api_key' : 'realtime_asr_api_key';
+    const raw = String(formState[baseKey] || '').trim();
+    const base = raw.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+    const note = (text: string) => {
+      setModelStatus({ key: fieldKey, text });
+      setTimeout(() => setModelStatus(prev => (prev?.key === fieldKey ? null : prev)), 5000);
+    };
     if (!base) {
-      setModelStatus('请先填写接口地址');
-      setTimeout(() => setModelStatus(null), 4000);
+      note('请先填写接口地址');
       return;
     }
-    setFetchingModels(true);
+    setFetchingModelsFor(fieldKey);
     setModelStatus(null);
     try {
       const params = new URLSearchParams({ base_url: base });
-      const key = String(formState['asr_api_key'] || '');
+      const key = String(formState[keyKey] || '');
       if (key) params.set('api_key', key);
       const r = await authedFetch(`/asr/models?${params}`);
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
       const ids: string[] = Array.isArray(d.models) ? d.models : [];
+      const setOptions = fieldKey === 'asr_model' ? setModelOptions : setRealtimeModelOptions;
       if (ids.length === 0) {
-        setModelOptions([]);
-        setModelStatus('接口没有返回可用模型，请手填');
+        setOptions([]);
+        note('接口没有返回可用模型，请手填');
         return;
       }
-      setModelOptions(ids);
-      if (ids.length === 1) handleChange('asr_model', ids[0]);
-      setModelStatus(`读取到 ${ids.length} 个模型`);
+      setOptions(ids);
+      if (ids.length === 1) handleChange(fieldKey, ids[0]);
+      note(`读取到 ${ids.length} 个模型`);
     } catch (e) {
-      setModelStatus(`读取失败：${errorMessage(e)}`);
+      note(`读取失败：${errorMessage(e)}`);
     } finally {
-      setFetchingModels(false);
-      setTimeout(() => setModelStatus(null), 5000);
+      setFetchingModelsFor(null);
     }
   };
 
@@ -328,8 +338,11 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
     const isDirty = !!dirtyFields[f.key];
     const val = formState[f.key];
     const sval = (val ?? '') as string | number;
-    const knownModels = f.key === 'asr_model' && modelOptions.length > 0
-      ? Array.from(new Set([String(sval), ...modelOptions].filter(Boolean)))
+    const knownModels = f.key === 'asr_model' ? modelOptions
+      : f.key === 'realtime_asr_model' ? realtimeModelOptions
+      : [];
+    const modelChoices = knownModels.length > 0
+      ? Array.from(new Set([String(sval), ...knownModels].filter(Boolean)))
       : [];
     return (
       <div key={f.key} className={`flex flex-col gap-1.5 p-3.5 rounded-lg border transition-colors ${f.wide ? 'md:col-span-2 lg:col-span-3' : ''} ${isDirty ? 'border-accent/40 bg-accent-soft/50' : 'border-border bg-white'}`}>
@@ -389,24 +402,27 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
             <span className="text-[12px] text-muted shrink-0">{byteUnit(Number(sval) || 0)[1]}</span>
           </div>
         )}
-        {f.type === 'text' && knownModels.length > 0 && (
+        {f.type === 'text' && modelChoices.length > 0 && (
           <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
-            {knownModels.map(m => <option key={m} value={m}>{m}</option>)}
+            {modelChoices.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         )}
-        {f.type === 'text' && knownModels.length === 0 && (
+        {f.type === 'text' && modelChoices.length === 0 && (
           <div className="flex items-center gap-2">
             <input type="text" value={sval} onChange={e => handleChange(f.key, e.target.value)} />
-            {f.key === 'asr_model' && (
-              <button type="button" onClick={fetchModels} disabled={fetchingModels} className="shrink-0">
-                <RefreshCw className={`w-4 h-4 ${fetchingModels ? 'animate-spin' : ''}`} /><span>获取模型</span>
+            {(f.key === 'asr_model' || f.key === 'realtime_asr_model') && (
+              <button type="button" onClick={() => fetchModels(f.key as 'asr_model' | 'realtime_asr_model')}
+                disabled={fetchingModelsFor !== null} className="shrink-0">
+                <RefreshCw className={`w-4 h-4 ${fetchingModelsFor === f.key ? 'animate-spin' : ''}`} /><span>获取模型</span>
               </button>
             )}
           </div>
         )}
 
         {f.hint && <span className="text-[11px] text-muted font-normal leading-snug">{f.hint}</span>}
-        {f.key === 'asr_model' && modelStatus && <span className="text-[11px] text-fg-dim font-normal">{modelStatus}</span>}
+        {(f.key === 'asr_model' || f.key === 'realtime_asr_model') && modelStatus?.key === f.key && (
+          <span className="text-[11px] text-fg-dim font-normal">{modelStatus.text}</span>
+        )}
       </div>
     );
   };
