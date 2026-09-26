@@ -1,0 +1,12 @@
+{
+  "id": "improve-intranet-lifecycle",
+  "title": "Improve trusted-intranet single-machine lifecycle, quotas, and delivery quality",
+  "status": "completed",
+  "complexity": "L+",
+  "risk": "high",
+  "domain": "fullstack",
+  "currentPhase": "completed",
+  "nextAction": "Archive task metadata",
+  "createdAt": "2026-09-26T12:30:00+08:00",
+  "branch": "main"
+}
