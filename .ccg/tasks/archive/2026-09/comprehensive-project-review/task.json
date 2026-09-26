@@ -1,0 +1,12 @@
+{
+  "id": "comprehensive-project-review",
+  "title": "Comprehensive project product, UX, logic, quality, security, and scalability review",
+  "status": "completed",
+  "complexity": "L+",
+  "risk": "high",
+  "domain": "fullstack",
+  "currentPhase": "completed",
+  "nextAction": "Archive the completed task metadata under .ccg/tasks/archive/2026-09",
+  "createdAt": "2026-09-26T08:53:14+08:00",
+  "branch": "main"
+}
