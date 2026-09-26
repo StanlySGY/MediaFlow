@@ -1,0 +1,12 @@
+{
+  "id": "recalibrate-intranet-review",
+  "title": "Recalibrate MediaFlow review for trusted single-user intranet deployment",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "medium",
+  "domain": "fullstack-review",
+  "currentPhase": "completed",
+  "nextAction": "Archive the completed recalibration task metadata under .ccg/tasks/archive/2026-09",
+  "createdAt": "2026-09-26T12:00:00+08:00",
+  "branch": "main"
+}
