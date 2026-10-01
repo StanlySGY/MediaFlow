@@ -6,7 +6,7 @@
   "risk": "medium",
   "domain": "fullstack",
   "currentPhase": "completed",
-  "nextAction": "归档审查报告；提交仅包含任务归档的提交",
+  "nextAction": "归档同月任务记录并仅提交任务文件",
   "createdAt": "2026-09-27T00:00:00Z",
   "branch": "main"
 }
