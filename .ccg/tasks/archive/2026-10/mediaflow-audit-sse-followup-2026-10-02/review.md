@@ -2,7 +2,7 @@
 
 ## 结论
 
-本轮完成了 MediaFlow 审查续项，重点闭环浏览器 SSE 鉴权凭证、退出登录清理、EventSource 建连时序和最终验证。当前没有在本地代码审查、测试和构建范围内发现已确认的 Critical 问题。
+本轮完成了 MediaFlow 审查续项，重点闭环浏览器 SSE 鉴权凭证、退出登录清理、EventSource 建连时序和最终验证。追加复核后，`?token=` 兼容凭证也已限制为 SSE 路由，普通接口必须使用 Bearer header。当前没有在本地代码审查、测试和构建范围内发现已确认的 Critical 问题。
 
 浏览器不再把长期访问令牌放入 EventSource URL。普通 Bearer 请求成功后签发短期 HttpOnly、SameSite=Strict 的 SSE cookie；cookie 只在 `/events` 或 `/stream` 路由被接受，普通 POST/PUT/DELETE 等状态变更不能仅凭该 cookie 通过鉴权。命令行 `?token=` 兼容路径仍保留，并在文档中明确其日志泄漏风险。
 
@@ -11,6 +11,7 @@
 ## 已完成改进
 
 - `require_token` 增加短期 `mediaflow_sse_auth` cookie，设置 `HttpOnly`、`SameSite=Strict`，仅允许 SSE endpoint 使用；普通鉴权成功响应刷新 cookie。
+- `?token=` 兼容路径同样仅允许 `/events` 和 `/stream`，避免查询凭证意外认证普通状态读取或状态变更接口。
 - 新增 `POST /auth/logout`，只删除浏览器 SSE cookie，不试图撤销客户端管理的 Bearer token。
 - 前端 `sseUrl()` 删除 query token；`clearSession()` 同步清理 localStorage token 和服务端 SSE cookie。
 - App 的令牌清除操作和自动 401 取消路径统一调用 `clearSession()`，避免 UI 已退出但 SSE cookie 仍有效。
@@ -35,22 +36,22 @@
 ### Info
 
 1. `realtime_offline` 在结束时合并音频后调用 ASR，不是原生低延迟识别；低延迟场景应使用 `realtime_http` 或 `realtime_ws`，并满足对应 provider 契约。
-2. SSE query token 仍为 CLI 兼容接口，可能进入代理访问日志；浏览器集成应使用先发起 Bearer HTTP 请求、再使用同源 EventSource 的 cookie 流程。
-3. 外部审查未形成独立报告：Antigravity 返回地区资格 `403 PERMISSION_DENIED`；Claude wrapper 以退出码 1 失败，错误为 `--gemini-model parameter is only effective with --backend gemini`。因此没有声称双模型批准。
+2. SSE query token 仍为 CLI 兼容接口，可能进入代理访问日志；浏览器集成应使用先发起 Bearer HTTP 请求、再使用同源 EventSource 的 cookie 流程。普通非 SSE 路由不再接受该 query token。
+3. 外部审查未形成独立报告：最终复核尝试中 Antigravity 返回地区资格 `403 PERMISSION_DENIED`；Claude wrapper 以退出码 1 失败，错误为 `--gemini-model parameter is only effective with --backend gemini`。因此没有声称双模型批准。
 4. 项目没有 `.ccg/spec` 目录，本轮没有可回馈的项目规范文件。
 
 ## 验证结果
 
 通过：
 
-- 后端完整测试：`timeout 180s env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy /tmp/mediaflow-verify.bdpvSh/venv/bin/python -m pytest -q`，`210 passed in 12.80s`。
-- 后端重点安全、路由、生命周期和流式测试：`45 passed in 4.13s`。
+- 后端完整测试：`timeout 180s env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy -u NO_PROXY -u no_proxy /tmp/mediaflow-verify.bdpvSh/venv/bin/python -m pytest -q`，追加修正后 `211 passed in 13.25s`。
+- 后端重点安全、路由、生命周期和流式测试：追加修正后 `46 passed in 8.12s`。
 - 前端完整测试：`npm test`，11 个测试文件、`50 passed`。
 - 前端静态检查和生产构建：`npm run lint && npm run build` 通过，TypeScript 检查和 Vite 构建完成。
 - Python 编译检查：`/tmp/mediaflow-verify.bdpvSh/venv/bin/python -m compileall -q app asr-deploy-code tests` 通过。
 - `git diff --check` 通过。
 
-补充：直接运行 `ruff check .` 被上述部署目录中的 3 项既有问题阻断；这不是本轮引入的回归。后续若要把仓库级 Ruff 变成硬门禁，应单独修复该部署文件或调整其 lint 范围。
+补充：`ruff check app tests asr-deploy-code` 通过；直接运行 `ruff check .` 仍被 `deploy/qwen3-asr-npu/asr_api.py` 中 3 项既有问题阻断。这不是本轮引入的回归。后续若要把仓库级 Ruff 变成硬门禁，应单独修复该部署文件或调整其 lint 范围。
 
 ## 归档状态
 
