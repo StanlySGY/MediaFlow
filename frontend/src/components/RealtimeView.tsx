@@ -1,15 +1,17 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Play, Square, Trash2, Mic, Terminal, Info } from 'lucide-react';
+import { Play, Square, Trash2, Mic, Terminal, Info, ClipboardCopy, Download } from 'lucide-react';
 import { RealtimeEvent, RealtimeSession, StandardASRStreamEvent } from '../types';
 import { errorMessage, responseError } from '../lib/errors';
 import { applySplice } from '../lib/splice';
+import { downloadFile } from '../lib/download';
 import { Accordion } from './Accordion';
 import { RealtimeRecorderPanel } from './RealtimeRecorderPanel';
 
 interface RealtimeViewProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
   sseUrl: (path: string) => string;
+  realtimeProvider?: string;
 }
 
 type LocalRtEvent = Partial<StandardASRStreamEvent> & {
@@ -17,9 +19,14 @@ type LocalRtEvent = Partial<StandardASRStreamEvent> & {
   source_event?: string | null;
 };
 
+const closeEventSource = (source: EventSource | null) => {
+  source?.close();
+};
+
 export const RealtimeView: React.FC<RealtimeViewProps> = ({
   authedFetch,
   sseUrl,
+  realtimeProvider,
 }) => {
   // Session Configuration Form
   const [language, setLanguage] = useState('');
@@ -35,6 +42,9 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
   const [toastClass, setToastClass] = useState<string>('');
   const [events, setEvents] = useState<RealtimeEvent[]>([]);
   const [rtEventCount, setRtEventCount] = useState(0);
+  const [transcript, setTranscript] = useState('');
+  const [transcriptFeedback, setTranscriptFeedback] = useState('');
+  const [isReconnecting, setIsReconnecting] = useState(false);
 
   // Feeding State
   const [chunkKB, setChunkKB] = useState(8);
@@ -43,12 +53,31 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
   const [isFeeding, setIsFeeding] = useState(false);
   const [fedChunks, setFedChunks] = useState(0);
   const [fedBytes, setFedBytes] = useState(0);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
   const feedingRef = useRef(false);
   const committedTextRef = useRef('');
+  const sessionIdRef = useRef('');
+  const generationRef = useRef(0);
+  const fedChunksRef = useRef(0);
+  const releasePromiseRef = useRef<Promise<void>>(Promise.resolve());
+  const pushChainRef = useRef<Promise<void>>(Promise.resolve());
+  const creatingSessionRef = useRef(false);
+
+  const releaseSession = useCallback((sessionId: string) => {
+    if (!sessionId) return Promise.resolve();
+    const pendingPushes = pushChainRef.current;
+    const release = releasePromiseRef.current
+      .then(() => pendingPushes)
+      .then(() => authedFetch(`/asr/realtime/${sessionId}`, { method: 'DELETE' }))
+      .then(() => undefined)
+      .catch(() => undefined);
+    releasePromiseRef.current = release;
+    return release;
+  }, [authedFetch]);
 
   // Auto-scroll the logger
   useEffect(() => {
@@ -60,13 +89,33 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
   // Clean up SSE on unmount
   useEffect(() => {
     return () => {
+      generationRef.current += 1;
       if (sseRef.current) {
         sseRef.current.close();
       }
+      const sessionId = sessionIdRef.current;
+      sessionIdRef.current = '';
+      releaseSession(sessionId);
     };
-  }, []);
+  }, [releaseSession]);
 
   const handleCreateSession = async () => {
+    if (creatingSessionRef.current) return;
+    creatingSessionRef.current = true;
+    setIsCreatingSession(true);
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    const previousSessionId = sessionIdRef.current;
+    sessionIdRef.current = '';
+    feedingRef.current = false;
+    setIsFeeding(false);
+    setSession(null);
+    if (sseRef.current) {
+      sseRef.current.close();
+      sseRef.current = null;
+    }
+    releaseSession(previousSessionId);
+    await releasePromiseRef.current;
     const body = {
       language: language.trim() || null,
       sample_rate: sampleRate,
@@ -88,6 +137,11 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
 
       if (!r.ok) throw await responseError(r);
       const data = await r.json();
+      if (generation !== generationRef.current) {
+        releaseSession(data.session_id);
+        return;
+      }
+      sessionIdRef.current = data.session_id;
 
       setSession({
         session_id: data.session_id,
@@ -102,45 +156,84 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
       });
 
       setFedChunks(0);
+      fedChunksRef.current = 0;
+      pushChainRef.current = Promise.resolve();
       setFedBytes(0);
       setRtEventCount(0);
       setEvents([]);
       committedTextRef.current = '';
+      setTranscript('');
+      setTranscriptFeedback('');
+      setIsReconnecting(false);
       
       setRtStatus(`✓ 会话 ${data.session_id.slice(0, 8)}…`);
       setToastClass('ok');
 
       // Subscribe to SSE
-      subscribeToSessionEvents(data.session_id);
+      subscribeToSessionEvents(data.session_id, generation);
     } catch (e) {
+      if (generation !== generationRef.current) return;
+      const failedSessionId = sessionIdRef.current;
+      sessionIdRef.current = '';
+      const failedEventSource = sseRef.current;
+      sseRef.current = null;
+      closeEventSource(failedEventSource);
+      releaseSession(failedSessionId);
       setRtStatus(`✗ 创建失败: ${errorMessage(e)}`);
       setToastClass('err');
       setSession(null);
+    } finally {
+      creatingSessionRef.current = false;
+      setIsCreatingSession(false);
     }
   };
 
-  const subscribeToSessionEvents = (sessId: string) => {
+  const subscribeToSessionEvents = (sessId: string, generation: number) => {
     if (sseRef.current) sseRef.current.close();
 
     const es = new EventSource(sseUrl(`/asr/realtime/${sessId}/events`));
     sseRef.current = es;
+    let hasOpened = false;
+
+    es.onopen = () => {
+      if (generation !== generationRef.current || sessionIdRef.current !== sessId) return;
+      if (hasOpened) {
+        committedTextRef.current = '';
+        setTranscript('');
+        setTranscriptFeedback('');
+        setEvents([]);
+        setRtEventCount(0);
+      }
+      hasOpened = true;
+      setIsReconnecting(false);
+    };
 
     es.addEventListener('message', (e: MessageEvent) => {
+      if (generation !== generationRef.current || sessionIdRef.current !== sessId) return;
       const ev = JSON.parse(e.data) as StandardASRStreamEvent;
       if (ev.stream !== 'realtime') return;
       addEventLog(ev);
 
       if (ev.type === 'done' || ev.type === 'error') {
+        setIsReconnecting(false);
         es.close();
         sseRef.current = null;
         setIsFeeding(false);
         feedingRef.current = false;
+        setSession(prev => prev ? {
+          ...prev,
+          status: ev.type === 'done' ? 'done' : 'failed',
+        } : prev);
+        if (sessionIdRef.current === sessId) {
+          sessionIdRef.current = '';
+          releaseSession(sessId);
+        }
       }
     });
 
     es.onerror = () => {
-      es.close();
-      sseRef.current = null;
+      if (generation !== generationRef.current || sessionIdRef.current !== sessId) return;
+      setIsReconnecting(true);
     };
   };
 
@@ -159,6 +252,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
     if (ev.type === 'text' && typeof ev.delta === 'object' && ev.delta !== null) {
       committedTextRef.current = applySplice(committedTextRef.current, ev.delta);
       text = committedTextRef.current;
+      setTranscript(committedTextRef.current);
     }
 
     const newEv: RealtimeEvent = {
@@ -185,48 +279,80 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
     setToastClass('warn');
   };
 
-  const rtPushChunk = async (b64: string, isFinal = false) => {
-    if (!session) return false;
-    const seq = fedChunks + 1;
-    
-    try {
-      const r = await authedFetch(`/asr/realtime/${session.session_id}/audio`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ seq, audio: b64, is_final: isFinal }),
-      });
+  const rtPushChunk = (
+    b64: string,
+    isFinal = false,
+    expectedSessionId?: string,
+    expectedGeneration?: number,
+  ) => {
+    const pushJob = pushChainRef.current.then(async () => {
+      const sessionId = expectedSessionId || sessionIdRef.current;
+      if (
+        !session
+        || !sessionId
+        || session.session_id !== sessionId
+        || sessionIdRef.current !== sessionId
+        || (expectedGeneration !== undefined && expectedGeneration !== generationRef.current)
+      ) return false;
+      const seq = fedChunksRef.current + 1;
 
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
+      try {
+        const r = await authedFetch(`/asr/realtime/${sessionId}/audio`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ seq, audio: b64, is_final: isFinal }),
+        });
+
+        if (!r.ok) {
+          if (
+            sessionIdRef.current !== sessionId
+            || (expectedGeneration !== undefined && expectedGeneration !== generationRef.current)
+          ) return false;
+          const err = await r.json().catch(() => ({}));
+          addEventLog({
+            type: 'error',
+            stream: 'realtime',
+            id: sessionId,
+            session_id: sessionId,
+            error: err.detail || `HTTP ${r.status}`,
+          });
+          return false;
+        }
+
+        if (
+          sessionIdRef.current !== sessionId
+          || (expectedGeneration !== undefined && expectedGeneration !== generationRef.current)
+        ) return false;
+        fedChunksRef.current = seq;
+        setFedChunks(seq);
+
+        // Update session statistics
+        const infoResponse = await authedFetch(`/asr/realtime/${sessionId}`);
+        if (infoResponse.ok) {
+          const info = await infoResponse.json();
+          if (
+            sessionIdRef.current === sessionId
+            && (expectedGeneration === undefined || expectedGeneration === generationRef.current)
+          ) setFedBytes(info.bytes_received || 0);
+        }
+        return true;
+      } catch (e) {
+        if (
+          sessionIdRef.current !== sessionId
+          || (expectedGeneration !== undefined && expectedGeneration !== generationRef.current)
+        ) return false;
         addEventLog({
           type: 'error',
           stream: 'realtime',
-          id: session.session_id,
-          session_id: session.session_id,
-          error: err.detail || `HTTP ${r.status}`,
+          id: sessionId,
+          session_id: sessionId,
+          error: `推送异常: ${errorMessage(e)}`,
         });
         return false;
       }
-
-      setFedChunks(seq);
-      
-      // Update session statistics
-      const infoResponse = await authedFetch(`/asr/realtime/${session.session_id}`);
-      if (infoResponse.ok) {
-        const info = await infoResponse.json();
-        setFedBytes(info.bytes_received || 0);
-      }
-      return true;
-    } catch (e) {
-      addEventLog({
-        type: 'error',
-        stream: 'realtime',
-        id: session.session_id,
-        session_id: session.session_id,
-        error: `推送异常: ${errorMessage(e)}`,
-      });
-      return false;
-    }
+    });
+    pushChainRef.current = pushJob.then(() => undefined, () => undefined);
+    return pushJob;
   };
 
   const bytesToBase64 = (bytes: Uint8Array): string => {
@@ -238,7 +364,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
   };
 
   const handleStartFeeding = async () => {
-    if (!session || isFeeding) return;
+    if (!session || !sessionIdRef.current || isFeeding || !sessionActive) return;
 
     const file = fileInputRef.current?.files?.[0];
     if (!file) {
@@ -248,18 +374,25 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
 
     setIsFeeding(true);
     feedingRef.current = true;
+    const feedingSessionId = session.session_id;
+    const feedingGeneration = generationRef.current;
 
     const chunkBytes = Math.max(1, chunkKB) * 1024;
     const delay = Math.max(0, intervalMs);
     const arrayBuffer = await file.arrayBuffer();
     const buffer = new Uint8Array(arrayBuffer);
-    
+
     let offset = 0;
-    while (offset < buffer.length && feedingRef.current) {
+    while (
+      offset < buffer.length
+      && feedingRef.current
+      && feedingGeneration === generationRef.current
+      && sessionIdRef.current === feedingSessionId
+    ) {
       const slice = buffer.subarray(offset, Math.min(offset + chunkBytes, buffer.length));
       const b64 = bytesToBase64(slice);
       
-      const success = await rtPushChunk(b64, false);
+      const success = await rtPushChunk(b64, false, feedingSessionId, feedingGeneration);
       if (!success) break;
 
       offset += chunkBytes;
@@ -269,50 +402,111 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
     }
 
     // Send final closing segment
-    if (feedingRef.current) {
-      await rtPushChunk('', true);
+    if (
+      feedingRef.current
+      && feedingGeneration === generationRef.current
+      && sessionIdRef.current === feedingSessionId
+    ) {
+      await rtPushChunk('', true, feedingSessionId, feedingGeneration);
     }
 
-    setIsFeeding(false);
-    feedingRef.current = false;
+    if (feedingGeneration === generationRef.current && sessionIdRef.current === feedingSessionId) {
+      setIsFeeding(false);
+      feedingRef.current = false;
+    }
   };
 
   const handleSendManual = async () => {
     if (!session || !manualBase64.trim()) return;
-    await rtPushChunk(manualBase64.trim(), false);
+    await rtPushChunk(manualBase64.trim(), false, session.session_id, generationRef.current);
+  };
+
+  const copyTranscript = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(transcript);
+      setTranscriptFeedback('会话文稿已复制到剪贴板');
+    } catch {
+      setTranscriptFeedback('无法访问剪贴板，会话文稿仍保留在屏幕上');
+    }
   };
 
   const handleSendEnd = async () => {
-    if (!session) return;
-    try {
-      await authedFetch(`/asr/realtime/${session.session_id}/end`, { method: 'POST' });
-    } catch {}
+    if (!session || !sessionIdRef.current) return;
+    const endSessionId = session.session_id;
+    const endGeneration = generationRef.current;
+    feedingRef.current = false;
+    setIsFeeding(false);
+    const endJob = pushChainRef.current.then(async () => {
+      if (
+        endGeneration !== generationRef.current
+        || sessionIdRef.current !== endSessionId
+      ) return;
+      try {
+        const response = await authedFetch(`/asr/realtime/${endSessionId}/end`, { method: 'POST' });
+        if (!response.ok) {
+          const error = await responseError(response);
+          if (
+            endGeneration === generationRef.current
+            && sessionIdRef.current === endSessionId
+          ) addEventLog({
+            type: 'error',
+            stream: 'realtime',
+            id: endSessionId,
+            session_id: endSessionId,
+            error: error.message,
+          });
+        }
+      } catch (error) {
+        if (
+          endGeneration === generationRef.current
+          && sessionIdRef.current === endSessionId
+        ) addEventLog({
+          type: 'error',
+          stream: 'realtime',
+          id: endSessionId,
+          session_id: endSessionId,
+          error: `结束会话异常: ${errorMessage(error)}`,
+        });
+      }
+    });
+    pushChainRef.current = endJob.then(() => undefined, () => undefined);
+    await endJob;
   };
 
   const handleDeleteSession = async () => {
     if (!session) return;
     if (!confirm('确认关闭并删除当前实时转写会话？')) return;
 
+    const sessionId = session.session_id;
+    const deleteGeneration = generationRef.current + 1;
+    generationRef.current = deleteGeneration;
     setIsFeeding(false);
     feedingRef.current = false;
-    
-    try {
-      await authedFetch(`/asr/realtime/${session.session_id}`, { method: 'DELETE' });
-    } catch {}
-
+    sessionIdRef.current = '';
     if (sseRef.current) {
       sseRef.current.close();
       sseRef.current = null;
     }
+
+    const release = releaseSession(sessionId);
+    await release;
+    if (deleteGeneration !== generationRef.current) return;
 
     setSession(null);
     setRtStatus('已删除');
     setToastClass('');
   };
 
+  const sessionActive = session ? !['done', 'failed', 'closed'].includes(session.status) : false;
+
   return (
     <div className="flex flex-col gap-6">
-      <RealtimeRecorderPanel authedFetch={authedFetch} sseUrl={sseUrl} />
+      <RealtimeRecorderPanel
+        authedFetch={authedFetch}
+        sseUrl={sseUrl}
+        realtimeProvider={realtimeProvider}
+      />
 
       <Accordion title="高级设置 · 手动会话、文件模拟、事件日志">
       {/* Intro hint */}
@@ -360,9 +554,9 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
         </div>
 
         <div className="flex items-center gap-4 mt-6 flex-wrap">
-          <button onClick={handleCreateSession} className="primary">
+          <button onClick={handleCreateSession} disabled={isCreatingSession} className="primary">
             <Play className="w-4 h-4" />
-            <span>创建会话</span>
+            <span>{isCreatingSession ? '创建中…' : '创建会话'}</span>
           </button>
           <button onClick={handleOfflinePreset}>
             <Info className="w-4 h-4" />
@@ -384,11 +578,21 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
               <span>第二步 · 发送音频并查看结果</span>
               <span className="font-mono text-xs text-muted">#{session.session_id.slice(0, 16)}…</span>
             </div>
-            <span className="badge ok">
-              <span className="dot pulse" />
-              <span>会话进行中</span>
+            <span className={`badge ${sessionActive ? 'ok' : session.status === 'done' ? 'ok' : 'err'}`}>
+              <span className={`dot ${sessionActive ? 'pulse' : ''}`} />
+              <span>{sessionActive ? '会话进行中' : session.status === 'done' ? '识别完成' : '会话已结束'}</span>
             </span>
           </h3>
+
+          {isReconnecting && (
+            <div
+              className="p-3 mb-4 rounded-lg border border-accent/20 bg-accent-soft text-accent text-[13px]"
+              role="status"
+              aria-live="polite"
+            >
+              事件流连接中断，正在重新连接…
+            </div>
+          )}
 
           <div className="flex gap-3 mb-4">
             <span className="badge">已发送 <b className="text-fg ml-1 font-mono">{fedChunks}</b> 包</span>
@@ -428,7 +632,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2 mt-5 flex-wrap">
-            <button onClick={handleStartFeeding} disabled={isFeeding} className="primary">
+            <button onClick={handleStartFeeding} disabled={isFeeding || !sessionActive} className="primary">
               <Play className="w-4 h-4" />
               <span>开始发送</span>
             </button>
@@ -436,7 +640,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
               <Square className="w-4 h-4" />
               <span>停止</span>
             </button>
-            <button onClick={handleSendEnd} title="发送结束信号，通知上游本次音频已结束">
+            <button onClick={handleSendEnd} disabled={!sessionActive} title="发送结束信号，通知上游本次音频已结束">
               发送结束信号
             </button>
             <button onClick={handleDeleteSession} className="danger ml-auto">
@@ -452,6 +656,28 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
               <span>实时结果（事件流）</span>
               <span className="badge text-[10px]">{rtEventCount} 条</span>
             </h4>
+
+            <div className="flex items-center gap-2 flex-wrap mb-3">
+              <button onClick={copyTranscript} disabled={!transcript}>
+                <ClipboardCopy className="w-3.5 h-3.5" />
+                <span>复制会话文稿</span>
+              </button>
+              <button
+                onClick={() => downloadFile('realtime-session.txt', transcript, 'text/plain;charset=utf-8')}
+                disabled={!transcript}
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>下载会话 TXT</span>
+              </button>
+              {transcriptFeedback && (
+                <p
+                  className="text-[12px]"
+                  role={transcriptFeedback.startsWith('无法访问剪贴板') ? 'alert' : 'status'}
+                >
+                  {transcriptFeedback}
+                </p>
+              )}
+            </div>
 
             <div ref={logRef} className="evlog">
               {events.length === 0 ? (

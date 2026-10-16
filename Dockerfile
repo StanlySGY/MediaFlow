@@ -1,7 +1,7 @@
 # ==========================================
 # Stage 1: Build the React Application
 # ==========================================
-FROM node:20-alpine AS frontend-builder
+FROM node:20-slim AS frontend-builder
 WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm ci
@@ -34,4 +34,4 @@ COPY --from=frontend-builder /app/web ./app/web
 ENV HOST=0.0.0.0 PORT=8080
 EXPOSE 8080
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "app.main"]

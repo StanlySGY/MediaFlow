@@ -190,11 +190,15 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               return (
                 <motion.div
                   key={t.task_id}
-                  onClick={() => onLoadTask(t.task_id)}
                   whileHover={{ y: -2 }}
                   className="hist-item group"
                 >
-                  <div className="min-w-0 pr-4">
+                  <button
+                    type="button"
+                    className="!block min-w-0 !rounded-none !border-0 !bg-transparent !px-0 !py-0 !pr-4 !text-left !font-normal !select-text hover:!border-transparent hover:!bg-transparent"
+                    aria-label={`打开任务：${title}`}
+                    onClick={() => onLoadTask(t.task_id)}
+                  >
                     <div className="text-fg font-semibold text-[13.5px] truncate max-w-2xl leading-normal">
                       {title}
                     </div>
@@ -204,7 +208,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                     <div className="tid font-mono text-[10px] text-muted mt-1">
                       #{t.task_id} · {formatWhen(t.created_at)}
                     </div>
-                  </div>
+                  </button>
 
                   <div className="flex items-center shrink-0 justify-end">
                     <span className={`badge ${statusClass(t.status)}`}>
@@ -225,11 +229,8 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
                   <button
                     className="danger p-1.5"
-                    aria-label="删除记录"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void removeTask(t.task_id);
-                    }}
+                    aria-label={`删除任务：${title}`}
+                    onClick={() => void removeTask(t.task_id)}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

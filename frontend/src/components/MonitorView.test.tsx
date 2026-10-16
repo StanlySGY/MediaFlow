@@ -86,7 +86,7 @@ describe('<MonitorView />', () => {
     render(
       <MonitorView
         authedFetch={authedFetch}
-        sseUrl={(path) => `${path}?token=t`}
+        sseUrl={(path) => path}
       />,
     );
 
@@ -96,7 +96,7 @@ describe('<MonitorView />', () => {
     expect(screen.getByText('真实识别文本')).toBeInTheDocument();
     expect(screen.getAllByText('wav').length).toBeGreaterThan(0);
     expect(screen.getByText('1 / 200')).toBeInTheDocument();
-    expect(MockEventSource.instances[0].url).toBe('/asr/monitor/events?token=t');
+    expect(MockEventSource.instances[0].url).toBe('/asr/monitor/events');
 
     act(() => {
       MockEventSource.instances[0].emit('call_finished', {

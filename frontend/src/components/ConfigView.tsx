@@ -113,20 +113,11 @@ const GLOBAL_FIELD_KEYS = new Set([
 ]);
 const PROFILE_FIELDS = ALL_FIELDS.filter(f => !GLOBAL_FIELD_KEYS.has(f.key));
 
-// A profile stores the file-pipeline field names; the realtime group edits the
-// same profile through its own keys, so the two map onto each other.
-const PROFILE_KEY_MAP: Record<string, string> = {
-  realtime_asr_provider: 'asr_provider',
-  realtime_asr_base_url: 'asr_base_url',
-  realtime_asr_api_key: 'asr_api_key',
-  realtime_asr_model: 'asr_model',
-};
-const profileKeyOf = (fieldKey: string) => PROFILE_KEY_MAP[fieldKey] ?? fieldKey;
-
 interface Profile {
   id: string;
   name: string;
   api_key_set: boolean;
+  realtime_api_key_set: boolean;
   [key: string]: string | number | boolean;
 }
 interface ProfileState { profiles: Profile[]; file: string; realtime: string | null; }
@@ -137,6 +128,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const [formState, setFormState] = useState<Record<string, string | number | boolean>>({});
   const [dirtyFields, setDirtyFields] = useState<{ [key: string]: boolean }>({});
   const [showSecrets, setShowSecrets] = useState<{ [key: string]: boolean }>({});
+  const [clearSecretDraft, setClearSecretDraft] = useState<Record<string, boolean>>({});
 
   const [pingStatus, setPingStatus] = useState('未测试');
   const [pingClass, setPingClass] = useState('');
@@ -195,11 +187,13 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
 
   // Editing follows whichever profile is selected, so switching one discards the
   // unsaved draft of the previous one.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    setClearSecretDraft({});
     if (!selected) return;
     const next: Record<string, string | number | boolean> = {};
     for (const f of PROFILE_FIELDS) {
-      const stored = selected[profileKeyOf(f.key)];
+      const stored = selected[f.key];
       if (f.type === 'secret') next[f.key] = '';
       else if (f.type === 'bool') next[f.key] = !!stored;
       else next[f.key] = stored ?? '';
@@ -215,15 +209,26 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
     setModelOptions([]);
     setRealtimeModelOptions([]);
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleChange = (key: string, value: string | number | boolean) => {
     setFormState(prev => ({ ...prev, [key]: value }));
     setDirtyFields(prev => ({ ...prev, [key]: true }));
+    if (key === 'asr_api_key' || key === 'realtime_asr_api_key') {
+      setClearSecretDraft(prev => ({ ...prev, [key]: false }));
+    }
     if (!GLOBAL_FIELD_KEYS.has(key)) setProfileDirty(true);
   };
 
-  // Ask the upstream at the typed address which models it serves, so the name
-  // doesn't have to be typed from memory. Works before the form is saved.
+  const toggleSecretClear = (key: 'asr_api_key' | 'realtime_asr_api_key') => {
+    setClearSecretDraft(prev => ({ ...prev, [key]: !prev[key] }));
+    setFormState(prev => ({ ...prev, [key]: '' }));
+    setDirtyFields(prev => ({ ...prev, [key]: true }));
+    setProfileDirty(true);
+  };
+
+  // Probe only endpoint addresses saved in a profile; unsaved addresses are
+  // rejected by the server to prevent arbitrary outbound requests.
   // WebSocket addresses are probed over HTTP: the model list lives on the same
   // host, and the realtime path differs from the file path only in protocol.
   const fetchModels = async (fieldKey: 'asr_model' | 'realtime_asr_model') => {
@@ -242,10 +247,15 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
     setFetchingModelsFor(fieldKey);
     setModelStatus(null);
     try {
-      const params = new URLSearchParams({ base_url: base });
+      const target = fieldKey === 'asr_model' ? 'file' : 'realtime';
+      const body: Record<string, string> = { base_url: base, target };
       const key = String(formState[keyKey] || '');
-      if (key) params.set('api_key', key);
-      const r = await authedFetch(`/asr/models?${params}`);
+      if (key) body.api_key = key;
+      const r = await authedFetch('/asr/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
       const ids: string[] = Array.isArray(d.models) ? d.models : [];
@@ -340,34 +350,25 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
 
   const profileBody = () => {
     const body: Record<string, string | number | boolean> = { name: profileName.trim() };
-    const conflicts: string[] = [];
     for (const f of PROFILE_FIELDS) {
-      const key = profileKeyOf(f.key);
       let val: string | number | boolean | undefined;
-      if (f.type === 'secret') { if (formState[f.key] !== '') val = formState[f.key]; }
+      if (f.type === 'secret') {
+        if (clearSecretDraft[f.key]) val = '';
+        else if (formState[f.key] !== '') val = formState[f.key];
+      }
       else if (f.type === 'bool') val = !!formState[f.key];
       else if (f.type === 'int') { const n = parseInt(String(formState[f.key]), 10); if (Number.isFinite(n)) val = n; }
       else if (f.type === 'float') { const fl = parseFloat(String(formState[f.key])); if (Number.isFinite(fl)) val = fl; }
       else val = formState[f.key] ?? '';
       if (val === undefined) continue;
-      // The file group and the realtime group edit the same stored value. When
-      // both were changed to different things, neither can silently win.
-      if (key in body && body[key] !== val && dirtyFields[f.key]) {
-        conflicts.push(f.label);
-        continue;
-      }
-      if (!(key in body) || dirtyFields[f.key]) body[key] = val;
+      body[f.key] = val;
     }
-    return { body, conflicts };
+    return body;
   };
 
   const saveProfile = async () => {
     if (!profileName.trim()) { noteProfile('✗ 配置名称不能为空'); return; }
-    const { body, conflicts } = profileBody();
-    if (conflicts.length) {
-      noteProfile(`✗ ${conflicts.join('、')} 和上面填的不一致，两处只能留一个值`);
-      return;
-    }
+    const body = profileBody();
     setProfileStatus('保存中…');
     try {
       const creating = !selectedId;
@@ -378,6 +379,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+      setClearSecretDraft({});
       await loadProfiles(d.profile?.id);
       await refreshTopbar();
       noteProfile(creating ? '✓ 已新增配置' : '✓ 已保存这份配置');
@@ -478,7 +480,8 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
 
   const secretBadge = (key: string) => {
     if (!config) return null;
-    if (profileKeyOf(key) === 'asr_api_key') return selected?.api_key_set ? '已配置' : '未配置';
+    if (key === 'asr_api_key') return selected?.api_key_set ? '已配置' : '未配置';
+    if (key === 'realtime_asr_api_key') return selected?.realtime_api_key_set ? '已配置' : '未配置';
     if (key === 'access_tokens') return (config.access_tokens_count || 0) > 0 ? `已配置 ${config.access_tokens_count} 个` : '未启用';
     return null;
   };
@@ -490,6 +493,8 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
     const knownModels = f.key === 'asr_model' ? modelOptions
       : f.key === 'realtime_asr_model' ? realtimeModelOptions
       : [];
+    const canClearSecret = (f.key === 'asr_api_key' && selected?.api_key_set)
+      || (f.key === 'realtime_asr_api_key' && selected?.realtime_api_key_set);
     const modelChoices = knownModels.length > 0
       ? Array.from(new Set([String(sval), ...knownModels].filter(Boolean)))
       : [];
@@ -528,7 +533,16 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
           <div className="relative flex items-center">
             <input type={showSecrets[f.key] ? 'text' : 'password'} value={sval}
               onChange={e => handleChange(f.key, e.target.value)}
-              placeholder="输入新值以覆盖，留空表示不修改" className="pr-10" />
+              placeholder={clearSecretDraft[f.key] ? '保存时将清除此配置中的密钥' : '输入新值以覆盖，留空表示不修改'}
+              className="pr-20" />
+            {canClearSecret && (
+              <button type="button" onClick={() => toggleSecretClear(f.key as 'asr_api_key' | 'realtime_asr_api_key')}
+                aria-label={`${clearSecretDraft[f.key] ? '取消清除' : '清除'}${f.label}`}
+                title={`${clearSecretDraft[f.key] ? '取消清除' : '清除'}${f.label}`}
+                className="absolute right-9 text-muted hover:text-danger p-1 border-none bg-transparent hover:bg-transparent">
+                {clearSecretDraft[f.key] ? <RotateCcw className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
+              </button>
+            )}
             <button onClick={() => setShowSecrets(prev => ({ ...prev, [f.key]: !prev[f.key] }))}
               aria-label={showSecrets[f.key] ? '隐藏密钥' : '显示密钥'}
               className="absolute right-2 text-muted hover:text-fg p-1 border-none bg-transparent hover:bg-transparent">
@@ -593,7 +607,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
           <Server className="w-5 h-5 text-accent" />
           <h3 className="section-title flex-1">接入配置</h3>
         </div>
-        <p className="hint mt-4 mb-4">一份配置对应一个语音识别服务。文件转写和实时识别可以各选一份，互不影响。</p>
+        <p className="hint mt-4 mb-4">每份配置分别保存文件转写和实时识别的服务参数。两个功能可以各选一份，互不影响。</p>
         <div className="flex flex-wrap gap-2">
           {profiles.profiles.map(p => (
             <div key={p.id}
@@ -653,15 +667,15 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       })}
 
       {/* Sticky action bar */}
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 md:left-[calc(220px+(100%-220px)/2)] bg-surface border border-border shadow-lg rounded-lg px-3 py-2.5 flex items-center gap-2.5 z-30">
+      <div className="config-action-bar fixed bottom-3 left-3 right-3 translate-x-0 md:bottom-6 md:left-[calc(220px+(100%-220px)/2)] md:right-auto md:-translate-x-1/2 bg-surface border border-border shadow-lg rounded-lg px-2 py-2 md:px-3 md:py-2.5 flex flex-wrap items-center justify-center gap-1.5 md:gap-2.5 z-30">
         <button onClick={handleSave} className="primary">
-          <Save className="w-4 h-4" /><span>保存配置</span>
+          <Save className="w-4 h-4" /><span className="whitespace-nowrap">保存配置</span>
         </button>
         <button onClick={handleReset} className="danger">
-          <RotateCcw className="w-4 h-4" /><span>恢复默认</span>
+          <RotateCcw className="w-4 h-4" /><span className="whitespace-nowrap">恢复默认</span>
         </button>
         <button onClick={handlePing} disabled={isTesting}>
-          <Activity className="w-4 h-4" /><span>测试连接</span>
+          <Activity className="w-4 h-4" /><span className="whitespace-nowrap">测试连接</span>
         </button>
         {pingStatus !== '未测试' && <span className={`toast ${pingClass}`}>{pingStatus}</span>}
         {saveStatus && <span className="toast ok">{saveStatus}</span>}

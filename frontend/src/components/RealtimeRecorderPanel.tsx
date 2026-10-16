@@ -1,12 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { ClipboardCopy, Mic, Square, Trash2 } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ClipboardCopy, Download, Mic, Square, Trash2 } from 'lucide-react';
 import { StandardASRStreamEvent } from '../types';
 import { errorMessage, responseError } from '../lib/errors';
 import { applySplice } from '../lib/splice';
+import { downloadFile } from '../lib/download';
 
 interface RealtimeRecorderPanelProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
   sseUrl: (path: string) => string;
+  realtimeProvider?: string;
 }
 
 const RECORDER_MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
@@ -50,13 +52,16 @@ const blobToBase64 = async (blob: Blob) => {
 export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   authedFetch,
   sseUrl,
+  realtimeProvider,
 }) => {
   const [state, setState] = useState<RealtimeRecorderState>('idle');
   const isRecording = state === 'recording';
   const isBusy = state === 'connecting' || state === 'recording' || state === 'processing';
   const status = RECORDER_STATUS[state];
   const [transcript, setTranscript] = useState('');
+  const [transcriptFeedback, setTranscriptFeedback] = useState('');
   const [notice, setNotice] = useState('');
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [chunks, setChunks] = useState(0);
   const [bytes, setBytes] = useState(0);
@@ -71,13 +76,34 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   const uploadFailedRef = useRef(false);
   const generationRef = useRef(0);
   const committedTextRef = useRef('');
+  const releasePromiseRef = useRef<Promise<void>>(Promise.resolve());
 
   const appendLog = (event: string, data: Record<string, unknown> = {}) => {
     const line = JSON.stringify({ ts: new Date().toISOString(), event, ...data });
     setLogs((prev) => [...prev.slice(-199), line]);
   };
 
-  const cleanup = () => {
+  const releaseSession = useCallback((sessionId: string) => {
+    if (!sessionId) return Promise.resolve();
+    const pendingPushes = pushChainRef.current;
+    const release = releasePromiseRef.current
+      .then(() => pendingPushes)
+      .then(() => authedFetch(`/asr/realtime/${sessionId}`, { method: 'DELETE' }))
+      .then(() => undefined)
+      .catch(() => undefined);
+    releasePromiseRef.current = release;
+    return release;
+  }, [authedFetch]);
+
+  const cleanup = useCallback((expectedGeneration?: number, expectedSessionId?: string) => {
+    if (
+      expectedGeneration !== undefined
+      && (expectedGeneration !== generationRef.current
+        || (expectedSessionId && sessionIdRef.current !== expectedSessionId))
+    ) return;
+    uploadFailedRef.current = true;
+    const sessionId = sessionIdRef.current;
+    sessionIdRef.current = '';
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     if (recorderRef.current?.state === 'recording') {
@@ -86,17 +112,39 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     recorderRef.current = null;
-  };
+    releaseSession(sessionId);
+  }, [releaseSession]);
 
-  useEffect(() => () => cleanup(), []);
+  useEffect(() => () => {
+    generationRef.current += 1;
+    cleanup();
+  }, [cleanup]);
 
   const subscribe = (sessionId: string, generation: number) => {
     eventSourceRef.current?.close();
     const es = new EventSource(sseUrl(`/asr/realtime/${sessionId}/events`));
     eventSourceRef.current = es;
+    let hasOpened = false;
+
+    es.onopen = () => {
+      if (
+        generation !== generationRef.current
+        || sessionIdRef.current !== sessionId
+      ) return;
+      if (hasOpened) {
+        committedTextRef.current = '';
+        setTranscript('');
+        setTranscriptFeedback('');
+      }
+      hasOpened = true;
+      setIsReconnecting(false);
+    };
 
     es.addEventListener('message', (message: MessageEvent) => {
-      if (generation !== generationRef.current) return;
+      if (
+        generation !== generationRef.current
+        || sessionIdRef.current !== sessionId
+      ) return;
       const event = JSON.parse(message.data) as StandardASRStreamEvent;
       appendLog('sse', {
         type: event.type,
@@ -114,6 +162,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         setTranscript(committedTextRef.current);
       }
       if (event.type === 'done' || event.type === 'error') {
+        setIsReconnecting(false);
         es.close();
         eventSourceRef.current = null;
         if (event.type === 'done') {
@@ -123,22 +172,32 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
           setNotice(event.hint ? `${message}（${event.hint}）` : message);
           setState('error');
         }
+        cleanup(generation, sessionId);
       }
     });
 
     es.onerror = () => {
-      if (generation !== generationRef.current) return;
+      if (
+        generation !== generationRef.current
+        || sessionIdRef.current !== sessionId
+      ) return;
       appendLog('sse_error', { session_id: sessionId });
-      es.close();
-      eventSourceRef.current = null;
-      setNotice('实时结果连接中断，请重试');
-      setState('error');
+      setIsReconnecting(true);
     };
   };
 
-  const pushChunk = async (audio: string, isFinal: boolean) => {
-    const sessionId = sessionIdRef.current;
-    if (!sessionId) return false;
+  const pushChunk = async (
+    audio: string,
+    isFinal: boolean,
+    expectedSessionId?: string,
+    expectedGeneration?: number,
+  ) => {
+    const sessionId = expectedSessionId || sessionIdRef.current;
+    if (
+      !sessionId
+      || (expectedGeneration !== undefined && expectedGeneration !== generationRef.current)
+      || sessionIdRef.current !== sessionId
+    ) return false;
     const seq = seqRef.current + 1;
     seqRef.current = seq;
 
@@ -161,18 +220,34 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       body: JSON.stringify(body),
     });
     if (!response.ok) {
+      if (
+        (expectedGeneration !== undefined && expectedGeneration !== generationRef.current)
+        || sessionIdRef.current !== sessionId
+      ) return false;
       const err = await responseError(response);
+      if (
+        (expectedGeneration !== undefined && expectedGeneration !== generationRef.current)
+        || sessionIdRef.current !== sessionId
+      ) return false;
       appendLog('push_error', { status: response.status, message: err.message });
       setNotice(err.message);
       return false;
     }
+    if (
+      (expectedGeneration !== undefined && expectedGeneration !== generationRef.current)
+      || sessionIdRef.current !== sessionId
+    ) return false;
     setChunks(seq);
 
     // The audio POST already carries the running byte counter, so there is no
     // need for a second GET per chunk (that used to double the request rate).
     try {
       const data = await response.json();
-      if (typeof data.bytes_received === 'number') {
+      if (
+        typeof data.bytes_received === 'number'
+        && (expectedGeneration === undefined || expectedGeneration === generationRef.current)
+        && sessionIdRef.current === sessionId
+      ) {
         setBytes(data.bytes_received);
       }
     } catch {
@@ -197,10 +272,13 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     }
 
     cleanup();
+    await releasePromiseRef.current;
     setState('connecting');
     uploadFailedRef.current = false;
     setTranscript('');
+    setTranscriptFeedback('');
     setNotice('');
+    setIsReconnecting(false);
     committedTextRef.current = '';
     setLogs([]);
     setChunks(0);
@@ -212,6 +290,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     const format = formatFromMime(mimeType);
     formatRef.current = format;
     appendLog('session_create_start', { mime_type: mimeType, format });
+    let recordingSessionId = '';
 
     try {
       const sessionResponse = await authedFetch('/asr/realtime/session', {
@@ -228,11 +307,27 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       });
       if (!sessionResponse.ok) throw await responseError(sessionResponse);
       const session = await sessionResponse.json();
-      sessionIdRef.current = session.session_id;
-      appendLog('session_created', { session_id: session.session_id, format });
-      subscribe(session.session_id, generation);
+      if (generation !== generationRef.current) {
+        releaseSession(session.session_id);
+        return;
+      }
+      recordingSessionId = session.session_id as string;
+      sessionIdRef.current = recordingSessionId;
+      appendLog('session_created', { session_id: recordingSessionId, format });
+      subscribe(recordingSessionId, generation);
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (
+        generation !== generationRef.current
+        || sessionIdRef.current !== recordingSessionId
+      ) {
+        stream.getTracks().forEach((track) => track.stop());
+        if (sessionIdRef.current === recordingSessionId) {
+          sessionIdRef.current = '';
+          releaseSession(recordingSessionId);
+        }
+        return;
+      }
       streamRef.current = stream;
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       recorderRef.current = recorder;
@@ -241,31 +336,42 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         if (!event.data || event.data.size === 0) return;
         const pushJob = pushChainRef.current.then(async () => {
           const audio = await blobToBase64(event.data);
-          const uploaded = await pushChunk(audio, false);
+          const uploaded = await pushChunk(audio, false, recordingSessionId, generation);
           if (!uploaded) throw new Error('音频分片上传失败');
         });
-        pushChainRef.current = pushJob.catch((error) => {
+        const handledJob = pushJob.catch((error) => {
+          if (generation !== generationRef.current || sessionIdRef.current !== recordingSessionId) return;
           uploadFailedRef.current = true;
+          // This handler runs as part of the current chain. Reset the chain
+          // before cleanup so releaseSession does not wait on itself.
+          pushChainRef.current = Promise.resolve();
+          cleanup(generation, recordingSessionId);
           setNotice(errorMessage(error));
           setState('error');
           appendLog('push_queue_error', { message: errorMessage(error) });
         });
+        if (generation === generationRef.current) pushChainRef.current = handledJob;
       };
       recorder.onstop = () => {
         if (generation !== generationRef.current) return;
+        if (uploadFailedRef.current) return;
         setState('processing');
         void pushChainRef.current
           .then(async () => {
             if (uploadFailedRef.current) return;
-            const uploaded = await pushChunk('', true);
+            const uploaded = await pushChunk('', true, recordingSessionId, generation);
             if (!uploaded) {
+              if (generation !== generationRef.current || sessionIdRef.current !== recordingSessionId) return;
               uploadFailedRef.current = true;
+              cleanup(generation, recordingSessionId);
               setNotice((prev) => prev || '结束录音失败');
               setState('error');
             }
           })
           .catch((error) => {
+            if (generation !== generationRef.current || sessionIdRef.current !== recordingSessionId) return;
             uploadFailedRef.current = true;
+            cleanup(generation, recordingSessionId);
             setState('error');
             appendLog('final_push_error', { message: errorMessage(error) });
           })
@@ -281,7 +387,8 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       appendLog('recording_started', { mime_type: recorder.mimeType || mimeType, format });
     } catch (e) {
       if (generation !== generationRef.current) return;
-      cleanup();
+      if (recordingSessionId && sessionIdRef.current !== recordingSessionId) return;
+      cleanup(generation);
       setState('error');
       setNotice(errorMessage(e));
       appendLog('recording_error', { message: errorMessage(e) });
@@ -300,6 +407,16 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     await navigator.clipboard?.writeText(logs.join('\n'));
   };
 
+  const copyTranscript = async () => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(transcript);
+      setTranscriptFeedback('文稿已复制到剪贴板');
+    } catch {
+      setTranscriptFeedback('无法访问剪贴板，文稿仍保留在屏幕上');
+    }
+  };
+
   return (
     <div className="card p-6">
       <h3 className="section-title justify-between mb-4">
@@ -307,6 +424,13 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
           <Mic className="w-5 h-5 text-accent" />
           <span>实时录音</span>
         </div>
+        {realtimeProvider && (
+          <span className={`badge ${realtimeProvider === 'realtime_mock' ? 'warn' : ''}`}>
+            {realtimeProvider === 'realtime_mock'
+              ? '演示模式：不会调用真实 ASR'
+              : `实时接口：${realtimeProvider}`}
+          </span>
+        )}
         <span className={`badge ${isRecording ? 'warn' : transcript ? 'ok' : ''}`}>
           <span className={`dot ${isRecording ? 'pulse' : ''}`} />
           <span>{status}</span>
@@ -331,11 +455,43 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
           {notice}
         </div>
       )}
+      {isReconnecting && (
+        <div
+          className="p-3 mb-4 rounded-lg border border-accent/20 bg-accent-soft text-accent text-[13px]"
+          role="status"
+          aria-live="polite"
+        >
+          实时结果连接中断，正在重新连接…
+        </div>
+      )}
 
       <div className="bg-white border border-border rounded-lg min-h-[260px] p-6">
-        <div className="text-[11px] text-muted font-semibold mb-3">
-          {state === 'completed' ? '最终稿' : '实时文稿'}
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+          <div className="text-[11px] text-muted font-semibold">
+            {state === 'completed' ? '最终稿' : '实时文稿'}
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={copyTranscript} disabled={!transcript}>
+              <ClipboardCopy className="w-3.5 h-3.5" />
+              <span>复制录音文稿</span>
+            </button>
+            <button
+              onClick={() => downloadFile('realtime-recording.txt', transcript, 'text/plain;charset=utf-8')}
+              disabled={!transcript}
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>下载录音 TXT</span>
+            </button>
+          </div>
         </div>
+        {transcriptFeedback && (
+          <p
+            className="text-[12px] mb-3"
+            role={transcriptFeedback.startsWith('无法访问剪贴板') ? 'alert' : 'status'}
+          >
+            {transcriptFeedback}
+          </p>
+        )}
         <div className="text-[22px] leading-relaxed text-fg whitespace-pre-wrap break-words">
           {transcript || <span className="text-muted-2">等待识别文本…</span>}
         </div>

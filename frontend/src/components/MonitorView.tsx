@@ -34,15 +34,17 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('connecting');
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
 
-  const loadSnapshot = useCallback(async () => {
+  const loadSnapshot = useCallback(async (): Promise<boolean> => {
     setLoading(true);
     setError(null);
     try {
       const response = await authedFetch('/asr/monitor');
       if (!response.ok) throw new Error(await response.text());
       setSnapshot(await response.json());
+      return true;
     } catch (e) {
       setError(errorMessage(e));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -50,50 +52,54 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
 
   useEffect(() => {
     let alive = true;
-    // The effect also establishes the external SSE subscription below; the
-    // snapshot fetch intentionally updates React state asynchronously.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadSnapshot();
+    // Establish the SSE subscription only after the authenticated snapshot
+    // request has had a chance to set the HttpOnly SSE cookie.
+    let es: EventSource | null = null;
+    void (async () => {
+      if (!(await loadSnapshot()) || !alive) {
+        if (alive) setLiveStatus('stale');
+        return;
+      }
+      if (typeof EventSource === 'undefined') {
+        setLiveStatus('stale');
+        return;
+      }
 
-    if (typeof EventSource === 'undefined') {
-      setLiveStatus('stale');
-      return () => { alive = false; };
-    }
+      es = new EventSource(sseUrl('/asr/monitor/events'));
+      es.onopen = () => {
+        if (alive) setLiveStatus('live');
+      };
+      es.onerror = () => {
+        if (alive) setLiveStatus('stale');
+      };
 
-    const es = new EventSource(sseUrl('/asr/monitor/events'));
-    es.onopen = () => {
-      if (alive) setLiveStatus('live');
-    };
-    es.onerror = () => {
-      if (alive) setLiveStatus('stale');
-    };
+      const markLive = () => {
+        setLastEventAt(Date.now());
+        setLiveStatus('live');
+      };
+      const handleSnapshot = (event: MessageEvent) => {
+        if (!alive) return;
+        setSnapshot(JSON.parse(event.data) as ASRMonitorSnapshot);
+        markLive();
+      };
+      const handleCallEvent = (event: MessageEvent) => {
+        if (!alive) return;
+        const payload = JSON.parse(event.data) as MonitorSSEPayload;
+        if (payload.snapshot) setSnapshot(payload.snapshot);
+        else if (payload.call) setSnapshot((prev) => upsertCall(prev, payload.call as ASRMonitorCall));
+        markLive();
+      };
 
-    const markLive = () => {
-      setLastEventAt(Date.now());
-      setLiveStatus('live');
-    };
-    const handleSnapshot = (event: MessageEvent) => {
-      if (!alive) return;
-      setSnapshot(JSON.parse(event.data) as ASRMonitorSnapshot);
-      markLive();
-    };
-    const handleCallEvent = (event: MessageEvent) => {
-      if (!alive) return;
-      const payload = JSON.parse(event.data) as MonitorSSEPayload;
-      if (payload.snapshot) setSnapshot(payload.snapshot);
-      else if (payload.call) setSnapshot((prev) => upsertCall(prev, payload.call as ASRMonitorCall));
-      markLive();
-    };
-
-    es.addEventListener('snapshot', handleSnapshot);
-    es.addEventListener('call_started', handleCallEvent);
-    es.addEventListener('call_updated', handleCallEvent);
-    es.addEventListener('call_finished', handleCallEvent);
-    es.addEventListener('reset', handleCallEvent);
+      es.addEventListener('snapshot', handleSnapshot);
+      es.addEventListener('call_started', handleCallEvent);
+      es.addEventListener('call_updated', handleCallEvent);
+      es.addEventListener('call_finished', handleCallEvent);
+      es.addEventListener('reset', handleCallEvent);
+    })();
 
     return () => {
       alive = false;
-      es.close();
+      es?.close();
     };
   }, [loadSnapshot, sseUrl]);
 

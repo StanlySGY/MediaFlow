@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 
 const json = (body: unknown) =>
@@ -28,5 +28,22 @@ describe('<App /> smoke', () => {
     expect(await screen.findByText('快速上手')).toBeInTheDocument();
     expect(screen.getByText('上传音频')).toBeInTheDocument();
     expect(screen.getByText('标准上传 WAV 流式接口')).toBeInTheDocument();
+  });
+
+  it('does not follow a canceled startup token prompt with another prompt', async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      if (String(url).includes('/auth/info')) return json({ auth_required: true });
+      return { ok: false, status: 401 } as Response;
+    });
+    const promptMock = vi.fn(() => null);
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('prompt', promptMock);
+
+    render(<App />);
+
+    expect(await screen.findByText('快速上手')).toBeInTheDocument();
+    await waitFor(() => expect(promptMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/auth/info');
   });
 });

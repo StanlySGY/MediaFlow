@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import type { ASRSegment, StandardASRStreamEvent } from '../types';
 import { buildSrt, buildVtt } from '../lib/subtitle';
 import { downloadFile, formatDur } from '../lib/download';
@@ -10,11 +10,40 @@ type RawSeg = {
   segment_id: number; start: number; end: number; text: string;
   error?: string | null; elapsed_ms?: number;
 };
+type RawTaskInfo = {
+  status?: string;
+  progress?: number;
+  total_segments?: number;
+  finished_segments?: number;
+};
+type RawTaskResult = {
+  status?: string;
+  duration?: number;
+  text?: string;
+  segments?: RawSeg[];
+};
+
+const FILE_TASK_STORAGE_KEY = 'asr_file_task_id';
+const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled']);
+
+const readPersistedTaskId = () => {
+  try { return localStorage.getItem(FILE_TASK_STORAGE_KEY); }
+  catch { return null; }
+};
+
+const persistTaskId = (id: string | null) => {
+  try {
+    if (id) localStorage.setItem(FILE_TASK_STORAGE_KEY, id);
+    else localStorage.removeItem(FILE_TASK_STORAGE_KEY);
+  } catch {
+    // Storage may be unavailable in restricted browser contexts.
+  }
+};
 
 const STATUS_LABEL: { [k: string]: string } = {
   'uploading': '上传中', 'pending': '排队中', 'preprocessing': '预处理',
   'splitting': '切分中', 'transcribing': '识别中', 'merging': '合并中',
-  'done': '已完成', 'failed': '失败', '—': '—',
+  'done': '已完成', 'failed': '失败', 'cancelled': '已取消', '—': '—',
 };
 
 // Owns the whole file-transcription lifecycle: upload (XHR for progress), SSE segment
@@ -52,6 +81,9 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mediaRef = useRef<HTMLAudioElement & HTMLVideoElement | null>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const taskIdRef = useRef<string | null>(null);
+  const taskGenerationRef = useRef(0);
+  const terminalHandlingRef = useRef<string | null>(null);
 
   const collectOverrides = () => {
     const o: { [key: string]: string } = {};
@@ -66,15 +98,8 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
     return o;
   };
 
-  const resetTask = () => {
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
-    if (pollTimerRef.current) {
-      clearTimeout(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
+  const clearTaskView = () => {
+    stopTaskStream();
     if (xhrRef.current) {
       xhrRef.current.abort();
       xhrRef.current = null;
@@ -92,6 +117,34 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
     setTaskProgress(0);
     setFullText('');
     setActivePane('live');
+    taskIdRef.current = null;
+    terminalHandlingRef.current = null;
+  };
+
+  const resetTask = async () => {
+    const generation = ++taskGenerationRef.current;
+    const currentTaskId = taskIdRef.current;
+    persistTaskId(null);
+    if (currentTaskId) {
+      try {
+        const response = await authedFetch(`/asr/task/${currentTaskId}/cancel`, { method: 'POST' });
+        if (!response.ok && response.status !== 404) {
+          console.warn(`Failed to cancel task ${currentTaskId}: HTTP ${response.status}`);
+        }
+      } catch (error) {
+        console.warn(`Failed to cancel task ${currentTaskId}`, error);
+      }
+    }
+    if (generation !== taskGenerationRef.current) return generation;
+    clearTaskView();
+    return generation;
+  };
+
+  const detachTaskView = () => {
+    const generation = ++taskGenerationRef.current;
+    persistTaskId(null);
+    clearTaskView();
+    return generation;
   };
 
   // Seek the local media player to a segment's start time (proofreading aid).
@@ -109,7 +162,8 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
   };
 
   const handleFileSelect = async (file: File) => {
-    resetTask();
+    const generation = await resetTask();
+    if (generation !== taskGenerationRef.current) return;
     setTaskStatus('uploading');
     setUploadProgress(0);
 
@@ -123,7 +177,9 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
     Object.entries(collectOverrides()).forEach(([k, v]) => fd.append(k, v));
 
     // Use XHR (not fetch) so we get real upload progress events.
-    const tok = localStorage.getItem('asr_token') || '';
+    let tok = '';
+    try { tok = localStorage.getItem('asr_token') || ''; }
+    catch { /* Continue without a token if browser storage is unavailable. */ }
     try {
       const data = await new Promise<{ task_id: string }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -131,10 +187,12 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
         xhr.open('POST', '/asr/file');
         if (tok) xhr.setRequestHeader('Authorization', `Bearer ${tok}`);
         xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+          if (generation === taskGenerationRef.current && e.lengthComputable) {
+            setUploadProgress(Math.round((e.loaded / e.total) * 100));
+          }
         };
         xhr.onload = () => {
-          xhrRef.current = null;
+          if (xhrRef.current === xhr) xhrRef.current = null;
           if (xhr.status >= 200 && xhr.status < 300) {
             try { resolve(JSON.parse(xhr.responseText)); }
             catch { reject(new Error('返回解析失败')); }
@@ -142,15 +200,31 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
             reject(new Error(xhr.responseText || `HTTP ${xhr.status}`));
           }
         };
-        xhr.onerror = () => { xhrRef.current = null; reject(new Error('网络错误')); };
-        xhr.onabort = () => { xhrRef.current = null; reject(new Error('已取消')); };
+        xhr.onerror = () => {
+          if (xhrRef.current === xhr) xhrRef.current = null;
+          reject(new Error('网络错误'));
+        };
+        xhr.onabort = () => {
+          if (xhrRef.current === xhr) xhrRef.current = null;
+          reject(new Error('已取消'));
+        };
         xhr.send(fd);
       });
 
+      if (generation !== taskGenerationRef.current) {
+        void authedFetch(`/asr/task/${data.task_id}/cancel`, { method: 'POST' }).catch(() => {});
+        return;
+      }
+      if (typeof data.task_id !== 'string' || !data.task_id) {
+        throw new Error('返回任务 ID 无效');
+      }
       setUploadProgress(-1);
+      persistTaskId(data.task_id);
       setTaskId(data.task_id);
-      startTaskStream(data.task_id);
+      taskIdRef.current = data.task_id;
+      startTaskStream(data.task_id, generation);
     } catch (e) {
+      if (generation !== taskGenerationRef.current) return;
       setUploadProgress(-1);
       const msg = errorMessage(e);
       if (msg === '已取消') return;
@@ -159,135 +233,272 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
     }
   };
 
-  const startTaskStream = (id: string) => {
-    pollTask(id);
+  const isCurrentTask = (id: string, generation: number) => (
+    generation === taskGenerationRef.current && taskIdRef.current === id
+  );
 
-    if (esRef.current) esRef.current.close();
-
-    const es = new EventSource(sseUrl(`/asr/file/${id}/events`));
-    esRef.current = es;
-
-    const doneHandler = async (payload?: StandardASRStreamEvent) => {
-      es.close();
+  const stopTaskStream = () => {
+    if (esRef.current) {
+      esRef.current.close();
       esRef.current = null;
-      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-
-      if (payload?.type === 'error') {
-        setTaskStatus('failed');
-      }
-
-      const infoResponse = await authedFetch(`/asr/file/${id}`);
-      if (infoResponse.ok) {
-        const info = await infoResponse.json();
-        setTaskStatus(info.status);
-        setTaskProgress(1);
-      }
-
-      // Fetch full transcript details
-      const resultResponse = await authedFetch(`/asr/file/${id}/result`);
-      if (resultResponse.ok) {
-        const res = await resultResponse.json();
-        setFullText(res.text || '');
-        setTaskDuration(res.duration ? formatDur(res.duration) : '—');
-        setActivePane('final');
-      }
-    };
-
-    const messageHandler = (e: MessageEvent) => {
-      const payload = JSON.parse(e.data) as StandardASRStreamEvent;
-      if (payload.stream !== 'file') return;
-
-      if (payload.type === 'text') {
-        const seg: ASRSegment = {
-          segment_id: payload.segment_id ?? payload.seq ?? 0,
-          start: payload.start ?? 0,
-          end: payload.end ?? 0,
-          text: payload.text || '',
-          is_final: payload.is_final,
-          elapsed_ms: payload.elapsed_ms || 0,
-          error: payload.error || null,
-        };
-        setSegments((prev) => {
-          const nextMap = new Map(prev.map(s => [s.segment_id, s]));
-          nextMap.set(seg.segment_id, seg);
-          const nextList = [...nextMap.values()];
-          setTaskFinSegs(nextList.filter(s => s.is_final).length);
-          return nextList;
-        });
-        return;
-      }
-
-      if (payload.type === 'done' || payload.type === 'error') {
-        doneHandler(payload);
-      }
-    };
-
-    es.addEventListener('message', messageHandler);
-
-    es.onerror = () => {
-      es.close();
-      esRef.current = null;
-    };
-  };
-
-  const pollTask = async (id: string) => {
-    if (!id) return;
-    try {
-      const r = await authedFetch(`/asr/file/${id}`);
-      if (r.ok) {
-        const info = await r.json();
-        setTaskStatus(info.status);
-        if (info.total_segments > 0) {
-          setTaskTotalSegs(info.total_segments);
-        }
-        setTaskProgress(info.progress || 0);
-
-        if (info.status !== 'done' && info.status !== 'failed') {
-          pollTimerRef.current = setTimeout(() => pollTask(id), 1000);
-        }
-      }
-    } catch {
-      pollTimerRef.current = setTimeout(() => pollTask(id), 2000);
+    }
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
     }
   };
 
-  // Load a finished task from history. Returns false on failure (caller skips view switch).
-  const loadHistoricalTask = async (tid: string): Promise<boolean> => {
+  const applyTaskInfo = (info: RawTaskInfo) => {
+    setTaskStatus(info.status || '—');
+    if (typeof info.total_segments === 'number') setTaskTotalSegs(info.total_segments);
+    if (typeof info.finished_segments === 'number') setTaskFinSegs(info.finished_segments);
+    setTaskProgress(typeof info.progress === 'number' ? info.progress : 0);
+  };
+
+  const applyTaskResult = (
+    id: string,
+    generation: number,
+    result: RawTaskResult,
+    fallbackProgress = 0,
+  ) => {
+    if (!isCurrentTask(id, generation)) return;
+    const finalSegments: ASRSegment[] = (result.segments || []).map((s) => ({
+      segment_id: s.segment_id,
+      start: s.start,
+      end: s.end,
+      text: s.text,
+      error: s.error ?? null,
+      is_final: true,
+      elapsed_ms: s.elapsed_ms || 0,
+    }));
+    const status = result.status || 'done';
+    setSegments(finalSegments);
+    setSegmentsEdited(false);
+    setTaskTotalSegs(finalSegments.length);
+    setTaskFinSegs(finalSegments.length);
+    setFullText(result.text || '');
+    setTaskDuration(result.duration ? formatDur(result.duration) : '—');
+    setTaskStatus(status);
+    setTaskProgress(status === 'done' ? 1 : fallbackProgress);
+    setActivePane('final');
+  };
+
+  const markTaskMissing = (id: string, generation: number) => {
+    if (!isCurrentTask(id, generation)) return;
+    stopTaskStream();
+    persistTaskId(null);
+    taskIdRef.current = null;
+    terminalHandlingRef.current = null;
+    setTaskId(null);
+    setTaskStatus('—');
+    setTaskTotalSegs('—');
+    setTaskFinSegs(0);
+    setTaskDuration('—');
+    setTaskProgress(0);
+    setSegments([]);
+    setFullText('');
+  };
+
+  const finishTerminalTask = async (id: string, generation: number, fallbackProgress = 0) => {
+    if (!isCurrentTask(id, generation)) return;
+    const terminalKey = `${generation}:${id}`;
+    if (terminalHandlingRef.current === terminalKey) return;
+    terminalHandlingRef.current = terminalKey;
+    stopTaskStream();
+
     try {
-      const r = await authedFetch(`/asr/task/${tid}/result`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const res = await r.json();
+      const response = await authedFetch(`/asr/file/${id}/result`);
+      if (!isCurrentTask(id, generation)) return;
+      if (response.status === 404) {
+        markTaskMissing(id, generation);
+        return;
+      }
+      if (!response.ok) {
+        terminalHandlingRef.current = null;
+        pollTimerRef.current = setTimeout(() => {
+          void finishTerminalTask(id, generation, fallbackProgress);
+        }, 2000);
+        return;
+      }
+      const result = await response.json() as RawTaskResult;
+      if (!isCurrentTask(id, generation)) return;
+      applyTaskResult(id, generation, result, fallbackProgress);
+    } catch {
+      if (!isCurrentTask(id, generation)) return;
+      terminalHandlingRef.current = null;
+      pollTimerRef.current = setTimeout(() => {
+        void finishTerminalTask(id, generation, fallbackProgress);
+      }, 2000);
+    }
+  };
+
+  const schedulePoll = (id: string, generation: number, delay: number) => {
+    if (!isCurrentTask(id, generation)) return;
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    pollTimerRef.current = setTimeout(() => { void pollTask(id, generation); }, delay);
+  };
+
+  const startTaskStream = (id: string, generation: number) => {
+    if (!isCurrentTask(id, generation)) return;
+    if (esRef.current) esRef.current.close();
+
+    try {
+      const es = new EventSource(sseUrl(`/asr/file/${id}/events`));
+      esRef.current = es;
+
+      const messageHandler = (e: MessageEvent) => {
+        if (!isCurrentTask(id, generation)) return;
+        let payload: StandardASRStreamEvent;
+        try { payload = JSON.parse(e.data) as StandardASRStreamEvent; }
+        catch { return; }
+        if (payload.stream !== 'file') return;
+
+        if (payload.type === 'text') {
+          const seg: ASRSegment = {
+            segment_id: payload.segment_id ?? payload.seq ?? 0,
+            start: payload.start ?? 0,
+            end: payload.end ?? 0,
+            text: payload.text || '',
+            is_final: payload.is_final,
+            elapsed_ms: payload.elapsed_ms || 0,
+            error: payload.error || null,
+          };
+          setSegments((prev) => {
+            const nextMap = new Map(prev.map(s => [s.segment_id, s]));
+            nextMap.set(seg.segment_id, seg);
+            const nextList = [...nextMap.values()];
+            setTaskFinSegs(nextList.filter(s => s.is_final).length);
+            return nextList;
+          });
+          return;
+        }
+
+        if (payload.type === 'done' || payload.type === 'error') {
+          void finishTerminalTask(id, generation, payload.progress ?? 0);
+        }
+      };
+
+      es.addEventListener('message', messageHandler);
+      // Do not close on network errors; EventSource reconnects and the server replays events.
+    } catch {
+      // Polling remains available if EventSource cannot be constructed.
+    }
+    void pollTask(id, generation);
+  };
+
+  const pollTask = async (id: string, generation: number) => {
+    if (!id || !isCurrentTask(id, generation)) return;
+    try {
+      const response = await authedFetch(`/asr/file/${id}`);
+      if (!isCurrentTask(id, generation)) return;
+      if (response.status === 404) {
+        markTaskMissing(id, generation);
+        return;
+      }
+      if (!response.ok) {
+        schedulePoll(id, generation, 2000);
+        return;
+      }
+      const info = await response.json() as RawTaskInfo;
+      if (!isCurrentTask(id, generation)) return;
+      applyTaskInfo(info);
+      if (info.status && TERMINAL_STATUSES.has(info.status)) {
+        void finishTerminalTask(id, generation, info.progress || 0);
+        return;
+      }
+      schedulePoll(id, generation, 1000);
+    } catch {
+      schedulePoll(id, generation, 2000);
+    }
+  };
+
+  // Load a historical task without cancelling the task currently shown in this view.
+  const loadHistoricalTask = async (tid: string): Promise<boolean> => {
+    const generation = detachTaskView();
+    if (generation !== taskGenerationRef.current) return false;
+    try {
+      const statusResponse = await authedFetch(`/asr/task/${tid}`);
+      if (generation !== taskGenerationRef.current) return false;
+      if (!statusResponse.ok) throw new Error(`HTTP ${statusResponse.status}`);
+      const info = await statusResponse.json() as RawTaskInfo;
+      if (generation !== taskGenerationRef.current) return false;
 
       // No local media for historical tasks — clear any lingering player.
       setMediaUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
       setMediaIsVideo(false);
       setSegmentsEdited(false);
 
-      setSegments(
-        (res.segments || []).map((s: RawSeg) => ({
-          segment_id: s.segment_id,
-          start: s.start,
-          end: s.end,
-          text: s.text,
-          error: s.error,
-          is_final: true,
-          elapsed_ms: s.elapsed_ms || 0,
-        }))
-      );
+      if (!info.status || !TERMINAL_STATUSES.has(info.status)) {
+        setTaskId(tid);
+        taskIdRef.current = tid;
+        persistTaskId(tid);
+        applyTaskInfo(info);
+        startTaskStream(tid, generation);
+        return true;
+      }
 
+      const resultResponse = await authedFetch(`/asr/task/${tid}/result`);
+      if (generation !== taskGenerationRef.current) return false;
+      if (!resultResponse.ok) throw new Error(`HTTP ${resultResponse.status}`);
+      const result = await resultResponse.json() as RawTaskResult;
+      if (generation !== taskGenerationRef.current) return false;
       setTaskId(tid);
-      setTaskTotalSegs(res.segments?.length || 0);
-      setTaskFinSegs(res.segments?.length || 0);
-      setTaskProgress(1);
-      setTaskDuration(res.duration ? formatDur(res.duration) : '—');
-      setTaskStatus(res.status);
-      setFullText(res.text || '');
+      taskIdRef.current = tid;
+      persistTaskId(tid);
+      applyTaskResult(tid, generation, result, info.progress || 0);
       return true;
     } catch (e) {
       alert('加载历史记录失败: ' + errorMessage(e));
       return false;
     }
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    const generation = taskGenerationRef.current;
+    const persistedId = readPersistedTaskId();
+    if (!persistedId) {
+      return () => { cancelled = true; };
+    }
+
+    void (async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (cancelled || generation !== taskGenerationRef.current) return;
+        try {
+          const response = await authedFetch(`/asr/task/${persistedId}`);
+          if (cancelled || generation !== taskGenerationRef.current) return;
+          if (response.status === 404) {
+            persistTaskId(null);
+            return;
+          }
+          if (!response.ok) {
+            if (response.status !== 429 && response.status < 500) return;
+          } else {
+            const info = await response.json() as RawTaskInfo;
+            if (cancelled || generation !== taskGenerationRef.current) return;
+            taskIdRef.current = persistedId;
+            setTaskId(persistedId);
+            applyTaskInfo(info);
+            startTaskStream(persistedId, generation);
+            return;
+          }
+        } catch {
+          // A later attempt can recover from a temporary network failure.
+        }
+        if (attempt < 2) {
+          await new Promise(resolve => window.setTimeout(resolve, 300 * (attempt + 1)));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      taskGenerationRef.current += 1;
+      stopTaskStream();
+    };
+  // Recovery runs once for the mounted hook; auth callbacks are stable and read current credentials.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authedFetch]);
 
   const statusLabel = (s: string) => STATUS_LABEL[s] || s;
 

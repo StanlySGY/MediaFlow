@@ -139,6 +139,21 @@ button:disabled {
   @apply opacity-45 cursor-not-allowed shadow-none;
 }
 
+.config-action-bar button {
+  padding-inline: 4px;
+  gap: 2px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (min-width: 768px) {
+  .config-action-bar button {
+    padding-inline: 16px;
+    gap: 8px;
+    font-size: 13px;
+  }
+}
+
 /* ---------------- Badges ---------------- */
 .badge {
   @apply inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-md bg-surface-3 border border-border text-fg-dim;

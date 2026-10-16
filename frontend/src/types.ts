@@ -128,6 +128,8 @@ export interface SystemConfig {
   realtime_max_chunk_bytes?: number;
   realtime_session_ttl_seconds?: number;
   realtime_max_sessions?: number;
+  realtime_max_session_bytes?: number;
+  realtime_max_session_seconds?: number;
   access_tokens_count?: number;
   available_providers?: string[];
   [key: string]: unknown;

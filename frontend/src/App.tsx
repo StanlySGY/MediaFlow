@@ -18,7 +18,7 @@ import { downloadFile } from './lib/download';
 import { SystemConfig } from './types';
 
 export default function App() {
-  const { token, setToken, authedFetch, sseUrl } = useAuth();
+  const { token, setToken, clearSession, authedFetch, sseUrl } = useAuth();
   const standardWavInputRef = useRef<HTMLInputElement>(null);
 
   // File-transcription lifecycle (upload / SSE / polling / proofreading / export).
@@ -76,7 +76,10 @@ export default function App() {
         const info = await r.json();
         if (info.auth_required && !token) {
           const tok = prompt('需要访问令牌（已启用鉴权）');
-          if (tok) setToken(tok.trim());
+          const nextToken = tok?.trim();
+          if (!nextToken) return;
+          setToken(nextToken);
+          return;
         }
       } catch {}
       refreshTopbar();
@@ -104,7 +107,9 @@ export default function App() {
   const handleSetToken = () => {
     const tok = prompt('访问令牌（留空 = 清除）', token);
     if (tok !== null) {
-      setToken(tok.trim());
+      const nextToken = tok.trim();
+      if (nextToken) setToken(nextToken);
+      else clearSession();
       refreshTopbar();
     }
   };
@@ -315,7 +320,7 @@ export default function App() {
                         <div style={{ width: `${taskProgress * 100}%` }} />
                       </div>
 
-                      <button onClick={resetTask}>
+                      <button onClick={() => void resetTask()}>
                         <Trash2 className="w-3.5 h-3.5" />
                         <span>清空</span>
                       </button>
@@ -429,7 +434,11 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
               >
-                <RealtimeView authedFetch={authedFetch} sseUrl={sseUrl} />
+                <RealtimeView
+                  authedFetch={authedFetch}
+                  sseUrl={sseUrl}
+                  realtimeProvider={config?.realtime_asr_provider}
+                />
               </motion.div>
             )}
 
