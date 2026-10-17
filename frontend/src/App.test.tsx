@@ -23,11 +23,12 @@ describe('<App /> smoke', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('renders the onboarding guide and upload view', async () => {
+  it('renders the upload view and hides the beginner guide once configured', async () => {
     render(<App />);
-    expect(await screen.findByText('快速上手')).toBeInTheDocument();
-    expect(screen.getByText('上传音频')).toBeInTheDocument();
-    expect(screen.getByText('标准上传 WAV 流式接口')).toBeInTheDocument();
+    // The dropzone is the single upload entry point.
+    expect(await screen.findByText(/点击选择文件/)).toBeInTheDocument();
+    // api_key_set is true for this mock, so the guide is not needed.
+    await waitFor(() => expect(screen.queryByText('快速上手')).not.toBeInTheDocument());
   });
 
   it('does not follow a canceled startup token prompt with another prompt', async () => {

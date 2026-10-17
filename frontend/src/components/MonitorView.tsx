@@ -110,9 +110,9 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
   return (
     <div className="flex flex-col gap-6">
       <div className="card p-6">
-        <h3 className="section-title justify-between mb-5">
+        <h3 className="section-title justify-between mb-4">
           <div className="flex items-center gap-2">
-            <Activity className="w-5 h-5 text-accent" />
+            <Activity className="w-4 h-4 text-muted" />
             <span>上游调用监控</span>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -134,7 +134,7 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
           </div>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3">
           <MonitorMetric
             label="窗口调用"
             value={`${data.summary.total} / ${data.summary.window_size}`}
@@ -151,7 +151,7 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6">
         <div className="card p-6 min-w-0">
           <h3 className="section-title mb-4">
-            <Radio className="w-5 h-5 text-accent" />
+            <Radio className="w-4 h-4 text-muted" />
             <span>调用明细</span>
             <span className="badge text-[10px]">{calls.length} 条</span>
           </h3>

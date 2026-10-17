@@ -35,14 +35,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <button
         key={item.id}
         onClick={() => onViewChange(item.id)}
-        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left cursor-pointer select-none transition-colors duration-150 border ${
+        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left cursor-pointer select-none transition-colors duration-150 ${
           isActive
-            ? 'bg-accent text-white border-accent'
-            : 'text-fg-dim hover:bg-surface-3 border-transparent'
+            ? 'bg-accent-soft text-accent'
+            : 'text-fg-dim hover:bg-surface-3'
         }`}
       >
-        <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : 'text-muted'}`} />
-        <span className="text-[13px] font-semibold leading-tight">{item.label}</span>
+        <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-accent' : 'text-muted'}`} />
+        <span className={`text-[13px] leading-tight ${isActive ? 'font-semibold' : 'font-medium'}`}>{item.label}</span>
       </button>
     );
   };
@@ -59,7 +59,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <AudioLines className="w-[18px] h-[18px] text-white" />
         </div>
         <div className="min-w-0">
-          <div className="font-title font-bold text-[14px] text-fg tracking-tight leading-tight">MediaFlow</div>
+          <div className="font-semibold text-[14px] text-fg tracking-tight leading-tight">MediaFlow</div>
           <div className="text-[11px] text-muted leading-tight">音视频处理控制台</div>
         </div>
       </div>
@@ -86,6 +86,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span className="text-muted shrink-0">上游服务</span>
           <span className="text-fg truncate" title={config?.provider || '—'}>
             {config?.provider || '—'}
+          </span>
+        </div>
+        <div className="flex justify-between items-center gap-2">
+          <span className="text-muted shrink-0">模型</span>
+          <span className="text-fg truncate" title={config?.model || '—'}>
+            {config?.model || '—'}
           </span>
         </div>
         <div className="flex justify-between items-center gap-2">

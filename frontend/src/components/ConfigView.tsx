@@ -503,7 +503,11 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         {f.type !== 'bool' && (
           <div className="flex justify-between items-center text-xs font-semibold text-fg-dim">
             <span>{f.label}{isDirty && <span className="text-accent ml-1">·已改</span>}</span>
-            {f.type === 'secret' && <span className="badge text-[9px] scale-90">{secretBadge(f.key)}</span>}
+            {f.type === 'secret' && (
+              <span className={`font-normal ${secretBadge(f.key) === '未配置' ? 'text-muted-2' : 'text-muted'}`}>
+                {secretBadge(f.key)}
+              </span>
+            )}
           </div>
         )}
 
@@ -604,7 +608,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
     <div className="flex flex-col gap-6 pb-24">
       <div className="card p-6">
         <div className="flex items-center gap-2">
-          <Server className="w-5 h-5 text-accent" />
+          <Server className="w-4 h-4 text-muted" />
           <h3 className="section-title flex-1">接入配置</h3>
         </div>
         <p className="hint mt-4 mb-4">每份配置分别保存文件转写和实时识别的服务参数。两个功能可以各选一份，互不影响。</p>
@@ -616,8 +620,8 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
                 className="bg-transparent border-none p-0 hover:bg-transparent font-semibold">
                 {p.name}
               </button>
-              {profiles.file === p.id && <span className="badge text-[9px]">文件</span>}
-              {profiles.realtime === p.id && <span className="badge text-[9px]">实时</span>}
+              {profiles.file === p.id && <span className="badge">{'文件'}</span>}
+              {profiles.realtime === p.id && <span className="badge">{'实时'}</span>}
               <button type="button" onClick={() => removeProfile(p.id)} aria-label={`删除 ${p.name}`}
                 className="text-muted hover:text-danger bg-transparent border-none p-1 hover:bg-transparent">
                 <Trash2 className="w-3.5 h-3.5" />
@@ -725,7 +729,7 @@ const GroupCard: React.FC<{
       <button type="button" onClick={() => setOpen(v => !v)}
         aria-expanded={open}
         className="w-full flex items-center gap-2 text-left bg-transparent border-none p-0 hover:bg-transparent">
-        <Icon className="w-5 h-5 text-accent" />
+        <Icon className="w-4 h-4 text-muted" />
         <h3 className="section-title flex-1">{group.title}</h3>
         <ChevronDown className={`w-4 h-4 text-muted transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>

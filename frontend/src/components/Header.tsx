@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cpu, Layers, Key, Menu } from 'lucide-react';
+import { Key, Menu } from 'lucide-react';
 import { SystemConfig } from '../types';
 
 interface HeaderProps {
@@ -13,7 +13,6 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   title,
   crumb,
-  config,
   onSetToken,
   onToggleNav,
 }) => {
@@ -28,23 +27,13 @@ export const Header: React.FC<HeaderProps> = ({
       </button>
 
       <div className="flex flex-col min-w-0">
-        <h1 className="font-title font-bold text-[16px] md:text-[17px] text-fg tracking-tight">{title}</h1>
+        <h1 className="font-semibold text-[16px] text-fg tracking-tight leading-tight">{title}</h1>
         <span className="text-[11.5px] text-muted mt-0.5 max-w-[560px] truncate hidden sm:block" title={crumb}>{crumb}</span>
       </div>
 
       <div className="flex-1" />
 
-      <div className="flex items-center gap-2.5">
-        <div className="text-[12px] font-medium items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-2 border border-border text-fg-dim hidden lg:flex">
-          <Cpu className="w-3.5 h-3.5 text-accent" />
-          <span>模型 <b className="text-fg font-semibold">{config?.model || '未设置'}</b></span>
-        </div>
-
-        <div className="text-[12px] font-medium items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-2 border border-border text-fg-dim hidden lg:flex">
-          <Layers className="w-3.5 h-3.5 text-accent-2" />
-          <span>接口 <b className="text-fg font-semibold">{config?.provider || '未设置'}</b></span>
-        </div>
-
+      <div className="flex items-center gap-2">
         <button
           onClick={onSetToken}
           title="设置访问令牌"

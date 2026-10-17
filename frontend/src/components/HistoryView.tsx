@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Clock, RefreshCw, FolderClosed, Layers, Trash2 } from 'lucide-react';
+import { AlertTriangle, FolderClosed, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { HistoryTask } from '../types';
 import { errorMessage, responseError } from '../lib/errors';
 
 interface HistoryViewProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
   onLoadTask: (taskId: string) => void;
+  /** Navigate to the upload view — used by the empty state. */
+  onGoToTasks?: () => void;
 }
 
 const PAGE = 20;
@@ -41,6 +43,7 @@ const dayEnd = (value: string) => {
 export const HistoryView: React.FC<HistoryViewProps> = ({
   authedFetch,
   onLoadTask,
+  onGoToTasks,
 }) => {
   const [tasks, setTasks] = useState<HistoryTask[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -117,10 +120,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     <div className="flex flex-col gap-6">
       <div className="card p-6">
         <h3 className="section-title justify-between mb-5">
-          <div className="flex items-center gap-2">
-            <FolderClosed className="w-5 h-5 text-accent" />
+          <div className="flex items-center gap-2.5">
             <span>历史转写记录</span>
-            <span className="badge text-xs">{totalCount} 个任务</span>
+            <span className="text-sm font-normal text-muted">{totalCount} 个任务</span>
           </div>
 
           <button
@@ -133,9 +135,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           </button>
         </h3>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end mb-4">
           <label className="field lg:col-span-2">
-            <span>搜索文件名或文本</span>
+            <span>搜索</span>
             <input
               type="search"
               value={q}
@@ -156,32 +158,68 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             </select>
           </label>
           <label className="field">
-            <span>开始日期</span>
+            <span>开始</span>
             <input type="date" value={since} onChange={e => setSince(e.target.value)} />
           </label>
           <label className="field">
-            <span>结束日期</span>
+            <span>结束</span>
             <input type="date" value={until} onChange={e => setUntil(e.target.value)} />
           </label>
         </div>
-        <div className="mb-4">
-          <button onClick={applyFilters} className="primary text-[12px] px-3.5 py-1.5">筛选</button>
+        <div className="flex items-center gap-2 mb-5">
+          <button onClick={applyFilters} className="primary text-[12px] px-3.5 py-1.5">
+            <Search className="w-3.5 h-3.5" />
+            <span>筛选</span>
+          </button>
+          {(q || status || since || until) && (
+            <button
+              onClick={() => {
+                setQ(''); setStatus(''); setSince(''); setUntil('');
+                setPage(0);
+                void loadHistory(0);
+              }}
+              className="text-[12px] px-3.5 py-1.5"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>重置</span>
+            </button>
+          )}
         </div>
 
         {error && (
-          <div className="p-4 rounded-lg border border-err/20 bg-err-soft text-err text-xs font-mono mb-4">
-            {error}
+          <div className="flex items-start gap-2 rounded-[10px] border border-err/30 bg-err-soft px-4 py-3 text-err text-sm mb-4">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span className="break-words">{error}</span>
           </div>
         )}
 
         {loading && tasks.length === 0 ? (
-          <div className="text-muted font-mono text-xs text-center py-20 animate-pulse">
-            正在读取历史记录…
-          </div>
+          <div className="text-muted text-sm text-center py-20">正在读取历史记录…</div>
         ) : tasks.length === 0 ? (
           <div className="hist-empty py-16">
-            <FolderClosed className="w-10 h-10 mx-auto opacity-25 text-muted mb-3" />
-            <p>没有符合条件的转写任务</p>
+            <FolderClosed className="w-9 h-9 mx-auto opacity-20 text-muted mb-3" />
+            <p className="text-fg-dim">
+              {q || status || since || until ? '没有符合条件的转写任务' : '还没有转写记录'}
+            </p>
+            <p className="text-meta text-muted-2 mt-1">
+              {q || status || since || until
+                ? '换个条件，或清空筛选看看全部记录'
+                : '在「文件转写」上传音频后，任务会自动归档到这里'}
+            </p>
+            <button
+              onClick={() => {
+                if (q || status || since || until) {
+                  setQ(''); setStatus(''); setSince(''); setUntil('');
+                  setPage(0);
+                  void loadHistory(0);
+                } else {
+                  onGoToTasks?.();
+                }
+              }}
+              className="mt-4 text-[12px] px-3.5 py-1.5"
+            >
+              {q || status || since || until ? '清空筛选' : '去文件转写'}
+            </button>
           </div>
         ) : (
           <div className="flex flex-col gap-3">
@@ -190,7 +228,6 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               return (
                 <motion.div
                   key={t.task_id}
-                  whileHover={{ y: -2 }}
                   className="hist-item group"
                 >
                   <button
@@ -205,7 +242,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                     {t.original_name && t.text && (
                       <div className="text-[12px] text-muted truncate max-w-2xl mt-0.5">{t.text}</div>
                     )}
-                    <div className="tid font-mono text-[10px] text-muted mt-1">
+                    <div className="tid font-mono text-meta text-muted-2 mt-1">
                       #{t.task_id} · {formatWhen(t.created_at)}
                     </div>
                   </button>
@@ -217,14 +254,12 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                     </span>
                   </div>
 
-                  <div className="flex items-center shrink-0 justify-end text-[11px] font-mono text-fg-dim gap-1">
-                    <Layers className="w-3.5 h-3.5 text-accent" />
-                    <span>{t.finished_segments || 0}/{t.total_segments || 0} 片</span>
+                  <div className="shrink-0 text-right text-sm text-muted tabular-nums">
+                    {t.finished_segments || 0}/{t.total_segments || 0} 片
                   </div>
 
-                  <div className="flex items-center shrink-0 justify-end text-[11px] font-mono text-fg-dim gap-1">
-                    <Clock className="w-3.5 h-3.5 text-accent-2" />
-                    <span>{formatDur(t.duration || 0)}</span>
+                  <div className="shrink-0 text-right text-sm text-muted tabular-nums">
+                    {formatDur(t.duration || 0)}
                   </div>
 
                   <button
@@ -241,7 +276,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         )}
 
         {totalCount > PAGE && (
-          <div className="flex items-center justify-end gap-3 mt-4 text-[12px]">
+          <div className="flex items-center justify-end gap-3 mt-5 text-sm text-muted">
             <button
               disabled={page === 0 || loading}
               onClick={() => {
@@ -252,7 +287,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             >
               上一页
             </button>
-            <span className="font-mono text-muted">{page + 1} / {pages}</span>
+            <span className="tabular-nums">{page + 1} / {pages}</span>
             <button
               disabled={page + 1 >= pages || loading}
               onClick={() => {

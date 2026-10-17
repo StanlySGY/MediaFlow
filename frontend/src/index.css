@@ -1,36 +1,50 @@
 @import "tailwindcss";
 
 @theme {
-  /* ---- Light console palette (new-api / Semi Design inspired) ---- */
-  --color-bg: #eef1f6;
+  /* ---- Restrained neutral console palette ----
+     Cool-grey surfaces, one accent, status colours reserved for real state.
+     Tune here, not per-component. */
+  --color-bg: #f6f7f9;
   --color-surface: #ffffff;
-  --color-surface-2: #f7f8fb;
-  --color-surface-3: #eef1f6;
+  --color-surface-2: #fafbfc;
+  --color-surface-3: #f1f3f5;
 
-  --color-fg: #1c2330;
-  --color-fg-dim: #4a5263;
-  --color-muted: #5d6678;
-  --color-muted-2: #aab1bf;
+  --color-fg: #16181d;
+  --color-fg-dim: #414652;
+  --color-muted: #667085;
+  --color-muted-2: #98a2b3;
 
-  --color-border: #e6e9f0;
-  --color-border-strong: #d4d9e3;
+  --color-border: #e4e7ec;
+  --color-border-strong: #d0d5dd;
 
-  --color-sidebar: #f7f8fb;
+  --color-sidebar: #fbfbfc;
 
   --color-accent: #2f6bff;
-  --color-accent-2: #1858f0;
-  --color-accent-soft: #eaf1ff;
-  --color-accent-glow: rgba(47, 107, 255, 0.18);
+  --color-accent-2: #1f57e0;
+  --color-accent-soft: #eff4ff;
 
-  --color-ok: #14a05a;
-  --color-ok-soft: #e7f7ee;
-  --color-warn: #d98a00;
-  --color-warn-soft: #fdf3e0;
-  --color-err: #e0413a;
-  --color-err-soft: #fdecec;
+  --color-ok: #12805c;
+  --color-ok-soft: #ecfdf3;
+  --color-warn: #b54708;
+  --color-warn-soft: #fffaeb;
+  --color-err: #b42318;
+  --color-err-soft: #fef3f2;
+
+  /* ---- Type scale: four steps with real contrast, not a 9-13px smear ---- */
+  --text-meta: 11px;
+  --text-meta--line-height: 1.45;
+  --text-sm: 12.5px;
+  --text-sm--line-height: 1.5;
+  --text-base: 13.5px;
+  --text-base--line-height: 1.6;
+  --text-title: 15.5px;
+  --text-title--line-height: 1.35;
+
+  /* ---- Radius: two values, held everywhere ---- */
+  --radius-card: 10px;
+  --radius-control: 8px;
 
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-title: 'Plus Jakarta Sans', 'Inter', "PingFang SC", sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
 }
 
@@ -45,13 +59,12 @@ body {
 }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #ccd2de; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #b4bccd; }
+::-webkit-scrollbar-thumb { background: #d5d9e0; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #b9bfc9; }
 
 /* ---------------- Cards & layout ---------------- */
 .card {
-  @apply bg-surface border border-border rounded-lg;
-  box-shadow: 0 1px 2px rgba(28, 35, 48, 0.05);
+  @apply bg-surface border border-border rounded-[10px];
 }
 
 .panel {
@@ -59,7 +72,7 @@ body {
 }
 
 .section-title {
-  @apply font-title text-[15px] font-bold text-fg flex items-center gap-2;
+  @apply text-title font-semibold text-fg flex items-center gap-2;
 }
 
 .section-sub {
@@ -83,17 +96,15 @@ body {
   @apply text-[11px] text-muted font-normal mt-0.5 leading-snug;
 }
 
-.field input[type=text],
-.field input[type=password],
-.field input[type=number],
-.field select,
-.field textarea,
-input[type=text],
-input[type=password],
-input[type=number],
-select,
-textarea {
-  @apply bg-white border border-border text-fg text-[13px] font-normal px-3.5 py-2.5 rounded-lg outline-none w-full transition-colors duration-150;
+@layer base {
+  /* Every text-like input, including type=search / date / password / email /
+     tel / url and inputs with no explicit type. Checkbox, radio, file, range,
+     colour and button inputs keep the browser default control. */
+  input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]):not([type=color]):not([type=submit]):not([type=button]):not([type=reset]):not([type=hidden]),
+  select,
+  textarea {
+    @apply bg-white border border-border text-fg text-[13px] font-normal px-3.5 py-2.5 rounded-lg outline-none w-full transition-colors duration-150;
+  }
 }
 
 input::placeholder, textarea::placeholder { @apply text-muted-2; }
@@ -122,35 +133,36 @@ input:focus, select:focus, textarea:focus {
 }
 
 /* ---------------- Buttons ---------------- */
-button, .btn {
-  @apply bg-white hover:bg-surface-3 border border-border hover:border-border-strong text-fg-dim font-semibold text-[13px] px-4 py-2.5 rounded-lg cursor-pointer inline-flex items-center justify-center gap-2 transition-colors duration-150 select-none;
-}
-button.primary {
-  @apply bg-accent border-accent text-white hover:bg-accent-2 hover:border-accent-2;
-  box-shadow: 0 2px 8px var(--color-accent-glow);
-}
-button.danger {
-  @apply bg-white border-border text-err hover:bg-err-soft hover:border-err/30;
-}
-button.ghost {
-  @apply bg-transparent border-transparent text-muted hover:text-fg hover:bg-surface-3;
-}
-button:disabled {
-  @apply opacity-45 cursor-not-allowed shadow-none;
-}
+@layer components {
+  button, .btn {
+    @apply bg-white hover:bg-surface-3 border border-border hover:border-border-strong text-fg-dim font-semibold text-[13px] px-4 py-2.5 rounded-lg cursor-pointer inline-flex items-center justify-center gap-2 transition-colors duration-150 select-none;
+  }
+  button.primary {
+    @apply bg-accent border-accent text-white hover:bg-accent-2 hover:border-accent-2;
+  }
+  button.danger {
+    @apply bg-white border-border text-err hover:bg-err-soft hover:border-err/30;
+  }
+  button.ghost {
+    @apply bg-transparent border-transparent text-muted hover:text-fg hover:bg-surface-3;
+  }
+  button:disabled {
+    @apply opacity-45 cursor-not-allowed shadow-none;
+  }
 
-.config-action-bar button {
-  padding-inline: 4px;
-  gap: 2px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-@media (min-width: 768px) {
   .config-action-bar button {
-    padding-inline: 16px;
-    gap: 8px;
-    font-size: 13px;
+    padding-inline: 4px;
+    gap: 2px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  @media (min-width: 768px) {
+    .config-action-bar button {
+      padding-inline: 16px;
+      gap: 8px;
+      font-size: 13px;
+    }
   }
 }
 
@@ -204,8 +216,7 @@ button:disabled {
   @apply grid grid-cols-[1fr_auto_auto_auto] gap-4 p-4 bg-white border border-border rounded-lg cursor-pointer items-center transition-colors duration-200;
 }
 .hist-item:hover {
-  @apply border-accent/40 bg-accent-soft;
-  box-shadow: 0 4px 14px rgba(47, 107, 255, 0.08);
+  @apply border-border-strong bg-surface-2;
 }
 .hist-empty { @apply text-center text-muted text-sm; }
 

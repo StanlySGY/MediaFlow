@@ -4,26 +4,27 @@ export const MonitorMetric: React.FC<{
   label: string;
   value: string | number;
   hint?: string;
-  icon: React.ComponentType<{ className?: string }>;
+  icon?: React.ComponentType<{ className?: string }>;
   tone?: 'ok' | 'warn' | 'err' | 'default';
 }> = ({ label, value, hint, icon: Icon, tone = 'default' }) => {
-  const toneClass = {
-    ok: 'text-ok bg-ok-soft border-ok/20',
-    warn: 'text-warn bg-warn-soft border-warn/25',
-    err: 'text-err bg-err-soft border-err/20',
-    default: 'text-accent bg-accent-soft border-accent/20',
+  // State is carried by the number itself; no filled icon tile, no candy box.
+  const valueTone = {
+    ok: 'text-ok',
+    warn: 'text-warn',
+    err: 'text-err',
+    default: 'text-fg',
   }[tone];
 
   return (
-    <div className="panel p-4 flex items-center gap-3 min-h-[92px]">
-      <div className={`w-9 h-9 rounded-lg border flex items-center justify-center ${toneClass}`}>
-        <Icon className="w-4 h-4" />
+    <div className="panel px-4 py-3 min-h-[72px] flex flex-col justify-center">
+      <div className="flex items-center gap-1.5 text-meta text-muted font-medium">
+        {Icon && <Icon className="w-3.5 h-3.5 shrink-0" />}
+        <span className="truncate">{label}</span>
       </div>
-      <div className="min-w-0">
-        <div className="text-[11px] text-muted font-semibold">{label}</div>
-        <div className="font-mono text-[22px] font-bold text-fg leading-tight mt-1">{value}</div>
-        {hint && <div className="text-[11px] text-muted mt-1 truncate">{hint}</div>}
+      <div className={`font-mono text-[18px] font-semibold leading-tight mt-1 tabular-nums ${valueTone}`}>
+        {value}
       </div>
+      {hint && <div className="text-meta text-muted-2 mt-0.5 truncate">{hint}</div>}
     </div>
   );
 };

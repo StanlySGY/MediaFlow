@@ -1,45 +1,42 @@
 import React from 'react';
-import { KeyRound, Server } from 'lucide-react';
+import { Server } from 'lucide-react';
 import { ASRMonitorSnapshot } from '../types';
+
+const Row: React.FC<{ label: string; value?: string | null; mono?: boolean }> = ({ label, value, mono }) => (
+  <div className="flex items-baseline gap-3 py-1.5">
+    <span className="text-meta text-muted w-[86px] shrink-0">{label}</span>
+    <span
+      className={`text-sm text-fg break-all min-w-0 ${mono ? 'font-mono' : ''}`}
+      title={value || undefined}
+    >
+      {value || '—'}
+    </span>
+  </div>
+);
 
 export const MonitorConfigPanel: React.FC<{
   config?: ASRMonitorSnapshot['config'];
   lastEventAt: number | null;
 }> = ({ config, lastEventAt }) => (
-  <div className="card p-6 h-fit">
-    <h3 className="section-title mb-4">
-      <Server className="w-5 h-5 text-accent" />
+  <div className="card p-5 h-fit">
+    <h3 className="section-title mb-3">
+      <Server className="w-4 h-4 text-muted" />
       <span>当前配置</span>
     </h3>
-    <div className="flex flex-col gap-3 text-[12px]">
-      <div className="panel p-3">
-        <div className="text-muted mb-1">文件 ASR Provider</div>
-        <div className="font-mono text-fg break-all">{config?.provider || '-'}</div>
-      </div>
-      <div className="panel p-3">
-        <div className="text-muted mb-1">模型</div>
-        <div className="font-mono text-fg break-all">{config?.model || '-'}</div>
-      </div>
-      <div className="panel p-3">
-        <div className="text-muted mb-1">接口地址</div>
-        <div className="font-mono text-fg-dim break-all">{config?.base_url || '-'}</div>
-      </div>
-      <div className="panel p-3">
-        <div className="text-muted mb-1">实时 Provider</div>
-        <div className="font-mono text-fg break-all">{config?.realtime_asr_provider || '-'}</div>
-      </div>
-      <div className="panel p-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 text-muted">
-          <KeyRound className="w-4 h-4" />
-          <span>API Key</span>
-        </div>
-        <span className={`badge ${config?.api_key_set ? 'ok' : 'err'}`}>
-          {config?.api_key_set ? '已配置' : '未配置'}
-        </span>
-      </div>
-      <div className="text-[11px] text-muted leading-relaxed pt-1">
-        {lastEventAt ? `最近事件：${new Date(lastEventAt).toLocaleTimeString()}` : '等待事件流返回调用变化'}
-      </div>
+
+    <div className="divide-y divide-border">
+      <Row label="文件 Provider" value={config?.provider} mono />
+      <Row label="模型" value={config?.model} mono />
+      <Row label="接口地址" value={config?.base_url} mono />
+      <Row label="实时 Provider" value={config?.realtime_asr_provider} mono />
+      <Row
+        label="API Key"
+        value={config?.api_key_set ? '已配置' : '未配置'}
+      />
+    </div>
+
+    <div className="text-meta text-muted-2 leading-relaxed pt-3 mt-1 border-t border-border">
+      {lastEventAt ? `最近事件 ${new Date(lastEventAt).toLocaleTimeString()}` : '等待事件流返回调用变化'}
     </div>
   </div>
 );

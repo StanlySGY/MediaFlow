@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Trash2, FileText, FolderDown, Check, Download, Copy } from 'lucide-react';
+import { Trash2, FileText, FolderDown, Check, Download, Copy, AlertTriangle } from 'lucide-react';
 
 import { useAuth } from './hooks/useAuth';
 import { useFileTask } from './hooks/useFileTask';
@@ -19,7 +19,6 @@ import { SystemConfig } from './types';
 
 export default function App() {
   const { token, setToken, clearSession, authedFetch, sseUrl } = useAuth();
-  const standardWavInputRef = useRef<HTMLInputElement>(null);
 
   // File-transcription lifecycle (upload / SSE / polling / proofreading / export).
   const {
@@ -158,73 +157,31 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 className="flex flex-col gap-6"
               >
-                {/* Beginner step guide */}
-                {!taskId && (
-                  <div className="card p-6">
-                    <div className="flex items-baseline gap-2 mb-1">
-                      <h2 className="font-title text-[15px] font-bold text-accent">快速上手</h2>
-                      <span className="section-sub">第一次使用？按下面三步来</span>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
-                      <div className="step" style={{ borderColor: isReady ? 'var(--color-ok)' : 'var(--color-accent)' }}>
-                        <span className="num" style={{ background: isReady ? 'var(--color-ok-soft)' : 'var(--color-accent-soft)', color: isReady ? 'var(--color-ok)' : 'var(--color-accent)' }}>
-                          {isReady ? '✓' : '1'}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="text-[13px] font-semibold text-fg">配置 ASR 接口</div>
-                          <div className="text-[11.5px] text-muted mt-0.5">填写接口地址、密钥、模型</div>
-                          {!isReady && (
-                            <button onClick={() => handleViewChange('config')} className="primary mt-2 text-[12px] py-1.5 px-3">去配置</button>
-                          )}
-                        </div>
-                      </div>
-                      <div className="step border-border">
-                        <span className="num bg-surface-3 text-fg-dim">2</span>
-                        <div className="min-w-0">
-                          <div className="text-[13px] font-semibold text-fg">测试连接</div>
-                          <div className="text-[11.5px] text-muted mt-0.5">在「服务配置」点「测试连接」确认上游可用</div>
-                        </div>
-                      </div>
-                      <div className="step border-border">
-                        <span className="num bg-surface-3 text-fg-dim">3</span>
-                        <div className="min-w-0">
-                          <div className="text-[13px] font-semibold text-fg">上传音频</div>
-                          <div className="text-[11.5px] text-muted mt-0.5">把文件拖到下方，等待自动转写完成</div>
-                        </div>
-                      </div>
-                    </div>
+                {/* Beginner guide — shown only until the upstream is configured */}
+                {!taskId && !isReady && (
+                  <div className="card px-5 py-4 flex flex-wrap items-center gap-x-6 gap-y-2">
+                    <span className="text-base font-semibold text-fg">快速上手</span>
+                    <ol className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-sm text-muted">
+                      <li>1 填写接口地址与密钥</li>
+                      <li>2 测试连接</li>
+                      <li>3 拖入音频开始转写</li>
+                    </ol>
+                    <span className="flex-1" />
+                    <button onClick={() => handleViewChange('config')} className="primary text-[12px] py-1.5 px-3">去配置</button>
                   </div>
                 )}
 
                 {/* Upload drag drop panel */}
                 <div className="card p-6">
-                  <Dropzone onFileSelect={handleFileSelect} disabled={taskStatus === 'uploading' || taskStatus === 'processing'} />
-
-                  <div className="panel p-3 mt-4 flex items-center justify-between gap-3 flex-wrap">
-                    <div className="min-w-0">
-                      <div className="text-[13px] font-semibold text-fg">标准文件流式转写</div>
-                      <div className="text-[11.5px] text-muted mt-0.5">POST /asr/file · SSE /asr/file/&lt;task_id&gt;/events</div>
+                  {footStatus.status === 'err' && (
+                    <div className="flex items-center gap-2.5 rounded-[10px] border border-err/30 bg-err-soft px-4 py-3 mb-4 text-sm text-err">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span className="font-medium">上游 ASR 未连通 · {footStatus.text}</span>
+                      <span className="flex-1" />
+                      <button onClick={() => handleViewChange('config')} className="text-[12px] py-1 px-2.5">去服务配置</button>
                     </div>
-                    <input
-                      ref={standardWavInputRef}
-                      type="file"
-                      accept=".wav,audio/wav,audio/x-wav"
-                      hidden
-                      onChange={(e) => {
-                        const file = e.currentTarget.files?.[0];
-                        if (file) void handleFileSelect(file);
-                        e.currentTarget.value = '';
-                      }}
-                    />
-                    <button
-                      onClick={() => standardWavInputRef.current?.click()}
-                      disabled={taskStatus === 'uploading' || taskStatus === 'processing'}
-                      className="primary"
-                    >
-                      <FileText className="w-4 h-4" />
-                      <span>标准上传 WAV 流式接口</span>
-                    </button>
-                  </div>
+                  )}
+                  <Dropzone onFileSelect={handleFileSelect} disabled={taskStatus === 'uploading' || taskStatus === 'processing'} />
 
                   {/* Real upload progress */}
                   {uploadProgress >= 0 && (
@@ -477,6 +434,7 @@ export default function App() {
                 <HistoryView
                   authedFetch={authedFetch}
                   onLoadTask={async (tid) => { if (await loadHistoricalTask(tid)) handleViewChange('tasks'); }}
+                  onGoToTasks={() => handleViewChange('tasks')}
                 />
               </motion.div>
             )}
