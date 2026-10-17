@@ -99,30 +99,37 @@ body {
 @layer base {
   /* Every text-like input, including type=search / date / password / email /
      tel / url and inputs with no explicit type. Checkbox, radio, file, range,
-     colour and button inputs keep the browser default control. */
-  input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]):not([type=color]):not([type=submit]):not([type=button]):not([type=reset]):not([type=hidden]),
+     colour and button inputs keep the browser default control.
+     The exclusion list is wrapped in :where() on purpose: nine :not([type=...])
+     attribute selectors are worth (0,9,1), which would outbid the :hover and
+     :focus rules below at (0,1,1) and silently kill the hover/focus border on
+     every text field. :where() zeroes that, keeping this rule at element
+     specificity so the states below win and Tailwind utilities still override. */
+  input:where(:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]):not([type=color]):not([type=submit]):not([type=button]):not([type=reset]):not([type=hidden])),
   select,
   textarea {
     @apply bg-white border border-border text-fg text-[13px] font-normal px-3.5 py-2.5 rounded-lg outline-none w-full transition-colors duration-150;
   }
+
+  input::placeholder,
+  textarea::placeholder {
+    @apply text-muted-2;
+  }
+
+  input:hover,
+  select:hover,
+  textarea:hover {
+    @apply border-border-strong;
+  }
+
+  input:focus,
+  select:focus,
+  textarea:focus {
+    @apply border-accent bg-white;
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+  }
 }
 
-input::placeholder, textarea::placeholder { @apply text-muted-2; }
-
-.field input:hover,
-.field select:hover,
-.field textarea:hover,
-input:hover, select:hover, textarea:hover {
-  @apply border-border-strong;
-}
-
-.field input:focus,
-.field select:focus,
-.field textarea:focus,
-input:focus, select:focus, textarea:focus {
-  @apply border-accent bg-white;
-  box-shadow: 0 0 0 3px var(--color-accent-soft);
-}
 
 .field.check {
   @apply flex-row items-center gap-2.5 cursor-pointer py-3 px-4 bg-surface-2 border border-border rounded-lg hover:border-border-strong select-none transition-colors;
@@ -227,7 +234,7 @@ input:focus, select:focus, textarea:focus {
 .soundwave-container .bar {
   @apply w-1 h-2 bg-accent rounded-sm;
 }
-.soundwave-container.active .bar { animation: bounce 0.8s ease-in-out infinite alternate; }
+.soundwave-container.active .bar { animation: wave-pulse 0.8s ease-in-out infinite alternate; }
 .soundwave-container.active .bar:nth-child(1) { animation-delay: 0.1s; }
 .soundwave-container.active .bar:nth-child(2) { animation-delay: 0.3s; }
 .soundwave-container.active .bar:nth-child(3) { animation-delay: 0.5s; }
@@ -240,7 +247,10 @@ input:focus, select:focus, textarea:focus {
 .soundwave-container.active .bar:nth-child(10) { animation-delay: 0.45s; }
 .soundwave-container.active .bar:nth-child(11) { animation-delay: 0.12s; }
 .soundwave-container.active .bar:nth-child(12) { animation-delay: 0.32s; }
-@keyframes bounce { 0% { height: 8px; } 100% { height: 30px; } }
+/* Not named `bounce`: that keyframe name belongs to Tailwind's theme
+   (--animate-bounce), and the two collide in the compiled bundle — only the
+   theme's transform version survives, so the bars never pulse in height. */
+@keyframes wave-pulse { 0% { height: 8px; } 100% { height: 30px; } }
 
 /* ---------------- Progress bar ---------------- */
 .progress {
@@ -256,4 +266,40 @@ input:focus, select:focus, textarea:focus {
 }
 .step .num {
   @apply w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-[13px] font-bold;
+}
+
+/* ---------------- File input ---------------- */
+/* Tailwind v4 preflight deliberately carves `type=file` out of the shared
+   control styling, so the native picker falls back to the UA default. Style it
+   explicitly here; `::file-selector-button` has no tokenised equivalent. */
+@layer base {
+  input[type="file"] {
+    @apply bg-white border border-border rounded-lg text-[13px] text-muted w-full cursor-pointer outline-none transition-colors duration-150;
+    padding: 6px 10px;
+  }
+
+  input[type="file"]:focus {
+    @apply border-accent bg-white;
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+  }
+
+  input[type="file"]:hover {
+    @apply border-border-strong;
+  }
+
+  input[type="file"]:disabled {
+    @apply opacity-50 cursor-not-allowed;
+  }
+
+  input[type="file"]::file-selector-button {
+    @apply bg-accent-soft text-accent font-semibold cursor-pointer mr-3;
+    font-size: 12.5px;
+    border: 0;
+    border-radius: 6px;
+    padding: 6px 14px;
+  }
+
+  input[type="file"]::file-selector-button:hover {
+    background-color: color-mix(in srgb, var(--color-accent) 16%, white);
+  }
 }

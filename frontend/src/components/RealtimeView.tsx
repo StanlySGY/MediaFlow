@@ -620,8 +620,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
                 <Info className="w-3.5 h-3.5 text-accent" />
                 <span>选择一个本地音频/视频文件用于模拟发送</span>
               </span>
-              <input type="file" ref={fileInputRef} accept="audio/*,video/*"
-                className="file:bg-accent-soft file:border-none file:text-accent file:px-4 file:py-1 file:rounded-md file:cursor-pointer file:mr-3" />
+              <input type="file" ref={fileInputRef} accept="audio/*,video/*" />
             </label>
             <label className="field">
               <span>每包大小 (KB)</span>
