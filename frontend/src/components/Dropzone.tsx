@@ -70,30 +70,21 @@ export const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, disabled }) =>
         onKeyDown={(e) => {
           if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(); }
         }}
-        className={`border border-dashed rounded-lg p-12 text-center cursor-pointer transition-colors duration-150 flex flex-col items-center justify-center gap-4 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+        className={`border border-dashed rounded-[10px] px-6 py-10 text-center cursor-pointer transition-colors duration-150 flex flex-col items-center justify-center gap-2.5 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
           isDragActive
-            ? 'border-accent bg-accent-soft text-accent'
-            : 'border-border-strong bg-surface-2 hover:border-accent/50 hover:bg-accent-soft/50 text-fg-dim'
+            ? 'border-accent bg-accent-soft'
+            : 'border-border-strong bg-surface-2 hover:border-border-strong'
         } ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
-        whileHover={disabled ? {} : { scale: 1 }}
-        whileTap={disabled ? {} : { scale: 1 }}
       >
-        <motion.div
-          className={`w-14 h-14 rounded-full flex items-center justify-center transition-colors ${
-            isDragActive ? 'bg-accent text-white' : 'bg-accent-soft text-accent'
-          }`}
-          animate={{ y: 0 }}
-        >
-          <UploadCloud className="w-6 h-6" />
-        </motion.div>
+        <UploadCloud className={`w-5 h-5 ${isDragActive ? 'text-accent' : 'text-muted-2'}`} />
 
         <div className="flex flex-col gap-1">
-          <strong className="text-fg text-sm font-semibold">
+          <span className="text-base font-medium text-fg">
             {isDragActive ? '松手即可上传' : '点击选择文件，或把音频/视频拖到这里'}
-          </strong>
-          <small className="text-[11.5px] text-muted max-w-md mx-auto">
+          </span>
+          <span className="text-meta text-muted max-w-md mx-auto">
             支持 mp3 / wav / m4a / flac / aac / ogg / mp4 / mov / mkv / pcm，最长可处理 2 小时以上的录音
-          </small>
+          </span>
         </div>
       </motion.div>
     </div>

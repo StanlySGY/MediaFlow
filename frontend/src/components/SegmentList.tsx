@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Clock, Timer, Eye, AlertTriangle, Play, Copy, Check } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { AlertTriangle, Check, ChevronDown, Copy, Play } from 'lucide-react';
 import { ASRSegment } from '../types';
 import { errorMessage } from '../lib/errors';
 
@@ -34,6 +34,12 @@ function highlightJson(json: string): string {
   );
 }
 
+const formatTime = (s: number) => {
+  const m = Math.floor(s / 60);
+  const sec = (s % 60).toFixed(1);
+  return `${String(m).padStart(2, '0')}:${sec.padStart(4, '0')}`;
+};
+
 export const SegmentList: React.FC<SegmentListProps> = ({
   segments,
   taskId,
@@ -56,12 +62,6 @@ export const SegmentList: React.FC<SegmentListProps> = ({
     if (editingId !== segId) return;
     onEditText?.(segId, draft.trim());
     setEditingId(null);
-  };
-
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = (s % 60).toFixed(1);
-    return `${String(m).padStart(2, '0')}:${sec.padStart(4, '0')}`;
   };
 
   const toggleExpand = async (segId: number) => {
@@ -97,77 +97,64 @@ export const SegmentList: React.FC<SegmentListProps> = ({
   };
 
   const sortedSegments = [...segments].sort((a, b) => a.segment_id - b.segment_id);
+  const editable = sortedSegments.filter((s) => s.is_final && !s.error).length;
 
   return (
-    <div className="flex flex-col gap-3">
-      {onEditText && sortedSegments.some((s) => s.is_final && !s.error) && (
-        <p className="hint">双击分片文本即可就地校对；校对后在「完整文本」标签可导出精修后的 SRT/VTT 字幕。</p>
+    <div className="flex flex-col gap-2">
+      {onEditText && editable > 0 && (
+        <p className="hint">双击文本可就地校对；校对后在「完整文本」导出精修字幕。</p>
       )}
-      <AnimatePresence initial={false}>
+
+      <div className="rounded-[10px] border border-border bg-surface overflow-hidden divide-y divide-border">
         {sortedSegments.map((seg) => {
           const isExpanded = expandedSegId === seg.segment_id;
           const isLoading = loadingId === seg.segment_id;
-          const elapsed = seg.elapsed_ms ? `${seg.elapsed_ms.toFixed(0)}ms` : '—';
+          const elapsed = seg.elapsed_ms ? `${seg.elapsed_ms.toFixed(0)}ms` : null;
+          const canEdit = !!onEditText && seg.is_final && !seg.error;
+          const isEditing = editingId === seg.segment_id;
 
           return (
-            <motion.div
-              key={seg.segment_id}
-              layout="position"
-              initial={{ opacity: 0, y: -8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-              className="border border-border rounded-lg bg-white hover:border-accent/30 hover:bg-accent-soft/40 transition-colors overflow-hidden"
-            >
-              {/* Main content row */}
+            <div key={seg.segment_id} className="group/seg">
               <div
                 role="button"
                 tabIndex={0}
                 aria-expanded={isExpanded}
-                onClick={() => toggleExpand(seg.segment_id)}
+                onClick={() => !isEditing && toggleExpand(seg.segment_id)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpand(seg.segment_id); }
+                  if (isEditing) return;
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    void toggleExpand(seg.segment_id);
+                  }
                 }}
-                className="flex flex-col md:flex-row md:items-center gap-4 px-5 py-4 cursor-pointer select-none outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-lg"
+                className="flex items-start gap-3 px-4 py-3 cursor-pointer select-none outline-none focus-visible:bg-surface-2 hover:bg-surface-2 transition-colors"
               >
-                <div className="flex items-center gap-3 shrink-0">
-                  <span className="font-mono text-xs font-bold text-accent">#{seg.segment_id}</span>
+                <span className="font-mono text-meta text-muted-2 w-6 shrink-0 pt-1 tabular-nums text-right">
+                  {seg.segment_id}
+                </span>
 
-                  {onSeek && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onSeek(seg.start); }}
-                      title="跳到此处播放"
-                      aria-label={`播放第 ${seg.segment_id} 段`}
-                      className="w-7 h-7 p-0 rounded-full bg-accent-soft border-accent/20 text-accent flex items-center justify-center hover:bg-accent hover:text-white"
-                    >
-                      <Play className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-
-                  <span className="flex items-center gap-1 text-[11px] font-mono font-medium px-2.5 py-1 rounded-full bg-surface-3 border border-border text-fg-dim">
-                    <Clock className="w-3 h-3 text-accent-2" />
-                    <span>{formatTime(seg.start)} – {formatTime(seg.end)}</span>
-                  </span>
-
-                  <span className="flex items-center gap-1 text-[11px] font-mono font-medium px-2.5 py-1 rounded-full bg-surface-3 border border-border text-muted">
-                    <Timer className="w-3 h-3 text-muted" />
-                    <span>{elapsed}</span>
-                  </span>
-
-                  {seg.speaker && (
-                    <span className="flex items-center gap-1 text-[11px] font-mono font-medium px-2.5 py-1 rounded-full bg-accent/10 border border-accent/20 text-accent">
-                      <span>{seg.speaker}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2.5 text-meta text-muted mb-1">
+                    <span className="font-mono tabular-nums">
+                      {formatTime(seg.start)} – {formatTime(seg.end)}
                     </span>
-                  )}
-                </div>
+                    {seg.speaker && (
+                      <span className="px-1.5 py-0.5 rounded border border-border bg-surface-2 text-fg-dim">
+                        {seg.speaker}
+                      </span>
+                    )}
+                    {elapsed && <span className="text-muted-2">{elapsed}</span>}
+                    {seg.error && (
+                      <span className="inline-flex items-center gap-1 text-err">
+                        <AlertTriangle className="w-3 h-3" />
+                        识别失败
+                      </span>
+                    )}
+                  </div>
 
-                <div className="flex-1 min-w-0">
                   {seg.error ? (
-                    <div className="flex items-center gap-1.5 text-err text-[13px] font-medium">
-                      <AlertTriangle className="w-3.5 h-3.5" />
-                      <span>{seg.error}</span>
-                    </div>
-                  ) : editingId === seg.segment_id ? (
+                    <p className="text-sm text-err leading-relaxed break-words">{seg.error}</p>
+                  ) : isEditing ? (
                     <textarea
                       autoFocus
                       value={draft}
@@ -175,58 +162,76 @@ export const SegmentList: React.FC<SegmentListProps> = ({
                       onClick={(e) => e.stopPropagation()}
                       onKeyDown={(e) => {
                         e.stopPropagation();
-                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commitEdit(seg.segment_id); }
-                        else if (e.key === 'Escape') { e.preventDefault(); setEditingId(null); }
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          commitEdit(seg.segment_id);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setEditingId(null);
+                        }
                       }}
                       onBlur={() => commitEdit(seg.segment_id)}
-                      className="w-full bg-surface-2 border border-accent/40 rounded-lg px-3 py-2 text-[13.5px] leading-relaxed text-fg outline-none resize-y select-text"
+                      className="w-full bg-surface border border-accent/40 rounded-[8px] px-3 py-2 text-base leading-relaxed text-fg outline-none resize-y select-text"
                     />
                   ) : (
                     <p
-                      onDoubleClick={onEditText && seg.is_final ? (e) => { e.stopPropagation(); startEdit(seg); } : undefined}
-                      title={onEditText && seg.is_final ? '双击校对此分片文本' : undefined}
-                      className="text-[13.5px] leading-relaxed text-fg truncate"
+                      onDoubleClick={canEdit ? (e) => { e.stopPropagation(); startEdit(seg); } : undefined}
+                      title={canEdit ? '双击校对这段文本' : undefined}
+                      className={`text-base leading-relaxed break-words ${
+                        seg.text ? 'text-fg' : 'text-muted-2'
+                      }`}
                     >
                       {seg.text || '识别中…'}
                     </p>
                   )}
                 </div>
 
-                <div className="shrink-0 text-muted">
-                  <Eye className="w-4 h-4" />
+                <div className="flex items-center gap-1 shrink-0 pt-0.5">
+                  {onSeek && !seg.error && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onSeek(seg.start); }}
+                      title="跳到此处播放"
+                      aria-label={`播放第 ${seg.segment_id} 段`}
+                      className="w-7 h-7 p-0 border-0 bg-transparent text-muted opacity-0 group-hover/seg:opacity-100 focus-visible:opacity-100 hover:text-accent transition-opacity"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  <ChevronDown
+                    className={`w-4 h-4 text-muted-2 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                  />
                 </div>
               </div>
 
-              {/* Collapsible raw data panel */}
               <AnimatePresence initial={false}>
                 {isExpanded && (
                   <motion.div
-                    initial={{ height: 0 }}
-                    animate={{ height: 'auto' }}
-                    exit={{ height: 0 }}
-                    transition={{ duration: 0.2 }}
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.18 }}
+                    className="overflow-hidden"
                   >
-                    <div className="border-t border-border bg-[#0e1626] p-5">
-                      <div className="flex justify-between items-center mb-3">
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-[#6b7790] font-mono">
-                          ASR 接口原始返回（调试用）
-                        </span>
+                    <div className="border-t border-border bg-surface-2 px-4 py-3">
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <span className="text-meta text-muted">上游原始返回</span>
                         {rawData[seg.segment_id] && !isLoading && (
                           <button
                             onClick={() => copyRaw(seg.segment_id)}
-                            className="text-[11px] py-1 px-2.5 bg-white/5 border-white/10 text-[#9cc0ff] hover:bg-white/10"
+                            className="text-meta py-0.5 px-2"
                           >
-                            {copiedId === seg.segment_id ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                            {copiedId === seg.segment_id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                             <span>{copiedId === seg.segment_id ? '已复制' : '复制'}</span>
                           </button>
                         )}
                       </div>
 
                       {isLoading ? (
-                        <div className="text-xs font-mono text-[#9cc0ff] animate-pulse">正在加载上游返回数据…</div>
+                        <div className="text-meta text-muted py-2">正在加载…</div>
                       ) : (
+                        /* Dark inset: the syntax palette below is tuned for it. */
                         <pre
-                          className="text-[11px] font-mono overflow-auto max-h-[300px] leading-relaxed text-[#cdd6e6]"
+                          className="text-meta font-mono overflow-auto max-h-[280px] leading-relaxed rounded-[8px] bg-[#0e1626] border border-[#1d2740] px-3 py-2.5 text-[#cdd6e6]"
                           dangerouslySetInnerHTML={{ __html: highlightJson(rawData[seg.segment_id] || '无返回数据') }}
                         />
                       )}
@@ -234,10 +239,10 @@ export const SegmentList: React.FC<SegmentListProps> = ({
                   </motion.div>
                 )}
               </AnimatePresence>
-            </motion.div>
+            </div>
           );
         })}
-      </AnimatePresence>
+      </div>
     </div>
   );
 };

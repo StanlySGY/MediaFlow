@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ClipboardCopy, Download, Mic, Square, Trash2 } from 'lucide-react';
+import { ChevronRight, ClipboardCopy, Download, Mic, Square, Trash2 } from 'lucide-react';
 import { StandardASRStreamEvent } from '../types';
 import { errorMessage, responseError } from '../lib/errors';
 import { applySplice } from '../lib/splice';
@@ -420,20 +420,28 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   return (
     <div className="card p-6">
       <h3 className="section-title justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Mic className="w-5 h-5 text-accent" />
+        <div className="flex items-center gap-2 min-w-0">
+          <Mic className="w-4 h-4 text-muted shrink-0" />
           <span>实时录音</span>
+          {realtimeProvider && (
+            <span className="text-meta font-normal text-muted-2 truncate">
+              {realtimeProvider === 'realtime_mock'
+                ? '演示模式 · 不调用真实 ASR'
+                : realtimeProvider}
+            </span>
+          )}
         </div>
-        {realtimeProvider && (
-          <span className={`badge ${realtimeProvider === 'realtime_mock' ? 'warn' : ''}`}>
-            {realtimeProvider === 'realtime_mock'
-              ? '演示模式：不会调用真实 ASR'
-              : `实时接口：${realtimeProvider}`}
-          </span>
-        )}
-        <span className={`badge ${isRecording ? 'warn' : transcript ? 'ok' : ''}`}>
-          <span className={`dot ${isRecording ? 'pulse' : ''}`} />
-          <span>{status}</span>
+        <span
+          className={`inline-flex items-center gap-1.5 text-sm font-medium ${
+            isRecording ? 'text-warn' : transcript ? 'text-ok' : 'text-muted'
+          }`}
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              isRecording ? 'bg-warn' : transcript ? 'bg-ok' : 'bg-muted-2'
+            }`}
+          />
+          {status}
         </span>
       </h3>
 
@@ -446,8 +454,10 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
           <Square className="w-4 h-4" />
           <span>停止录音</span>
         </button>
-        <span className="badge">已发送 <b className="text-fg ml-1 font-mono">{chunks}</b> 包</span>
-        <span className="badge">累计 <b className="text-fg ml-1 font-mono">{bytes.toLocaleString()}</b> 字节</span>
+        <span className="text-sm text-muted tabular-nums self-center">
+          已发送 <b className="text-fg font-medium">{chunks}</b> 包 ·
+          累计 <b className="text-fg font-medium">{bytes.toLocaleString()}</b> 字节
+        </span>
       </div>
 
       {notice && (
@@ -465,22 +475,23 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         </div>
       )}
 
-      <div className="bg-white border border-border rounded-lg min-h-[260px] p-6">
+      <div className="bg-surface border border-border rounded-[10px] min-h-[240px] p-5">
         <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
-          <div className="text-[11px] text-muted font-semibold">
+          <div className="text-meta text-muted font-medium">
             {state === 'completed' ? '最终稿' : '实时文稿'}
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={copyTranscript} disabled={!transcript}>
+            <button onClick={copyTranscript} disabled={!transcript} className="text-[12px] py-1.5 px-3">
               <ClipboardCopy className="w-3.5 h-3.5" />
-              <span>复制录音文稿</span>
+              <span>复制文稿</span>
             </button>
             <button
               onClick={() => downloadFile('realtime-recording.txt', transcript, 'text/plain;charset=utf-8')}
               disabled={!transcript}
+              className="text-[12px] py-1.5 px-3"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>下载录音 TXT</span>
+              <span>下载 TXT</span>
             </button>
           </div>
         </div>
@@ -492,28 +503,32 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
             {transcriptFeedback}
           </p>
         )}
-        <div className="text-[22px] leading-relaxed text-fg whitespace-pre-wrap break-words">
+        <div className="text-[16px] leading-[1.9] text-fg whitespace-pre-wrap break-words">
           {transcript || <span className="text-muted-2">等待识别文本…</span>}
         </div>
       </div>
 
-      <details className="mt-4">
-        <summary className="cursor-pointer text-[12px] text-muted">调试日志</summary>
-        <div className="panel p-4 min-w-0 mt-2">
+      <details className="mt-4 group">
+        <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden inline-flex items-center gap-1.5 text-sm text-muted hover:text-fg transition-colors">
+          <ChevronRight className="w-3.5 h-3.5 transition-transform group-open:rotate-90" />
+          <span>调试日志</span>
+          {logs.length > 0 && <span className="text-meta text-muted-2">{logs.length} 条</span>}
+        </summary>
+        <div className="mt-2 min-w-0">
           <div className="flex items-center justify-end gap-2 mb-3">
-            <button onClick={copyLogs} disabled={logs.length === 0}>
-              <ClipboardCopy className="w-3.5 h-3.5" />
-              <span>复制日志</span>
+            <button onClick={copyLogs} disabled={logs.length === 0} className="text-meta py-0.5 px-2">
+              <ClipboardCopy className="w-3 h-3" />
+              <span>复制</span>
             </button>
-            <button onClick={() => setLogs([])} disabled={logs.length === 0}>
-              <Trash2 className="w-3.5 h-3.5" />
+            <button onClick={() => setLogs([])} disabled={logs.length === 0} className="text-meta py-0.5 px-2">
+              <Trash2 className="w-3 h-3" />
               <span>清空</span>
             </button>
           </div>
           <textarea
             readOnly
             value={logs.join('\n')}
-            className="w-full h-[160px] font-mono text-[11px] leading-relaxed bg-white"
+            className="w-full h-[160px] font-mono text-meta leading-relaxed rounded-[8px] bg-[#0e1626] border border-[#1d2740] text-[#cdd6e6] px-3 py-2.5 resize-y"
             placeholder="录音、上传、SSE 事件和错误会显示在这里。"
           />
         </div>

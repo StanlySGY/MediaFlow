@@ -109,8 +109,8 @@ describe('<RealtimeView /> browser recorder', () => {
 
     render(<RealtimeView authedFetch={authedFetch} sseUrl={(path) => path} />);
 
-    expect(screen.getByRole('button', { name: '复制录音文稿' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '下载录音 TXT' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '复制文稿' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '下载 TXT' })).toBeDisabled();
 
     await userEvent.click(screen.getByRole('button', { name: '开始录音' }));
 
@@ -153,16 +153,16 @@ describe('<RealtimeView /> browser recorder', () => {
 
     expect(await screen.findByText('你😃正在识别。')).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole('button', { name: '复制录音文稿' }));
+    await userEvent.click(screen.getByRole('button', { name: '复制文稿' }));
     expect(clipboardWriteText).toHaveBeenCalledWith('你😃正在识别。');
     expect(await screen.findByRole('status')).toHaveTextContent('文稿已复制到剪贴板');
 
     clipboardWriteText.mockRejectedValueOnce(new Error('permission denied'));
-    await userEvent.click(screen.getByRole('button', { name: '复制录音文稿' }));
+    await userEvent.click(screen.getByRole('button', { name: '复制文稿' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('无法访问剪贴板，文稿仍保留在屏幕上');
     expect(screen.getByText('你😃正在识别。')).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole('button', { name: '下载录音 TXT' }));
+    await userEvent.click(screen.getByRole('button', { name: '下载 TXT' }));
     expect(downloadFile).toHaveBeenCalledWith(
       'realtime-recording.txt',
       '你😃正在识别。',
@@ -303,7 +303,7 @@ describe('<RealtimeView /> browser recorder', () => {
     expect(screen.getByText('2 条')).toBeInTheDocument();
 
     act(() => source.emitError());
-    expect(screen.getByText('会话进行中')).toBeInTheDocument();
+    expect(screen.getByText('进行中')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('事件流连接中断，正在重新连接');
     expect(source.closeCalls).toBe(0);
     expect(deleteRequests).toEqual([]);
@@ -318,7 +318,7 @@ describe('<RealtimeView /> browser recorder', () => {
     expect(await screen.findByText('2 条')).toBeInTheDocument();
     expect(container.querySelectorAll('.ev')).toHaveLength(2);
     expect(screen.getAllByText('你好世界')).toHaveLength(1);
-    expect(screen.getByText('会话进行中')).toBeInTheDocument();
+    expect(screen.getByText('进行中')).toBeInTheDocument();
     expect(source.closeCalls).toBe(0);
     expect(deleteRequests).toEqual([]);
   });

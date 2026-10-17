@@ -259,7 +259,7 @@ export default function App() {
                     <h3 className="section-title justify-between mb-4">
                       <div className="flex items-center gap-2">
                         <span>转写进度</span>
-                        <span className="font-mono text-xs text-muted">#{taskId.slice(0, 16)}…</span>
+                        <span className="font-mono text-meta text-muted-2">#{taskId.slice(0, 16)}…</span>
                       </div>
 
                       <span className={`badge ${taskStatus === 'done' ? 'ok' : taskStatus === 'failed' ? 'err' : 'warn'}`}>
@@ -269,9 +269,15 @@ export default function App() {
                     </h3>
 
                     {/* Stats details bar */}
-                    <div className="row gap-4 mb-6 items-center flex-wrap">
-                      <span className="badge">已识别分片 <b className="text-fg ml-1 font-mono">{taskFinSegs}/{taskTotalSegs}</b></span>
-                      <span className="badge">音频时长 <b className="text-fg ml-1 font-mono">{taskDuration}</b></span>
+                    <div className="flex items-center gap-4 mb-5 flex-wrap">
+                      <span className="text-sm text-muted tabular-nums">
+                        <b className="text-fg font-medium">{taskFinSegs}</b>
+                        <span className="text-muted-2">/</span>
+                        <b className="text-fg font-medium">{taskTotalSegs}</b> 分片
+                      </span>
+                      <span className="text-sm text-muted tabular-nums">
+                        <b className="text-fg font-medium">{taskDuration}</b> 时长
+                      </span>
 
                       <div className="progress flex-1 min-w-[200px]">
                         <div style={{ width: `${taskProgress * 100}%` }} />
@@ -334,10 +340,9 @@ export default function App() {
                       ) : (
                         <div className="pane flex flex-col gap-4">
                           <p className="hint">
-                            可在下方编辑完整文本后「复制全文」或「下载 TXT」。
                             {segmentsEdited
-                              ? '已应用分片校对：SRT/VTT 将按你校对后的分片文本导出。'
-                              : '若需精修字幕，可在「分片明细」里双击逐句校对，再回到这里导出 SRT/VTT。'}
+                              ? '已应用分片校对，SRT/VTT 按校对后的文本导出。'
+                              : '在「分片明细」双击句子校对后，SRT/VTT 会按校对结果导出。'}
                           </p>
                           <textarea
                             value={fullText}
@@ -346,34 +351,37 @@ export default function App() {
                             className="w-full min-h-[300px] border border-border bg-surface-2 p-5 rounded-lg text-sm leading-relaxed text-fg"
                           />
 
-                          <div className="flex gap-2.5 flex-wrap">
+                          <div className="flex items-center gap-3 flex-wrap">
                             <button onClick={handleCopy} className="primary">
                               {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                               <span>{copied ? '已复制' : '复制全文'}</span>
                             </button>
 
-                            <button onClick={() => downloadFile(`${taskId}.txt`, fullText, 'text/plain')}>
-                              <Download className="w-4 h-4" />
-                              <span>下载 TXT</span>
-                            </button>
-
-                            <button onClick={async () => {
-                              const r = await authedFetch(`/asr/file/${taskId}/result`);
-                              if (r.ok) downloadFile(`${taskId}.json`, await r.text(), 'application/json');
-                            }}>
-                              <FileText className="w-4 h-4" />
-                              <span>下载 JSON</span>
-                            </button>
-
-                            <button onClick={() => downloadSubtitle('srt')}>
-                              <FolderDown className="w-4 h-4" />
-                              <span>导出 SRT</span>
-                            </button>
-
-                            <button onClick={() => downloadSubtitle('vtt')}>
-                              <FolderDown className="w-4 h-4" />
-                              <span>导出 VTT</span>
-                            </button>
+                            <span className="text-meta text-muted-2">导出</span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <button onClick={() => downloadSubtitle('srt')} className="text-[12px] px-3 py-1.5">
+                                <FolderDown className="w-3.5 h-3.5" />
+                                <span>SRT</span>
+                              </button>
+                              <button onClick={() => downloadSubtitle('vtt')} className="text-[12px] px-3 py-1.5">
+                                <FolderDown className="w-3.5 h-3.5" />
+                                <span>VTT</span>
+                              </button>
+                              <button onClick={() => downloadFile(`${taskId}.txt`, fullText, 'text/plain')} className="text-[12px] px-3 py-1.5">
+                                <Download className="w-3.5 h-3.5" />
+                                <span>TXT</span>
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  const r = await authedFetch(`/asr/file/${taskId}/result`);
+                                  if (r.ok) downloadFile(`${taskId}.json`, await r.text(), 'application/json');
+                                }}
+                                className="text-[12px] px-3 py-1.5"
+                              >
+                                <FileText className="w-3.5 h-3.5" />
+                                <span>JSON</span>
+                              </button>
+                            </div>
                           </div>
                         </div>
                       )}

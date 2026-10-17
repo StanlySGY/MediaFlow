@@ -510,19 +510,18 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
 
       <Accordion title="高级设置 · 手动会话、文件模拟、事件日志">
       {/* Intro hint */}
-      <div className="panel p-4 flex items-start gap-3">
-        <Info className="w-4 h-4 text-accent shrink-0 mt-0.5" />
+      <div className="panel px-4 py-3 flex items-start gap-2.5">
+        <Info className="w-3.5 h-3.5 text-muted-2 shrink-0 mt-0.5" />
         <p className="hint">
-          实时识别用于「边说边出字」的场景：先<b className="text-fg">创建会话</b>，再把音频按小包不断上传，服务会通过事件流实时返回识别结果。
-          下方提供了一个<b className="text-fg">本地文件模拟器</b>，选一个音频文件即可体验完整流程（默认走 realtime_mock 演示数据，接真实模型请在「服务配置」里设置）。
+          先创建会话，再把音频按小包上传，服务通过事件流实时返回识别结果。下方的文件模拟器可以选一段音频体验完整流程。
         </p>
       </div>
 
       {/* Session Create Box */}
       <div className="card p-6">
         <h3 className="section-title mb-1">
-          <Mic className="w-5 h-5 text-accent" />
-          <span>第一步 · 创建会话</span>
+          <Mic className="w-4 h-4 text-muted" />
+          <span>创建会话</span>
         </h3>
         <p className="hint mb-4">不确定就用默认值，直接点「创建会话」即可。</p>
 
@@ -574,13 +573,23 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
           className="card p-6"
         >
           <h3 className="section-title justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <span>第二步 · 发送音频并查看结果</span>
-              <span className="font-mono text-xs text-muted">#{session.session_id.slice(0, 16)}…</span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span>发送音频</span>
+              <span className="font-mono text-meta font-normal text-muted-2 truncate">
+                #{session.session_id.slice(0, 16)}…
+              </span>
             </div>
-            <span className={`badge ${sessionActive ? 'ok' : session.status === 'done' ? 'ok' : 'err'}`}>
-              <span className={`dot ${sessionActive ? 'pulse' : ''}`} />
-              <span>{sessionActive ? '会话进行中' : session.status === 'done' ? '识别完成' : '会话已结束'}</span>
+            <span
+              className={`inline-flex items-center gap-1.5 text-sm font-medium ${
+                sessionActive || session.status === 'done' ? 'text-ok' : 'text-err'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  sessionActive || session.status === 'done' ? 'bg-ok' : 'bg-err'
+                }`}
+              />
+              {sessionActive ? '进行中' : session.status === 'done' ? '识别完成' : '已结束'}
             </span>
           </h3>
 
@@ -594,9 +603,9 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
             </div>
           )}
 
-          <div className="flex gap-3 mb-4">
-            <span className="badge">已发送 <b className="text-fg ml-1 font-mono">{fedChunks}</b> 包</span>
-            <span className="badge">累计 <b className="text-fg ml-1 font-mono">{fedBytes.toLocaleString()}</b> 字节</span>
+          <div className="text-sm text-muted tabular-nums mb-4">
+            已发送 <b className="text-fg font-medium">{fedChunks}</b> 包 ·
+            累计 <b className="text-fg font-medium">{fedBytes.toLocaleString()}</b> 字节
           </div>
 
           {/* Soundwave visualizer */}
@@ -652,9 +661,9 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
           {/* SSE Logs Console */}
           <div className="mt-8">
             <h4 className="section-title text-sm mb-3">
-              <Terminal className="w-4 h-4 text-accent-2" />
+              <Terminal className="w-4 h-4 text-muted" />
               <span>实时结果（事件流）</span>
-              <span className="badge text-[10px]">{rtEventCount} 条</span>
+              <span className="text-meta font-normal text-muted-2">{rtEventCount} 条</span>
             </h4>
 
             <div className="flex items-center gap-2 flex-wrap mb-3">
