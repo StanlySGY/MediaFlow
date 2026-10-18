@@ -8,12 +8,15 @@ export const MonitorMetric: React.FC<{
   tone?: 'ok' | 'warn' | 'err' | 'default';
 }> = ({ label, value, hint, icon: Icon, tone = 'default' }) => {
   // State is carried by the number itself; no filled icon tile, no candy box.
+  // Zero carries no state: a red "失败 0" or amber "调用中 0" reads as an alarm
+  // where there is nothing to alarm about, so the count stays neutral.
+  const idle = value === 0 || value === '0';
   const valueTone = {
     ok: 'text-ok',
     warn: 'text-warn',
     err: 'text-err',
     default: 'text-fg',
-  }[tone];
+  }[idle ? 'default' : tone];
 
   return (
     <div className="panel px-4 py-3 min-h-[72px] flex flex-col justify-center">

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -18,6 +19,14 @@ from app.services.stream_transcribe_manager import StreamTranscribeManager
 
 
 WEB_DIR = Path(__file__).parent / "web"
+# Swagger UI bundle vendored into the image by the Dockerfile's frontend stage.
+# Not part of the Vite build, so it is absent in a plain local checkout.
+SWAGGER_DIR = WEB_DIR / "swagger"
+
+# FastAPI's stock /docs page loads Swagger UI from cdn.jsdelivr.net, which is a
+# blank page on the air-gapped host this ships to. Keep the CDN as the fallback
+# so a local checkout still works, but prefer our own copy when it is present.
+SWAGGER_CDN = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.15"
 
 API_DESCRIPTION = """
 MediaFlow 已封装好语音识别网关，当前重点给第三方调用两类标准接口。
@@ -205,6 +214,7 @@ def create_app() -> FastAPI:
         description=API_DESCRIPTION,
         version="1.7.3",
         lifespan=_lifespan,
+        docs_url=None,  # replaced by the local-asset /docs route below
     )
     app.state.manager = TaskManager(settings)
     app.state.realtime_manager = RealtimeManager(settings)
@@ -236,6 +246,27 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    def swagger_asset(filename: str) -> str:
+        if (SWAGGER_DIR / filename).is_file():
+            return f"/swagger/{filename}"
+        return f"{SWAGGER_CDN}/{filename}"
+
+    # Registered before the StaticFiles mount below, which owns "/" and would
+    # otherwise swallow this path.
+    @app.get("/docs", include_in_schema=False)
+    async def docs() -> HTMLResponse:
+        return get_swagger_ui_html(
+            openapi_url="/openapi.json",
+            title=f"{app.title} - Swagger UI",
+            swagger_js_url=swagger_asset("swagger-ui-bundle.js"),
+            swagger_css_url=swagger_asset("swagger-ui.css"),
+            swagger_favicon_url=(
+                "/favicon.svg"
+                if (WEB_DIR / "favicon.svg").is_file()
+                else "https://fastapi.tiangolo.com/img/favicon.png"
+            ),
+        )
 
     if (WEB_DIR / "index.html").is_file():
         app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

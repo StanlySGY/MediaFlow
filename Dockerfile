@@ -8,6 +8,13 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
+# Vendor the Swagger UI bundle next to the built SPA. FastAPI's stock /docs page
+# pulls these from cdn.jsdelivr.net, which renders blank on the air-gapped host
+# this image ships to; app/main.py serves them from /swagger/* when present.
+# Copied after the build so Vite cannot wipe the directory.
+RUN mkdir -p /app/web/swagger \
+    && cp node_modules/swagger-ui-dist/swagger-ui-bundle.js node_modules/swagger-ui-dist/swagger-ui.css /app/web/swagger/
+
 # ==========================================
 # Stage 2: Create the Python Runner
 # ==========================================

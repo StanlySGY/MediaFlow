@@ -1178,6 +1178,61 @@ async def ping_upstream() -> dict:
         tmp.unlink(missing_ok=True)
 
 
+# Upstream liveness for the console's sidebar badge. Deliberately audio-free:
+# that badge used to be fed by /ping, which uploads a 1s silent WAV, so every
+# console page load spent a real upstream ASR call and recorded one in the
+# monitor window. Results are cached briefly so a burst of page loads cannot
+# hammer upstream either.
+_UPSTREAM_HEALTH_TTL_SECONDS = 30.0
+_upstream_health_cache: dict[str, tuple[float, dict]] = {}
+
+
+@router.get("/health")
+async def upstream_health() -> dict:
+    """Report whether the configured upstream answers, without uploading audio.
+
+    Probes the model list on the *saved* endpoint only (same rule as
+    ``GET /asr/models``), so it cannot be pointed at an arbitrary host and it
+    never enters the call monitor.
+    """
+    settings = get_settings()
+    endpoint = settings.asr_base_url.strip()
+    if not endpoint:
+        return {
+            "ok": False,
+            "configured": False,
+            "base_url": "",
+            "model": settings.asr_model,
+            "elapsed_ms": 0.0,
+            "cached": False,
+            "detail": "未配置接口地址",
+        }
+
+    # Keyed on the configured endpoint itself: the health route must not depend
+    # on the profile/models helpers, which are separate in-flight work.
+    key = f"{endpoint}|{settings.asr_model}"
+    now = time.monotonic()
+    cached = _upstream_health_cache.get(key)
+    if cached and now - cached[0] < _UPSTREAM_HEALTH_TTL_SECONDS:
+        return {**cached[1], "cached": True}
+
+    t0 = time.perf_counter()
+    try:
+        models = await list_models(endpoint, settings.asr_api_key)
+        payload: dict = {"ok": True, "models": models, "detail": ""}
+    except Exception as e:  # noqa: BLE001 — upstream transport/protocol failure
+        payload = {"ok": False, "models": [], "detail": str(e)}
+    payload.update(
+        configured=True,
+        base_url=endpoint,
+        model=settings.asr_model,
+        elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 1),
+        cached=False,
+    )
+    _upstream_health_cache[key] = (now, payload)
+    return payload
+
+
 @router.get("/tasks")
 async def list_tasks(
     manager: TaskManager = Depends(get_manager),

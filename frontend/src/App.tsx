@@ -53,11 +53,20 @@ export default function App() {
         const data = await r.json();
         setConfig(data);
 
-        // Connectivity probe
-        const pingResponse = await authedFetch('/asr/ping', { method: 'POST' });
-        const pingData = await pingResponse.json();
-        if (pingData.ok) {
+        // Reachability probe. This is the audio-free /asr/health, not
+        // /asr/ping: ping uploads a 1s silent WAV, so probing it here spent a
+        // real upstream ASR call (and a monitored-call slot) on every mount.
+        // The full audio round-trip stays on the 测试连接 button in 服务配置.
+        const healthResponse = await authedFetch('/asr/health');
+        if (!healthResponse.ok) {
+          setFootStatus({ text: '连接异常', status: 'err' });
+          return;
+        }
+        const health = await healthResponse.json();
+        if (health.ok) {
           setFootStatus({ text: '在线', status: 'ok' });
+        } else if (health.configured === false) {
+          setFootStatus({ text: '未配置', status: '' });
         } else {
           setFootStatus({ text: '连接断开', status: 'err' });
         }
@@ -205,7 +214,8 @@ export default function App() {
                       </label>
                       <label className="field">
                         <span>识别语言</span>
-                        <input type="text" value={ovLanguage} onChange={e=>setOvLanguage(e.target.value)} placeholder="zh / en / 留空自动（zh 会自动按 Chinese 传给模型）" />
+                        <input type="text" value={ovLanguage} onChange={e=>setOvLanguage(e.target.value)} placeholder="zh / en / 留空自动" />
+                        <span className="field-hint">留空自动判断;zh 会按 Chinese 传给模型</span>
                       </label>
                       <label className="field">
                         <span>切分策略</span>

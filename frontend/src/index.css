@@ -215,7 +215,10 @@ body {
 .evlog .ev .ty.final  { @apply bg-[#14a05a]/20 text-[#5fe3a1] border border-[#14a05a]/40; }
 .evlog .ev .ty.done   { @apply bg-white/10 text-gray-400 border border-white/10; }
 .evlog .ev .ty.error  { @apply bg-[#e0413a]/20 text-[#ff9b96] border border-[#e0413a]/40; }
-.evlog .ts { @apply text-[#56627d] font-semibold; }
+/* #7885a3, not #56627d: the old value was 2.96:1 on the #0e1626 panel —
+   below AA for 12px text. This clears 4.89:1 and stays dimmer than the
+   12.36:1 body text, so it still reads as secondary. */
+.evlog .ts { @apply text-[#7885a3] font-semibold; }
 .evlog .ev-text { @apply text-[#cdd6e6] ml-1; }
 
 /* ---------------- History items ---------------- */

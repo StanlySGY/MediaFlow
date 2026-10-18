@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronRight, ClipboardCopy, Download, Mic, Square, Trash2 } from 'lucide-react';
+import { ClipboardCopy, Download, Mic, Square, Trash2 } from 'lucide-react';
 import { StandardASRStreamEvent } from '../types';
 import { errorMessage, responseError } from '../lib/errors';
 import { applySplice } from '../lib/splice';
 import { downloadFile } from '../lib/download';
+import { Accordion } from './Accordion';
 
 interface RealtimeRecorderPanelProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
@@ -508,13 +509,9 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         </div>
       </div>
 
-      <details className="mt-4 group">
-        <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden inline-flex items-center gap-1.5 text-sm text-muted hover:text-fg transition-colors">
-          <ChevronRight className="w-3.5 h-3.5 transition-transform group-open:rotate-90" />
-          <span>调试日志</span>
-          {logs.length > 0 && <span className="text-meta text-muted-2">{logs.length} 条</span>}
-        </summary>
-        <div className="mt-2 min-w-0">
+      <div className="mt-4">
+        <Accordion title={logs.length > 0 ? `调试日志 · ${logs.length} 条` : '调试日志'}>
+        <div className="p-5 min-w-0">
           <div className="flex items-center justify-end gap-2 mb-3">
             <button onClick={copyLogs} disabled={logs.length === 0} className="text-meta py-0.5 px-2">
               <ClipboardCopy className="w-3 h-3" />
@@ -532,7 +529,8 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
             placeholder="录音、上传、SSE 事件和错误会显示在这里。"
           />
         </div>
-      </details>
+        </Accordion>
+      </div>
     </div>
   );
 };

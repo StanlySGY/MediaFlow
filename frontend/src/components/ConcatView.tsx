@@ -82,10 +82,6 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
   return (
     <div className="flex flex-col gap-6">
       <div className="card p-6">
-        <h3 className="section-title mb-2">
-          <Combine className="w-4 h-4 text-muted" />
-          <span>音视频合并</span>
-        </h3>
         <p className="hint mb-5">
           选两个以上同一格式的文件（都为 .mp3 或都为 .mp4），按列表顺序无损拼接：stream copy，
           不重新编码。不同格式无法合并。

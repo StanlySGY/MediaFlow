@@ -123,6 +123,72 @@ async def test_ping_reports_upstream_error(client):
     assert "401" in data["error"] or "bad key" in data["error"]
 
 
+@pytest.fixture
+def upstream_health_cache():
+    """The health probe caches its verdict in-process; keep tests independent."""
+    from app.api.routes import _upstream_health_cache
+
+    _upstream_health_cache.clear()
+    yield _upstream_health_cache
+    _upstream_health_cache.clear()
+
+
+@respx.mock
+async def test_health_ok_without_sending_audio(client, upstream_health_cache):
+    """Mount-time badge uses the audio-free probe, so a page load costs no ASR call."""
+    models = respx.get("https://example.test/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "qwen3-asr-flash"}]}),
+    )
+    r = await client.get("/asr/health")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["configured"] is True
+    assert data["models"] == ["qwen3-asr-flash"]
+    assert data["cached"] is False
+    assert models.call_count == 1
+    # the entire point: the probe never uploads audio
+    assert respx.calls.call_count == 1
+
+
+@respx.mock
+async def test_health_is_cached_between_page_loads(client, upstream_health_cache):
+    models = respx.get("https://example.test/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "qwen3-asr-flash"}]}),
+    )
+    first = (await client.get("/asr/health")).json()
+    second = (await client.get("/asr/health")).json()
+    assert first["ok"] is True and first["cached"] is False
+    assert second["ok"] is True and second["cached"] is True
+    assert models.call_count == 1
+
+
+@respx.mock
+async def test_health_reports_upstream_error(client, upstream_health_cache):
+    respx.get("https://example.test/v1/models").mock(return_value=httpx.Response(503, text="down"))
+    respx.get("https://example.test/v1/info").mock(return_value=httpx.Response(503, text="down"))
+    r = await client.get("/asr/health")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is False
+    assert data["configured"] is True
+    assert data["detail"]
+
+
+async def test_health_reports_unconfigured_upstream(client, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setenv("ASR_BASE_URL", "")
+    get_settings.cache_clear()
+    try:
+        data = (await client.get("/asr/health")).json()
+    finally:
+        get_settings.cache_clear()
+    assert data["ok"] is False
+    assert data["configured"] is False
+    assert data["base_url"] == ""
+
+
 @respx.mock
 async def test_models_lists_openai_ids(client):
     respx.get("https://example.test/v1/models").mock(
