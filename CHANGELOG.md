@@ -3,6 +3,8 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 版本号的落点：`app/main.py` 的 FastAPI `version`、`frontend/package.json`、`build.sh` 的 `DEFAULT_TAG` 与 `docker-compose.prod.yml` 引用的 `mediaflow:<版本>` 四处保持一致。
 
+仓库里真实出现过的版本落点只有 `0.1.0 → 1.2.0 → 1.3.0 → 1.4.0 → 1.4.1 → 1.7.0 → 1.7.1 → 1.7.2 → 1.7.3`：`1.5.x` / `1.6.x` 从未使用；`1.3.1` 只在 2026-07-28 一次提交的 `frontend/package.json` 里出现，随即被 `1.4.1` 覆盖，`build.sh` / `app/main.py` / `docker-compose.prod.yml` 三处从未跟进，因此不单独列为一个发布。首个 git tag 是 `v1.7.3`（2026-10-19 切出，版本号本身落点在 2026-09-23 的 `a34b62d`）。
+
 ## [1.7.3] - 2026-10-19
 
 ### 新增
@@ -69,30 +71,32 @@
 
 ### 修复
 - `DOCKER_BUILDKIT=0` 改由 `build.sh` 以环境变量注入，并从 `Dockerfile` 的 `FROM` 之前移到之后。
+- 浏览器 `EventSource` 使用完整绝对 URL 而非相对路径。
 
-## [1.3.1] - 2026-07-28
+## [1.4.0] - 2026-06-02
 
 ### 新增
-- Qwen3-ASR 昇腾 NPU 现场部署配置与文档（官方 Ascend vLLM 镜像）、流式服务部署文档、离线交付文档。
-- `.env` 配置文件与中文注释。
+- 音视频无损合并（`/media/concat`，concat demuxer + `-c copy`，不转码）与合并页 `ConcatView`；项目由 AudioFlow 更名为 MediaFlow。
+- air-gapped 交付路径：`docker-compose.prod.yml` + `build.sh --save/--platform`，现场 `docker load` 上线。
+- 标准 ASR 流式网关、流式文件转写端点，标准 ASR SSE 事件形状统一。
+- ASR 调用监控面板、浏览器实时录音测试页。
+- 说话人分离解析：解析上游返回的 speaker 标签与 `speaker_id`，文件与实时链路都带上 speaker。
+- Qwen3-ASR 昇腾 NPU 现场部署配置与文档（官方 Ascend vLLM 镜像）、流式服务与离线交付文档、`.env` 配置文件与中文注释。
+- FFmpeg 单进程超时与切片并发上限。
+- Vitest + Testing Library 前端测试、CI 前端构建、ruff 全仓清 F401、MIT LICENSE。
 
 ### 修复
 - 解析 vLLM Qwen3-ASR 的响应格式（`language<asr_text>文本`）。
 - `input_audio` 补上 `format` 字段以兼容 vLLM；去掉 vLLM 不支持的 `asr_options`。
+- DashScope chat audio 请求格式；chat ASR 不再注入 system prompt。
 
-## [1.3.0] - 2026-07-01
-
-### 新增
-- 说话人分离：解析上游返回的 speaker 标签，文件与实时链路都带上 speaker。
-
-## [1.2.1] - 2026-06-12
+## [1.3.0] - 2026-06-01
 
 ### 新增
-- ASR 调用监控面板、浏览器实时录音测试页。
-- 标准 ASR 流式网关与流式文件转写端点。
+- 分片级字幕校对、响应式与可访问性打磨。
 
-### 变更
-- 标准 ASR SSE 事件形状统一。
+### 修复
+- `.bar` 类名冲突导致实时声波动画变形。
 
 ## [1.2.0] - 2026-05-28
 
@@ -101,23 +105,14 @@
 - 实时 pipeline（base64 chunk + SSE）与侧边栏多 tab Web UI。
 - 可编辑的运行时配置：`POST /asr/config` + 持久化覆盖 + 表单页面。
 - `openai_chat_audio` provider（vLLM Qwen3-ASR / 多模态 chat 端点）。
+- host-network compose 变体（受限宿主）；浅色 new-api 风格主题 + 中文上手引导。
+
+### 变更
+- 构建产物与工具 sidecar 不再入库，部署路径统一为 Docker。
 
 ### 修复
 - 默认端口 8000 → 8999（8000 被占用）。
 
-## [1.1.0] - 2026-06-02
+## [0.1.0] - 2026-05-27
 
-### 新增
-- 音视频无损合并（`/media/concat`，concat demuxer + `-c copy`，不转码）。
-- air-gapped 交付路径：`docker-compose.prod.yml` + `build.sh --save/--platform`。
-- FFmpeg 单进程超时与切片并发上限。
-- Vitest + Testing Library 前端测试、CI 前端构建、ruff 全仓清 F401、MIT LICENSE。
-- 分片级字幕校对、响应式与可访问性打磨。
-
-## [1.0.0] - 2026-05-27
-
-首个可用版本：长音频切分 + OpenAI 兼容 ASR 转写 + SSE 流式推送。
-
-- 可插拔 provider 抽象与注册表、word 级时间戳、SRT/VTT 字幕导出、可选 Bearer Token 鉴权
-- 多订阅 SSE + 事件历史回放、失败分片隔离与指数退避重试、任务结果持久化到 `outputs/`
-- 热词 / 上下文提示偏置、上游连通测试、单分片原始响应查看
+首个可用版本（项目名仍为 AudioFlow-ASR）：长音频切分 + OpenAI 兼容 ASR 转写 + 多订阅者 SSE 流式推送，随带 provider 抽象、Word 时间戳、SRT/VTT 字幕导出、可选令牌鉴权、可选热词偏置，以及由 `/` 提供的单文件 Web UI 与 CI。
