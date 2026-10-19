@@ -1,6 +1,22 @@
 # MediaFlow
 
-音视频处理工具箱。基于 FastAPI / asyncio / FFmpeg，三大能力合一：长音频切分、流式 ASR 转写（调用 OpenAI 兼容 ASR 接口，默认阿里云 DashScope 的 Qwen ASR）、音视频无损合并。支持：
+[![CI](https://github.com/StanlySGY/MediaFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/StanlySGY/MediaFlow/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/StanlySGY/MediaFlow)](https://github.com/StanlySGY/MediaFlow/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**中文 · [English](README.en.md)**
+
+| 文件转写：上传 → 分片进度 → 双击校对 → 字幕导出 | 实时识别：partial 流式增长 → final |
+| --- | --- |
+| ![文件转写流程](docs/screenshots/file-flow.gif) | ![实时识别](docs/screenshots/realtime.gif) |
+
+| 服务配置 / 上游连通 | 历史任务 | 单个分片的上游原始响应 |
+| --- | --- | --- |
+| ![服务配置](docs/screenshots/monitor.png) | ![历史任务](docs/screenshots/history.png) | ![原始响应](docs/screenshots/raw-response.png) |
+
+> 截图中的 ASR 地址已改写为 `asr.internal`，不含真实内网 IP。手机端布局见 [`docs/screenshots/mobile.png`](docs/screenshots/mobile.png)。
+
+音视频处理工具箱。基于 FastAPI / asyncio / FFmpeg，三大能力合一：长音频切分、流式 ASR 转写（调用 OpenAI 兼容 ASR 接口，默认阿里云 DashScope 的 Qwen ASR）、音视频无损合并。**本项目不自带 ASR 模型**，识别由你已有的上游服务完成，能力边界见下表。
 
 - 多格式输入（mp3/wav/m4a/flac/aac/ogg/pcm/mp4/mov/mkv）
 - FFmpeg 自动标准化为 16k mono pcm_s16le
@@ -17,6 +33,32 @@
 - 内置 Web UI（侧边栏多 tab：文件任务 / 实时识别 / 服务配置 / 历史任务；拖拽上传 + 真实上传进度 + 实时分片进度 + 音视频播放联动校对 + 分片双击校对并前端导出精修字幕 + 完整文本/字幕复制下载 + 配置面板**可在线编辑保存** + 上游连通测试 + 单分片原始响应查看；移动端响应式抽屉布局）
 - **音视频无损合并**（`POST /media/concat`：同格式多文件按上传顺序拼接，FFmpeg concat demuxer + `-c copy`，不转码、输出格式 = 输入格式，音频/视频通用）
 - **实时识别 pipeline**（POST /asr/realtime/session → POST audio base64 chunks → SSE events → POST end）
+
+## 能力边界
+
+先看这张表，再决定要不要用：
+
+| 能力 | 本项目 | 说明 |
+| --- | --- | --- |
+| ASR 模型 / 权重 | ❌ **不含任何模型** | MediaFlow 只发 HTTP 请求。识别质量 = 你的上游模型质量，必须自备 DashScope / vLLM / FunASR / 自建 faster-whisper 网关 |
+| 长音频切分 | ✅ | `fixed` / `silence` / `overlap`，纯 FFmpeg |
+| 分片结果拼接 | ✅ | 上游给 word 时间戳 → 按重叠中点裁剪；否则最长公共子串去重 |
+| Word 级时间戳 | ⚠️ 取决于上游 | 只在上游真的返回 `words[]` 时成立，见下 |
+| 字幕粒度 | ⚠️ 随上游降级 | `words` 非空 → 按长度/时长/停顿重新断行；`words` 为空 → **每个分片一条字幕** |
+| 说话人分离 diarization | ❌ **由上游负责** | 本项目不含 diarization 模型，也不做声纹聚类。上游不输出 speaker，就不会出现 speaker |
+| 标点 / 翻译 / 说话人命名 | ❌ | 需要上游能力或后处理 |
+| 实时端点检测（endpointing） | ⚠️ 取决于 provider | `realtime_ws` / `realtime_http` 由上游实时服务决定；`realtime_offline` 是「录完再整段转写」，不是流式 |
+| 水平扩展 | ❌ 单进程 | 任务状态 / SSE 订阅 / 实时会话都在进程内存，禁止 `--workers` |
+
+关于 diarization 的具体行为，按 provider 分列：
+
+| Provider | 上游 speaker 标签的去向 |
+| --- | --- |
+| `openai_compat` | **不解析** `verbose_json.segments[].speaker`。只读顶层 `text` 与 `words[]`；speaker 只出现在 `/asr/task/{id}/segments/{id}/raw` 的原始响应里，不会进入字幕 |
+| `openai_chat_audio` | 解析 `segments[].speaker` / `speaker_id`，以及文本里的 `[SPEAKER_00]` 类标签，写进 `words[].speaker`；字幕在 speaker 变化处换行并带上 `[说话人]` |
+| `realtime_offline` | 整段转写后按 speaker 分组输出文本 |
+
+要真的拿到说话人分离，请在**上游侧**开启：OpenAI `response_format=diarized_json` + `model=gpt-4o-transcribe-diarize`；faster-whisper 系自建网关的 `WHISPER_DIARIZATION=1`；FunASR 的 `moss-transcribe-diarize`。MediaFlow 侧只需把 `ASR_MODEL` 换成对应模型名。
 
 ## 快速开始
 
@@ -93,10 +135,12 @@ docker compose -f docker-compose.prod.yml up -d
 
 提供两种 OpenAI 兼容协议，按上游服务暴露的端点二选一：
 
-| `ASR_PROVIDER` | 上游端点 | 适用 | Word 时间戳 |
-|---|---|---|---|
-| `openai_compat` | `POST /v1/audio/transcriptions`（multipart） | OpenAI Whisper、faster-whisper-server、DashScope compat 的 transcriptions、FunASR/SenseVoice OpenAI 网关 | ✅（若上游支持 `timestamp_granularities[]`） |
-| `openai_chat_audio` | `POST /v1/chat/completions`（JSON + base64 input_audio） | vLLM Qwen3-ASR-Flash、DashScope compat 的 chat 多模态、任何把音频模型当多模态 LLM 服务的部署 | ❌（拼接自动回落 LCS，字幕按分片粒度） |
+| `ASR_PROVIDER` | 上游端点 | 适用 | Word 时间戳 | 上游给出 speaker 时 |
+|---|---|---|---|---|
+| `openai_compat` | `POST /v1/audio/transcriptions`（multipart） | OpenAI 官方接口、自建 faster-whisper OpenAI 网关（如 scribecrate）、DashScope compat 的 transcriptions、FunASR `funasr-server` | ✅（若上游支持 `timestamp_granularities[]`） | ❌ 只读 `text` / `words`，`segments[].speaker` 留在 raw 响应里，不进字幕 |
+| `openai_chat_audio` | `POST /v1/chat/completions`（JSON + base64 input_audio） | vLLM Qwen3-ASR-Flash、DashScope compat 的 chat 多模态、任何把音频模型当多模态 LLM 服务的部署 | ⚠️ 仅当上游额外返回 `segments[]` | ✅ 解析 `segments[].speaker` 与文本里的 `[SPEAKER_00]` 标签 |
+
+> 名字里带 faster-whisper 的服务**不一定**是 OpenAI 兼容的：常见的 `ayutaz/faster-whisper-server` 只暴露 `GET/POST /transcribe`，用 `ASR_PROVIDER=openai_compat` 一定 404。这类上游要么自己加一层 OpenAI 兼容 shim，要么写一个自定义 provider（见「自部署服务**非** OpenAI 兼容」）。
 
 判断方法很简单：拿一条 curl 试一下上游：
 
@@ -113,6 +157,65 @@ curl -X POST $ASR_BASE_URL/chat/completions \
 ```
 
 或者打开 Web UI 顶部的「服务配置」，点「测试连接」——服务端用 1s 静音 WAV 试探当前 provider，返回 200/4xx 直接显示在面板上，不通就切 `ASR_PROVIDER` 再点一次。
+
+### 已有上游：3 分钟接通
+
+上游已经在跑，你只需要 4 行 `.env`。先用上面两条 curl 定下 `ASR_PROVIDER`，再按下面三选一填。
+
+**A. faster-whisper 系自建 OpenAI 网关**（OpenAI 官方接口同理）
+
+```bash
+ASR_PROVIDER=openai_compat
+ASR_BASE_URL=http://127.0.0.1:8000/v1
+ASR_MODEL=whisper-large-v3
+ASR_TIMESTAMPS=true
+```
+
+时间戳有没有真的回来，用一条 curl 判定，别猜：
+
+```bash
+curl -sX POST $ASR_BASE_URL/audio/transcriptions   -F "file=@any.wav" -F "model=$ASR_MODEL"   -F "response_format=verbose_json" -F "timestamp_granularities[]=word" | head -c 400
+```
+
+顶层出现 `"words":[{...}]` → 保持 `ASR_TIMESTAMPS=true`；上游对 `timestamp_granularities[]` 报 400 或 `words` 为空 → 改 `ASR_TIMESTAMPS=false`（省一次无谓的失败重试）。
+diarization 在上游侧开 `WHISPER_DIARIZATION=1`，speaker 写进 `verbose_json.segments[].speaker`；`openai_compat` 不解析它，见「能力边界」。
+
+**B. FunASR（SenseVoice / Paraformer）**
+
+```bash
+# 上游侧：funasr-server --host 0.0.0.0 --port 8000 --model sensevoice --device cuda:0
+ASR_PROVIDER=openai_compat
+ASR_BASE_URL=http://127.0.0.1:8000/v1
+ASR_MODEL=sensevoice
+ASR_TIMESTAMPS=false     # 该网关的 multipart 只有 file/model/language/response_format，没有 timestamp_granularities
+```
+
+`ASR_TIMESTAMPS=false` 在这里是正确配置而不是降级妥协：字段不存在，留着只会让部分构建报错。代价是字幕退化成每个分片一条。要 speaker：上游换成 `funasr-server --model moss-transcribe-diarize`，并请求 `response_format=verbose_json`。
+
+**C. vLLM 服务 Qwen3-ASR**
+
+```bash
+# 上游侧：vllm serve /models/Qwen3-ASR-Flash --served-model-name qwen3-asr --port 8000
+ASR_PROVIDER=openai_chat_audio
+ASR_BASE_URL=http://127.0.0.1:8000/v1
+ASR_MODEL=qwen3-asr        # 必须与 --served-model-name 一致
+ASR_TIMESTAMPS=false
+```
+
+`vllm serve` 的音频入口只能收完整音频再返回结果，不做流式；实时页要么用 `realtime_offline`（录完整段再整篇转写），要么另接实时 ASR 上游。
+
+**接通后的 30 秒验收**
+
+```bash
+curl -sX POST http://localhost:8080/asr/ping                 # 上游是否可达
+curl -sX POST http://localhost:8080/asr/file -F "file=@any.wav"
+curl -N http://localhost:8080/asr/file/<task_id>/events
+curl -s  http://localhost:8080/asr/file/<task_id>/result | head -c 600
+```
+
+判据：`result.segments[].words` 非空 → 时间轴感知拼接 + 细粒度字幕；为空 → 最长公共子串去重 + 分片粒度字幕。**这是预期行为，不是 bug**，除非你的上游本来就该返回 word 时间戳。
+
+> 上游协议依据（2026-10 逐条核对）：OpenAI 转写接口的 `response_format` / `timestamp_granularities[]` 与 `verbose_json.words[]` [OpenAI, API Reference, Audio transcriptions]；`hwdsl2/scribecrate` README（`WHISPER_DIARIZATION`、`timestamp_granularities[]` 默认 `["segment"]`、仅 OpenAI 支持的 diarize 选项对本网关返回 400）；`modelscope/FunASR` `examples/openai_api/OPENAPI.md`（multipart 字段表、`moss-transcribe-diarize`）；`ayutaz/faster-whisper-server` README（仅 `/transcribe`）。
 
 ### vLLM 跑 Qwen3-ASR
 
@@ -138,7 +241,17 @@ ASR_MODEL=qwen3-asr-flash
 
 ### FunASR / SenseVoice / Paraformer 等 OpenAI 兼容网关
 
-同 `openai_compat`：只改 `ASR_BASE_URL` 和 `ASR_MODEL`。若网关不支持 timestamp 选项，把 `ASR_TIMESTAMPS=false`。
+上游侧：
+
+```bash
+pip install funasr
+funasr-server --host 0.0.0.0 --port 8000 --model sensevoice --device cuda:0
+curl -s http://127.0.0.1:8000/v1/models      # 看当前加载了哪些模型与别名
+```
+
+MediaFlow 侧同 `openai_compat`：只改 `ASR_BASE_URL` 和 `ASR_MODEL`，并把 `ASR_TIMESTAMPS=false`（该网关的 multipart 只接受 `file` / `model` / `language` / `response_format`）。需要 speaker 就换 `--model moss-transcribe-diarize`，`openai_chat_audio` 不适用，仍走 `openai_compat`。
+
+> FunASR 自带的 CLI `funasr audio.wav --spk --timestamps -f json` 用的是 CAM++ 等 VAD 说话人 id，官方文档注明这不是模型原生的 speaker 输出；走 OpenAI 兼容网关时同理，把 speaker 当上游给出的近似标签看待。
 
 ### 自部署服务**非** OpenAI 兼容
 
@@ -445,9 +558,11 @@ def _funasr(settings):
 然后 `import app.services.asr.funasr` 触发注册（可在 `app/services/asr/__init__.py` 加），并设置 `ASR_PROVIDER=funasr`。
 
 ## 进一步可扩展
-- **说话人分离**：在 ASR 阶段返回 speaker 标签后合并到 `Word`
+- **说话人分离落地下游**：`Word.speaker` 与实时链路已经打通，缺的是把 `openai_compat` 的 `verbose_json.segments[].speaker` 灌进 `words[]`，让文件任务字幕也带 `[说话人]`
 - **翻译 / 摘要**：拿到完整文本后接 LLM
 - **任务队列**：当前任务在进程内 `asyncio.create_task` 调度；横向扩展可替换为 Celery / RQ + Redis
+
+更新日志：[CHANGELOG.md](CHANGELOG.md)。
 
 ## License
 
