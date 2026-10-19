@@ -8,7 +8,7 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 def _profiles():
@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     asr_prompt_hints: str = ""
 
     split_strategy: str = Field("silence", pattern="^(fixed|silence|overlap)$")
-    split_chunk_seconds: float = 30.0
-    split_overlap_seconds: float = 2.0
+    split_chunk_seconds: float = Field(30.0, gt=0)
+    split_overlap_seconds: float = Field(2.0, ge=0)
     silence_noise_db: float = -30.0
     silence_min_duration: float = 0.4
 
@@ -84,6 +84,18 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8080
     log_level: str = "info"
+
+    @model_validator(mode="after")
+    def validate_split_parameters(self) -> "Settings":
+        if (
+            self.split_strategy == "overlap"
+            and self.split_overlap_seconds >= self.split_chunk_seconds
+        ):
+            raise ValueError(
+                "split_overlap_seconds must be less than split_chunk_seconds "
+                "when split_strategy is overlap"
+            )
+        return self
 
     @property
     def access_tokens_list(self) -> list[str]:
@@ -155,7 +167,21 @@ def _validated_runtime_overrides(settings: Settings, data: dict) -> tuple[dict, 
                 if error.get("loc") and error["loc"][0] in overrides
             }
             if not bad:
-                return {}, invalid | set(overrides)
+                # Cross-field validation errors have an empty location. Keep
+                # unrelated valid settings (especially credentials) when only
+                # the split-parameter combination is invalid in the store.
+                split_fields = {
+                    "split_strategy",
+                    "split_chunk_seconds",
+                    "split_overlap_seconds",
+                }
+                if any(
+                    "split_overlap_seconds must be less than split_chunk_seconds" in error.get("msg", "")
+                    for error in exc.errors()
+                ):
+                    bad = split_fields.intersection(overrides)
+                if not bad:
+                    return {}, invalid | set(overrides)
             invalid.update(bad)
             for field in bad:
                 overrides.pop(field)

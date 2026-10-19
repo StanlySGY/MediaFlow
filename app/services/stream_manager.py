@@ -84,6 +84,17 @@ def _read_json(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Replace a state/result file atomically so crashes cannot leave partial JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 _KIND_FILE = "file"
 _KIND_REALTIME = "realtime"
 
@@ -273,8 +284,15 @@ class TaskManager:
     ) -> str:
         self._evict_if_needed()
         task_id = uuid.uuid4().hex
+        # model_copy(update=...) bypasses Pydantic validation. Per-task API
+        # overrides are untrusted input, so validate the merged settings before
+        # registering a task or spawning any background work.
         task_settings = (
-            self._settings.model_copy(update=overrides) if overrides else self._settings
+            type(self._settings).model_validate(
+                {**self._settings.model_dump(), **overrides}
+            )
+            if overrides
+            else self._settings
         )
         task = _Task(task_id, task_settings)
         task.original_name = original_name
@@ -419,8 +437,15 @@ class TaskManager:
         now = time.time()
         for path in state_dir.glob("*.json"):
             data = _read_json(path)
-            if not data:
-                continue
+            if data is None:
+                # State files are written atomically now, but older versions or
+                # abrupt disk failures may have left malformed JSON. Do not leave
+                # such a task permanently queued with no recoverable result.
+                try:
+                    created_at = path.stat().st_mtime
+                except OSError:
+                    created_at = now
+                data = {"task_id": path.stem, "created_at": created_at}
             if data.get("status") in {s.value for s in _TERMINAL}:
                 continue
             tid = str(data.get("task_id") or path.stem)
@@ -431,7 +456,11 @@ class TaskManager:
             data["hint"] = _INTERRUPTED_HINT
             data["retryable"] = True
             data["updated_at"] = now
-            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            try:
+                _atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
+            except OSError:
+                log.warning("failed to recover interrupted task state %s", tid, exc_info=True)
+                continue
             result_path = self._settings.output_dir / f"{tid}.json"
             if not result_path.is_file():
                 result = TaskResult(
@@ -444,8 +473,10 @@ class TaskManager:
                     hint=_INTERRUPTED_HINT,
                     retryable=True,
                 )
-                result_path.parent.mkdir(parents=True, exist_ok=True)
-                result_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+                try:
+                    _atomic_write_text(result_path, result.model_dump_json(indent=2))
+                except OSError:
+                    log.warning("failed to persist recovered task result %s", tid, exc_info=True)
             recovered += 1
         if recovered:
             log.warning("marked %d interrupted task(s) as failed", recovered)
@@ -473,8 +504,7 @@ class TaskManager:
             "text_preview": (task.result.text or "")[:200],
         }
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
         except Exception:  # noqa: BLE001
             log.warning("failed to checkpoint task %s", task.info.task_id, exc_info=True)
 
@@ -487,8 +517,7 @@ class TaskManager:
         task.info.retryable = task.retryable
         try:
             out = task.settings.output_dir / f"{task.info.task_id}.json"
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(task.result.model_dump_json(indent=2), encoding="utf-8")
+            _atomic_write_text(out, task.result.model_dump_json(indent=2))
         except Exception:  # noqa: BLE001
             log.warning("failed to persist task %s", task.info.task_id, exc_info=True)
         self._checkpoint(task)

@@ -124,6 +124,28 @@ def test_runtime_config_ignores_invalid_fields_without_valid_backup(tmp_path):
     assert path.read_bytes() == primary_bytes
 
 
+def test_runtime_config_ignores_invalid_split_combination_without_dropping_other_fields(tmp_path):
+    import app.config as config
+
+    path = tmp_path / "runtime.json"
+    path.write_text(
+        json.dumps({
+            "asr_model": "primary-model",
+            "split_strategy": "overlap",
+            "split_chunk_seconds": 10,
+            "split_overlap_seconds": 10,
+        }),
+        encoding="utf-8",
+    )
+    settings = config.Settings(_env_file=None, runtime_config_path=path)
+
+    overrides = config._load_runtime_overrides(path, settings)
+    assert overrides["asr_model"] == "primary-model"
+    assert "split_strategy" not in overrides
+    assert "split_chunk_seconds" not in overrides
+    assert "split_overlap_seconds" not in overrides
+
+
 def test_failed_atomic_config_replace_keeps_primary_and_backup(tmp_path, monkeypatch):
     import app.config as config
 

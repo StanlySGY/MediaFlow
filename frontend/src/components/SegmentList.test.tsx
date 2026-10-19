@@ -72,6 +72,23 @@ describe('<SegmentList />', () => {
     expect(onEditText).toHaveBeenCalledWith(1, '校对后的文本');
   });
 
+  it('cancels an edit with Escape instead of committing the draft on blur', async () => {
+    const onEditText = vi.fn();
+    render(
+      <SegmentList segments={[seg()]} taskId="t1" authedFetch={noop} onEditText={onEditText} />,
+    );
+
+    await userEvent.dblClick(screen.getByText('第一段识别文本'));
+    const box = screen.getByRole('textbox');
+    await userEvent.clear(box);
+    await userEvent.type(box, '不应保存的草稿');
+    await userEvent.keyboard('{Escape}');
+
+    expect(onEditText).not.toHaveBeenCalled();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(screen.getByText('第一段识别文本')).toBeInTheDocument();
+  });
+
   it('does not open the editor for a failed segment', async () => {
     const onEditText = vi.fn();
     render(
@@ -88,6 +105,22 @@ describe('<SegmentList />', () => {
 
     expect(onEditText).not.toHaveBeenCalled();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
+  it('shows a failure state when the browser refuses to copy raw data', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('permission denied')) },
+    });
+    const fetchMock = vi.fn(async () => json({ text: 'raw' }));
+    render(<SegmentList segments={[seg()]} taskId="t1" authedFetch={fetchMock} />);
+
+    await userEvent.click(screen.getByRole('button', { expanded: false }));
+    await screen.findByText('上游原始返回');
+    await userEvent.click(screen.getByRole('button', { name: '复制' }));
+
+    expect(await screen.findByText('复制失败，请检查浏览器权限')).toBeInTheDocument();
+    expect(screen.queryByText('已复制')).not.toBeInTheDocument();
   });
 
   it('loads the raw upstream payload only when the row is expanded', async () => {

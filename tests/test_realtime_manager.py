@@ -61,6 +61,40 @@ def settings() -> Settings:
     )
 
 
+async def test_cancelled_startup_removes_session_and_exits_provider(settings, monkeypatch):
+    started = asyncio.Event()
+    exited = []
+
+    class _BlockingProvider(_FailingProvider):
+        def __init__(self):
+            super().__init__("")
+
+        async def start(self, config):
+            started.set()
+            await asyncio.Event().wait()
+
+        async def __aexit__(self, *exc):
+            exited.append(exc[0])
+            await super().__aexit__(*exc)
+
+    provider = _BlockingProvider()
+    monkeypatch.setattr(
+        "app.services.realtime_manager.create_realtime_provider",
+        lambda _settings: provider,
+    )
+    rm = RealtimeManager(settings)
+    task = asyncio.create_task(rm.create(RealtimeSessionCreate()))
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert rm.list() == []
+    assert provider.exited == 1
+    assert exited == [asyncio.CancelledError]
+
+
 async def test_create_returns_session_with_urls(settings):
     rm = RealtimeManager(settings)
     info = await rm.create(RealtimeSessionCreate(language="zh"))
@@ -228,6 +262,58 @@ async def test_session_resource_limit_fails_and_releases_provider(settings):
     events = [evt async for evt in rm.stream(info.session_id)]
     assert events[-1].error_code == "resource_limit"
     await rm.close(info.session_id)
+
+
+async def test_cancelled_push_audio_closes_session_and_releases_provider(settings, monkeypatch):
+    started = asyncio.Event()
+
+    class _BlockingProvider(_FailingProvider):
+        async def push_audio(self, chunk):
+            started.set()
+            await asyncio.Event().wait()
+
+    provider = _BlockingProvider("")
+    monkeypatch.setattr(
+        "app.services.realtime_manager.create_realtime_provider",
+        lambda _settings: provider,
+    )
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+    task = asyncio.create_task(
+        rm.push_audio(info.session_id, RealtimeAudioChunk(seq=0, audio="AAAA"))
+    )
+    await asyncio.wait_for(started.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert rm.get(info.session_id).status == RealtimeSessionStatus.closed
+    assert provider.exited == 1
+
+
+async def test_cancelled_finish_closes_session_and_releases_provider(settings, monkeypatch):
+    started = asyncio.Event()
+
+    class _BlockingProvider(_FailingProvider):
+        async def finish(self):
+            started.set()
+            await asyncio.Event().wait()
+
+    provider = _BlockingProvider("")
+    monkeypatch.setattr(
+        "app.services.realtime_manager.create_realtime_provider",
+        lambda _settings: provider,
+    )
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+    task = asyncio.create_task(rm.finish(info.session_id))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert rm.get(info.session_id).status == RealtimeSessionStatus.closed
+    assert provider.exited == 1
 
 
 async def test_provider_push_error_becomes_terminal_error_and_releases_provider(

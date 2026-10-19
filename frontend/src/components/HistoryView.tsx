@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle, FolderClosed, Mic, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { HistoryTask } from '../types';
@@ -80,9 +80,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   // Archived realtime recordings have no media file to open, so they are read
   // here instead of being loaded into the 文件转写 workspace.
   const [reading, setReading] = useState<HistoryTask | null>(null);
+  const requestIdRef = useRef(0);
   const { confirm: confirmDialog, dialog: confirmElement } = useConfirmDialog();
 
   const loadHistory = async (next: HistoryFilters) => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
     const params = new URLSearchParams({
@@ -99,19 +101,28 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       const r = await authedFetch(`/asr/tasks?${params}`);
       if (!r.ok) throw await responseError(r);
       const data = await r.json();
+      // Filters can be applied again before an earlier request returns. Only
+      // the latest request may update the list or its loading/error state.
+      if (requestId !== requestIdRef.current) return;
       setTasks(data.tasks || []);
       setTotalCount(data.total || 0);
     } catch (e) {
-      setError(`拉取历史归档失败: ${errorMessage(e)}`);
+      if (requestId === requestIdRef.current) {
+        setError(`拉取历史归档失败: ${errorMessage(e)}`);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   };
 
   const draft = (): HistoryFilters => ({ q, status, since, until, page });
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
-  useEffect(() => { loadHistory(draft()); }, []);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadHistory(draft());
+    return () => { requestIdRef.current += 1; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /**
    * Publish a filter/page change: the request uses the values passed in (not

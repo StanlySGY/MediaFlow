@@ -34,13 +34,23 @@ async def _run(
     )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
+    except asyncio.TimeoutError as exc:
+        if proc.returncode is None:
+            proc.kill()
         try:
             await proc.communicate()  # reap the killed process; don't leave a zombie
         except Exception:  # noqa: BLE001
             pass
-        raise FFmpegError(f"ffmpeg timed out after {timeout:.0f}s: {cmd[0]}")
+        raise FFmpegError(f"ffmpeg timed out after {timeout:.0f}s: {cmd[0]}") from exc
+    except asyncio.CancelledError:
+        # A caller cancelling an upload/task must not leave ffmpeg/ffprobe alive.
+        if proc.returncode is None:
+            proc.kill()
+        try:
+            await proc.communicate()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     return (
         proc.returncode or 0,
         stdout_b.decode("utf-8", "replace"),

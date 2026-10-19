@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from app.config import Settings
 from app.models.schemas import Segment, SegmentEvent, TaskResult, TaskStatus
@@ -26,6 +27,23 @@ def settings(tmp_path: Path) -> Settings:
 
 def _stub_settings() -> Settings:
     return Settings(asr_api_key="x")
+
+
+async def test_submit_rejects_invalid_overrides_before_registering_task(settings, tmp_path):
+    manager = TaskManager(settings)
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+
+    with pytest.raises(ValidationError):
+        await manager.submit(
+            source,
+            "source.wav",
+            overrides={"split_strategy": "overlap", "split_chunk_seconds": 10, "split_overlap_seconds": 10},
+        )
+
+    assert manager._tasks == {}
+    assert not manager._bg
+    assert source.exists()
 
 
 def _evt(i: int) -> SegmentEvent:
@@ -103,6 +121,33 @@ async def test_rehydrate_from_disk(settings: Settings):
     # Stream of a rehydrated terminal task should exit cleanly with no events.
     received = [e async for e in mgr.stream("abc")]
     assert received == []
+
+
+def test_recover_interrupted_repairs_malformed_state_file(settings: Settings):
+    state_dir = settings.output_dir / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "broken-task.json").write_text("{incomplete", encoding="utf-8")
+
+    TaskManager(settings)
+
+    state = stream_manager._read_json(state_dir / "broken-task.json")
+    result = stream_manager._read_json(settings.output_dir / "broken-task.json")
+    assert state is not None
+    assert state["task_id"] == "broken-task"
+    assert state["status"] == TaskStatus.failed.value
+    assert state["error_code"] == "interrupted"
+    assert result is not None
+    assert result["status"] == TaskStatus.failed.value
+
+
+def test_checkpoint_write_replaces_json_atomically(settings: Settings, monkeypatch):
+    manager = TaskManager(settings)
+    task = _Task("atomic-task", settings)
+    manager._checkpoint(task)
+
+    state_path = settings.output_dir / "state" / "atomic-task.json"
+    assert stream_manager._read_json(state_path) is not None
+    assert list(state_path.parent.glob("*.tmp")) == []
 
 
 async def test_eviction_keeps_inflight_tasks(settings: Settings):

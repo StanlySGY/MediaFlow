@@ -342,6 +342,42 @@ async def test_task_without_overrides_passes_none(
     assert manager.overrides is None
 
 
+@pytest.mark.parametrize(
+    ("strategy", "chunk_seconds", "overlap_seconds"),
+    [
+        ("fixed", 0, None),
+        ("fixed", -5, None),
+        ("overlap", 10, 10),
+        ("overlap", 10, 11),
+        ("overlap", 10, -1),
+    ],
+)
+async def test_invalid_task_split_parameters_rejected_before_submit(
+    tmp_path: Path, no_thread_upload_writer, strategy, chunk_seconds, overlap_seconds
+):
+    from app.api.routes import create_task
+
+    wav = tmp_path / "invalid.wav"
+    _make_silent_wav(wav)
+    manager = _CapturingManager()
+    with pytest.raises(HTTPException) as exc_info:
+        await create_task(
+            file=_upload_file("invalid.wav", wav.read_bytes()),
+            model=None,
+            language=None,
+            split_strategy=strategy,
+            chunk_seconds=chunk_seconds,
+            overlap_seconds=overlap_seconds,
+            hotwords=None,
+            prompt_hints=None,
+            timestamps=None,
+            manager=manager,
+        )
+    assert exc_info.value.status_code == 400
+    assert "invalid task parameters" in exc_info.value.detail
+    assert manager.overrides is None
+
+
 async def test_invalid_split_strategy_rejected(tmp_path: Path, no_thread_upload_writer):
     from app.api.routes import create_task
 

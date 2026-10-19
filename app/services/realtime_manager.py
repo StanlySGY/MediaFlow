@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import uuid
+from pathlib import Path
 from typing import AsyncIterator
 
 from app.config import Settings
@@ -20,6 +21,17 @@ from app.services.asr import create_realtime_provider
 from app.services.asr.realtime_base import RealtimeASRError, RealtimeASRProvider, classify_message
 
 log = logging.getLogger(__name__)
+
+
+def _atomic_write_record(path: Path, record: dict) -> None:
+    """Persist a realtime history record without exposing partially written JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _error_event(session_id: str, exc: BaseException) -> RealtimeASREvent:
@@ -319,11 +331,24 @@ class RealtimeManager:
             raise startup_error
         assert provider is not None and session is not None
 
+        entered = False
         try:
             await provider.__aenter__()
+            entered = True
             await provider.start(config)
             session.info.status = RealtimeSessionStatus.active
             session.touch()
+        except asyncio.CancelledError as e:
+            # Cancellation during provider startup must undo the early map
+            # registration and release an already-entered upstream context.
+            async with self._lock:
+                self._sessions.pop(session_id, None)
+            if entered:
+                try:
+                    await provider.__aexit__(type(e), e, e.__traceback__)
+                except Exception:  # noqa: BLE001
+                    log.warning("provider cleanup failed after startup cancellation", exc_info=True)
+            raise
         except Exception as e:  # noqa: BLE001
             log.exception("failed to start realtime session %s", session_id)
             async with self._lock:
@@ -373,6 +398,7 @@ class RealtimeManager:
                 )
 
         terminal_error: RealtimeASRError | None = None
+        cancelled = False
         async with session._lock:
             if session.done.is_set():
                 raise RealtimeASRError("session already closed", code="session_expired")
@@ -402,6 +428,9 @@ class RealtimeManager:
                 session.touch()
                 try:
                     await session.provider.push_audio(chunk)
+                except asyncio.CancelledError:
+                    session.complete(RealtimeSessionStatus.closed, "audio upload cancelled")
+                    cancelled = True
                 except Exception as exc:  # noqa: BLE001
                     error = (
                         exc
@@ -412,6 +441,9 @@ class RealtimeManager:
                     session.complete(RealtimeSessionStatus.failed, str(error))
                     terminal_error = error
 
+        if cancelled:
+            await self._exit_provider(session)
+            raise asyncio.CancelledError
         if terminal_error is not None:
             await self._exit_provider(session)
             raise terminal_error
@@ -422,6 +454,7 @@ class RealtimeManager:
         if session is None:
             raise KeyError("session not found")
         provider_error: RealtimeASRError | None = None
+        cancelled = False
         async with session._lock:
             if session.done.is_set():
                 return
@@ -429,6 +462,9 @@ class RealtimeManager:
             session.touch()
             try:
                 await session.provider.finish()
+            except asyncio.CancelledError:
+                session.complete(RealtimeSessionStatus.closed, "session finish cancelled")
+                cancelled = True
             except Exception as exc:  # noqa: BLE001
                 provider_error = (
                     exc
@@ -437,6 +473,9 @@ class RealtimeManager:
                 )
                 session.publish(_error_event(session_id, provider_error))
                 session.complete(RealtimeSessionStatus.failed, str(provider_error))
+        if cancelled:
+            await self._exit_provider(session)
+            raise asyncio.CancelledError
         if provider_error is not None:
             await self._exit_provider(session)
             raise provider_error
@@ -515,8 +554,7 @@ class RealtimeManager:
             return
         path = self._settings.output_dir / f"{record['task_id']}.json"
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+            _atomic_write_record(path, record)
         except Exception:  # noqa: BLE001
             log.warning("failed to archive realtime session %s", record["task_id"], exc_info=True)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -12,12 +13,14 @@ import aiofiles
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse
 from starlette.background import BackgroundTask
 
 from app.config import (
     SENSITIVE_FIELDS,
     WRITABLE_FIELDS,
+    Settings,
     activate_profile,
     delete_profile,
     get_profiles,
@@ -661,7 +664,22 @@ async def create_task(
     if timestamps is not None:
         overrides["asr_timestamps"] = timestamps
 
-    task_id = await manager.submit(dst, file.filename, overrides=overrides or None)
+    # Validate request overrides before handing the uploaded file to the task
+    # manager. Otherwise invalid values can create empty tasks or explode the
+    # number of tiny overlapping segments.
+    try:
+        Settings.model_validate({**settings.model_dump(), **overrides})
+    except ValidationError as exc:
+        dst.unlink(missing_ok=True)
+        messages = [str(item.get("msg", "invalid value")) for item in exc.errors()]
+        raise HTTPException(400, f"invalid task parameters: {'; '.join(messages)}") from exc
+
+    try:
+        task_id = await manager.submit(dst, file.filename, overrides=overrides or None)
+    except ValidationError as exc:
+        dst.unlink(missing_ok=True)
+        messages = [str(item.get("msg", "invalid value")) for item in exc.errors()]
+        raise HTTPException(400, f"invalid task parameters: {'; '.join(messages)}") from exc
     return {"task_id": task_id}
 
 
@@ -775,6 +793,11 @@ async def concat_media_files(files: list[UploadFile] = File(...)) -> FileRespons
                     await out.write(chunk)
         await concat_media(parts, dst, timeout=settings.ffmpeg_timeout)
     except HTTPException:
+        _unlink_all(parts + [dst])
+        raise
+    except asyncio.CancelledError:
+        # Client disconnect/shutdown can cancel the request while files or ffmpeg
+        # are active; the ordinary Exception handlers do not catch cancellation.
         _unlink_all(parts + [dst])
         raise
     except FFmpegError as e:

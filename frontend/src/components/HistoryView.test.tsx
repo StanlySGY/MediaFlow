@@ -146,6 +146,30 @@ describe('<HistoryView /> item actions', () => {
     expect(String(authedFetch.mock.calls.at(-1)?.[0])).toContain('offset=0');
   });
 
+  it('keeps the latest filter results when an older history request resolves late', async () => {
+    const user = userEvent.setup();
+    let resolveInitial!: (response: Response) => void;
+    let resolveFiltered!: (response: Response) => void;
+    const initialRequest = new Promise<Response>(resolve => { resolveInitial = resolve; });
+    const filteredRequest = new Promise<Response>(resolve => { resolveFiltered = resolve; });
+    const authedFetch = vi.fn()
+      .mockImplementationOnce(() => initialRequest)
+      .mockImplementationOnce(() => filteredRequest);
+    render(<HistoryView authedFetch={authedFetch} onLoadTask={vi.fn()} />);
+
+    await user.type(screen.getByRole('searchbox'), 'latest');
+    await user.click(screen.getByRole('button', { name: /筛选/ }));
+    expect(authedFetch).toHaveBeenCalledTimes(2);
+
+    resolveFiltered(json({ tasks: [{ ...task, task_id: 'new', original_name: 'latest-result.wav' }], total: 1 }));
+    expect(await screen.findByRole('button', { name: '打开任务：latest-result.wav' })).toBeInTheDocument();
+
+    resolveInitial(json({ tasks: [{ ...task, task_id: 'old', original_name: 'stale-result.wav' }], total: 1 }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await waitFor(() => expect(screen.queryByRole('button', { name: '打开任务：stale-result.wav' })).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: '打开任务：latest-result.wav' })).toBeInTheDocument();
+  });
+
   it('gives open and delete buttons task-specific accessible names as siblings', async () => {
     renderHistory();
 

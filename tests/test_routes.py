@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import subprocess
 import wave
@@ -129,6 +130,39 @@ def concat_client(tmp_path: Path, monkeypatch):
     from app.main import create_app
 
     return TestClient(create_app())
+
+
+async def test_concat_cancellation_cleans_uploaded_parts_and_output(tmp_path, monkeypatch):
+    from starlette.datastructures import UploadFile
+
+    from app.config import Settings
+    from app.api import routes
+
+    settings = Settings(
+        temp_dir=tmp_path / "tmp",
+        output_dir=tmp_path / "out",
+        max_upload_bytes=1024 * 1024,
+    )
+    settings.temp_dir.mkdir(parents=True)
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+    entered_concat = asyncio.Event()
+
+    async def block_concat(_parts, _dst, *, timeout=None):
+        entered_concat.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(routes, "concat_media", block_concat)
+    files = [
+        UploadFile(filename="a.wav", file=io.BytesIO(b"part-a")),
+        UploadFile(filename="b.wav", file=io.BytesIO(b"part-b")),
+    ]
+    task = asyncio.create_task(routes.concat_media_files(files))
+    await asyncio.wait_for(entered_concat.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert list(settings.temp_dir.iterdir()) == []
 
 
 def test_concat_merges_same_format(concat_client: TestClient):
