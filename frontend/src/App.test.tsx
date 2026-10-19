@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import App from './App';
 
 const json = (body: unknown) =>
@@ -17,9 +18,11 @@ function mockFetch() {
 }
 
 describe('<App /> smoke', () => {
+  let user: ReturnType<typeof userEvent.setup>;
   beforeEach(() => {
     vi.stubGlobal('fetch', mockFetch());
     localStorage.clear();
+    user = userEvent.setup();
   });
   afterEach(() => vi.unstubAllGlobals());
 
@@ -31,19 +34,25 @@ describe('<App /> smoke', () => {
     await waitFor(() => expect(screen.queryByText('快速上手')).not.toBeInTheDocument());
   });
 
-  it('does not follow a canceled startup token prompt with another prompt', async () => {
+  it('asks for the access token in the page, once, when auth is required', async () => {
     const fetchMock = vi.fn(async (url: string | URL) => {
       if (String(url).includes('/auth/info')) return json({ auth_required: true });
       return { ok: false, status: 401 } as Response;
     });
-    const promptMock = vi.fn(() => null);
+    // A native prompt would block the page before the console is even readable.
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('prompt', promptMock);
+    vi.stubGlobal('prompt', vi.fn(() => { throw new Error('native prompt must not be used'); }));
 
     render(<App />);
 
+    // The console still renders behind the dialog, so cancelling it leaves a
+    // usable page rather than a blank tab.
+    expect(await screen.findByRole('dialog', { name: '需要访问令牌' })).toBeInTheDocument();
     expect(await screen.findByText('快速上手')).toBeInTheDocument();
-    await waitFor(() => expect(promptMock).toHaveBeenCalledTimes(1));
+    expect(screen.queryAllByRole('dialog')).toHaveLength(1);
+
+    await user.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/auth/info');
   });

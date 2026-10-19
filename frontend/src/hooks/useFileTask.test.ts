@@ -78,9 +78,7 @@ describe('useFileTask recovery', () => {
   it('restores a persisted active task and reconnects to its replayable event stream', async () => {
     localStorage.setItem(STORAGE_KEY, 'resume-task');
     const authedFetch = vi.fn(async (url: string) => {
-      if (url === '/asr/task/resume-task' || url === '/asr/file/resume-task') {
-        return response(activeInfo);
-      }
+      if (url === '/asr/file/resume-task') return response(activeInfo);
       throw new Error(`Unexpected request: ${url}`);
     });
 
@@ -99,9 +97,12 @@ describe('useFileTask recovery', () => {
     localStorage.setItem(STORAGE_KEY, 'complete-task');
     let resolvePoll!: (value: Response) => void;
     const pollResult = new Promise<Response>((resolve) => { resolvePoll = resolve; });
+    let statusReads = 0;
     const authedFetch = vi.fn((url: string) => {
-      if (url === '/asr/task/complete-task') return Promise.resolve(response(activeInfo));
-      if (url === '/asr/file/complete-task') return pollResult;
+      if (url === '/asr/file/complete-task') {
+        statusReads += 1;
+        return statusReads === 1 ? Promise.resolve(response(activeInfo)) : pollResult;
+      }
       if (url === '/asr/file/complete-task/result') return Promise.resolve(response(finalResult));
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
@@ -133,12 +134,7 @@ describe('useFileTask recovery', () => {
   it('resumes active history tasks without cancelling the task previously viewed', async () => {
     localStorage.setItem(STORAGE_KEY, 'current-task');
     const authedFetch = vi.fn(async (url: string) => {
-      if (url === '/asr/task/current-task' || url === '/asr/file/current-task') {
-        return response(activeInfo);
-      }
-      if (url === '/asr/task/history-task') {
-        return response({ ...activeInfo, progress: 0.6, finished_segments: 3 });
-      }
+      if (url === '/asr/file/current-task') return response(activeInfo);
       if (url === '/asr/file/history-task') {
         return response({ ...activeInfo, progress: 0.6, finished_segments: 3 });
       }
@@ -165,8 +161,8 @@ describe('useFileTask recovery', () => {
 
   it('loads a terminal history task from its result endpoint', async () => {
     const authedFetch = vi.fn(async (url: string) => {
-      if (url === '/asr/task/history-done') return response(terminalInfo);
-      if (url === '/asr/task/history-done/result') return response(finalResult);
+      if (url === '/asr/file/history-done') return response(terminalInfo);
+      if (url === '/asr/file/history-done/result') return response(finalResult);
       throw new Error(`Unexpected request: ${url}`);
     });
     const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
@@ -179,8 +175,8 @@ describe('useFileTask recovery', () => {
     expect(result.current.taskStatus).toBe('done');
     expect(result.current.fullText).toBe('final transcript');
     expect(result.current.taskTotalSegs).toBe(2);
-    expect(authedFetch).toHaveBeenCalledWith('/asr/task/history-done');
-    expect(authedFetch).toHaveBeenCalledWith('/asr/task/history-done/result');
+    expect(authedFetch).toHaveBeenCalledWith('/asr/file/history-done');
+    expect(authedFetch).toHaveBeenCalledWith('/asr/file/history-done/result');
     unmount();
   });
 
@@ -199,21 +195,24 @@ describe('useFileTask recovery', () => {
     localStorage.setItem(STORAGE_KEY, 'retry-task');
     let statusCalls = 0;
     const authedFetch = vi.fn(async (url: string) => {
-      if (url === '/asr/task/retry-task') {
+      if (url === '/asr/file/retry-task') {
         statusCalls += 1;
         if (statusCalls === 1) {
           return response({}, 503);
         }
         return response(activeInfo);
       }
-      if (url === '/asr/file/retry-task') return response(activeInfo);
       throw new Error(`Unexpected request: ${url}`);
     });
     const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
 
     await waitFor(() => expect(result.current.taskId).toBe('retry-task'));
-    expect(authedFetch.mock.calls.filter(([url]) => url === '/asr/task/retry-task')).toHaveLength(2);
+    const statusReads = authedFetch.mock.calls.filter(([url]) => url === '/asr/file/retry-task');
+    // attempt 1 answers 503, attempt 2 succeeds; polling reuses the same URL so
+    // only the presence of the retry is observable here.
+    expect(statusReads.length).toBeGreaterThanOrEqual(2);
     expect(result.current.taskStatus).toBe('transcribing');
+    expect(MockEventSource.instances[0]?.url).toBe('/asr/file/retry-task/events');
     unmount();
   });
 
@@ -224,7 +223,7 @@ describe('useFileTask recovery', () => {
     const authedFetch = vi.fn(() => pendingStatus);
     const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
 
-    await waitFor(() => expect(authedFetch).toHaveBeenCalledWith('/asr/task/stale-task'));
+    await waitFor(() => expect(authedFetch).toHaveBeenCalledWith('/asr/file/stale-task'));
     await act(async () => { await result.current.resetTask(); });
     await act(async () => { resolveStatus(response(activeInfo)); });
 
@@ -270,6 +269,194 @@ describe('useFileTask recovery', () => {
       await upload;
     });
     expect(localStorage.getItem(STORAGE_KEY)).toBe('uploaded-task');
+    unmount();
+  });
+});
+
+class MockXHR {
+  static instances: MockXHR[] = [];
+  status = 200;
+  responseText = JSON.stringify({ task_id: 'preflight-task' });
+  readonly open = vi.fn();
+  readonly abort = vi.fn();
+  readonly setRequestHeader = vi.fn();
+  readonly upload = { onprogress: null as ((e: ProgressEvent) => void) | null };
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  readonly send = vi.fn(() => {
+    // The hook awaits this promise, so it has to settle like a real upload.
+    setTimeout(() => this.onload?.(), 0);
+  });
+
+  constructor() {
+    MockXHR.instances.push(this);
+  }
+}
+
+describe('useFileTask upload preflight', () => {
+  const limits = { maxBytes: 2 * 1024 ** 3, allowedExts: ['.mp3', '.wav', '.mp4'] };
+  // A real File, since the accepted path goes on to build an object URL and a
+  // FormData entry from it. Size is overridden: the preflight reads it before
+  // any byte is read, and no test should hold gigabytes in memory.
+  const pickedFile = (name: string, size: number) => {
+    const file = new File(['x'], name, { type: name.endsWith('.mp4') ? 'video/mp4' : 'audio/wav' });
+    Object.defineProperty(file, 'size', { value: size });
+    return file;
+  };
+
+  beforeEach(() => {
+    MockXHR.instances = [];
+    vi.stubGlobal('XMLHttpRequest', MockXHR);
+  });
+
+  it('rejects an unsupported extension without starting an upload', async () => {
+    const authedFetch = vi.fn(async () => response({}));
+    const { result } = renderHook(() => useFileTask(authedFetch, sseUrl, limits));
+
+    await act(async () => { await result.current.handleFileSelect(pickedFile('report.zip', 1024)); });
+
+    expect(result.current.taskError).toContain('.zip');
+    expect(result.current.taskError).toContain('mp3 / wav / mp4');
+    expect(MockXHR.instances).toHaveLength(0);
+    expect(result.current.taskStatus).toBe('—');
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it('rejects an oversize file and leaves the task currently on screen intact', async () => {
+    localStorage.setItem(STORAGE_KEY, 'running-task');
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/file/running-task') return response(activeInfo);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl, limits));
+    await waitFor(() => expect(result.current.taskStatus).toBe('transcribing'));
+
+    await act(async () => {
+      await result.current.handleFileSelect(pickedFile('huge.wav', 3 * 1024 ** 3));
+    });
+
+    // A mistyped pick used to cancel the running task first, then fail minutes
+    // later with a 413 mid-transfer. Neither happens now.
+    expect(result.current.taskError).toContain('3 GB');
+    expect(result.current.taskStatus).toBe('transcribing');
+    expect(result.current.taskProgress).toBe(0.4);
+    expect(result.current.taskId).toBe('running-task');
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('running-task');
+    expect(MockXHR.instances).toHaveLength(0);
+    expect(authedFetch.mock.calls.some(([url]) => String(url).endsWith('/cancel'))).toBe(false);
+    unmount();
+  });
+
+  it('lets an acceptable file through to the upload', async () => {
+    const authedFetch = vi.fn(async () => response({}));
+    const { result } = renderHook(() => useFileTask(authedFetch, sseUrl, limits));
+
+    await act(async () => {
+      await result.current.handleFileSelect(pickedFile('ok.mp4', 1024));
+    });
+
+    expect(result.current.taskError).toBeNull();
+    expect(MockXHR.instances).toHaveLength(1);
+    expect(MockXHR.instances[0].open).toHaveBeenCalledWith('POST', '/asr/file');
+  });
+
+  it('skips the size check when the server has not reported a limit yet', async () => {
+    const authedFetch = vi.fn(async () => response({}));
+    const { result } = renderHook(() => useFileTask(authedFetch, sseUrl));
+
+    await act(async () => {
+      await result.current.handleFileSelect(pickedFile('unknown-size.wav', 9 * 1024 ** 3));
+    });
+
+    expect(result.current.taskError).toBeNull();
+    expect(MockXHR.instances).toHaveLength(1);
+  });
+});
+
+describe('useFileTask failure protocol', () => {
+  beforeEach(() => { MockXHR.instances = []; });
+
+  const failedResult = {
+    status: 'failed',
+    duration: 0,
+    text: '',
+    segments: [],
+    error: '上游 ASR 拒绝了这段音频',
+    error_code: 'audio_invalid',
+    hint: '换个格式或降低码率后重新提交',
+    retryable: false,
+  };
+  const interruptedResult = {
+    ...failedResult,
+    error: '服务在任务完成前重启，任务未继续执行',
+    error_code: 'interrupted',
+    hint: '请重新提交该文件',
+    retryable: true,
+  };
+
+  it('surfaces the server error fields and refuses to offer a retry for a permanent failure', async () => {
+    localStorage.setItem(STORAGE_KEY, 'broken-task');
+    const authedFetch = vi.fn(async (url: string) => {
+      // Startup recovery reads the task by its canonical id; the live stream
+      // poll and the terminal hydrate use the /file spelling.
+      if (url === '/asr/file/broken-task') {
+        return response({ ...failedResult, progress: 0.2 });
+      }
+      if (url === '/asr/file/broken-task/result') return response(failedResult);
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
+
+    await waitFor(() => expect(result.current.taskError).toBe('上游 ASR 拒绝了这段音频'));
+    expect(result.current.taskErrorHint).toBe('换个格式或降低码率后重新提交');
+    expect(result.current.taskErrorCode).toBe('audio_invalid');
+    // Nothing to resend in this tab anyway, and the server said resending would not help.
+    expect(result.current.canRetryTask).toBe(false);
+    unmount();
+  });
+
+  it('marks an interrupted task retryable once the file that failed is still on hand', async () => {
+    vi.stubGlobal('XMLHttpRequest', MockXHR);
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:local-media');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/file/preflight-task') return response({ ...interruptedResult, progress: 0.2 });
+      if (url === '/asr/file/preflight-task/result') return response(interruptedResult);
+      return response(activeInfo);
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
+    const file = new File(['audio'], 'sample.wav', { type: 'audio/wav' });
+
+    await act(async () => { await result.current.handleFileSelect(file); });
+    await waitFor(() => expect(result.current.taskStatus).toBe('failed'));
+    expect(result.current.taskError).toBe('服务在任务完成前重启，任务未继续执行');
+    expect(result.current.canRetryTask).toBe(true);
+
+    await act(async () => { await result.current.retryTask(); });
+    // The retry is a fresh submit of the same file, not a poke at the dead task.
+    expect(MockXHR.instances).toHaveLength(2);
+    expect(MockXHR.instances[1].open).toHaveBeenCalledWith('POST', '/asr/file');
+    unmount();
+  });
+
+  it('aborts an in-flight task without throwing away the workspace', async () => {
+    localStorage.setItem(STORAGE_KEY, 'active-task');
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/task/active-task/cancel') return response({ ok: true, status: 'accepted' });
+      if (url === '/asr/file/active-task') return response(activeInfo);
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
+    await waitFor(() => expect(result.current.taskId).toBe('active-task'));
+
+    const aborted = await act(async () => result.current.abortTask());
+    expect(aborted).toBe(true);
+    expect(authedFetch).toHaveBeenCalledWith('/asr/task/active-task/cancel', { method: 'POST' });
+    // Cancelling is not clearing: the task id and its segments stay on screen so
+    // whatever was already recognized can still be exported.
+    expect(result.current.taskId).toBe('active-task');
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('active-task');
     unmount();
   });
 });

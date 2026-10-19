@@ -127,6 +127,12 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
           </div>
         </h3>
 
+        {/* Scope statement: without it the empty list reads as "nothing failed",
+            when the real reason may be a restart or another worker process. */}
+        <p className="hint mb-4">
+          只统计当前服务进程内的上游调用：滚动保留最近 {data.summary.window_size} 条，服务重启后从空开始。
+        </p>
+
         {error && (
           <div className="toast err mb-4">
             <AlertTriangle className="w-4 h-4" />

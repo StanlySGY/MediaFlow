@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -11,6 +12,42 @@ from app.models.schemas import (
     RealtimeSessionStatus,
 )
 from app.services.realtime_manager import RealtimeManager
+from app.services.asr.realtime_base import RealtimeASRError
+
+
+class _FailingProvider:
+    def __init__(self, failing_method: str) -> None:
+        self.failing_method = failing_method
+        self.exited = 0
+        self._events: asyncio.Queue[None] = asyncio.Queue()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        self.exited += 1
+        self._events.put_nowait(None)
+
+    def bind_session(self, session_id: str) -> None:
+        pass
+
+    async def start(self, config: RealtimeSessionCreate) -> None:
+        pass
+
+    async def push_audio(self, chunk: RealtimeAudioChunk) -> None:
+        if self.failing_method == "push_audio":
+            raise RuntimeError("provider push exploded")
+
+    async def finish(self) -> None:
+        if self.failing_method == "finish":
+            raise RuntimeError("provider finish exploded")
+
+    async def events(self):
+        while True:
+            event = await self._events.get()
+            if event is None:
+                return
+            yield event
 
 
 @pytest.fixture
@@ -150,11 +187,91 @@ async def test_max_sessions_enforced(settings):
     rm = RealtimeManager(settings)
     s1 = await rm.create(RealtimeSessionCreate())
     s2 = await rm.create(RealtimeSessionCreate())
-    from app.services.asr.realtime_base import RealtimeASRError
     with pytest.raises(RealtimeASRError, match="同时录音已达上限"):
         await rm.create(RealtimeSessionCreate())
     await rm.close(s1.session_id)
     await rm.close(s2.session_id)
+
+
+async def test_max_sessions_check_and_registration_are_atomic(settings):
+    settings = settings.model_copy(update={"realtime_max_sessions": 1})
+    rm = RealtimeManager(settings)
+
+    results = await asyncio.gather(
+        rm.create(RealtimeSessionCreate()),
+        rm.create(RealtimeSessionCreate()),
+        return_exceptions=True,
+    )
+    successes = [result for result in results if not isinstance(result, Exception)]
+    failures = [result for result in results if isinstance(result, RealtimeASRError)]
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert failures[0].code == "session_limit"
+    await rm.close(successes[0].session_id)
+
+
+async def test_session_resource_limit_fails_and_releases_provider(settings):
+    settings = settings.model_copy(update={"realtime_max_session_bytes": 4})
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+
+    await rm.push_audio(info.session_id, RealtimeAudioChunk(seq=0, audio="AAAA"))
+    with pytest.raises(RealtimeASRError) as exc_info:
+        await rm.push_audio(info.session_id, RealtimeAudioChunk(seq=1, audio="AAAA"))
+
+    assert exc_info.value.code == "resource_limit"
+    current = rm.get(info.session_id)
+    assert current is not None
+    assert current.status == RealtimeSessionStatus.failed
+    assert current.bytes_received == 3
+    events = [evt async for evt in rm.stream(info.session_id)]
+    assert events[-1].error_code == "resource_limit"
+    await rm.close(info.session_id)
+
+
+async def test_provider_push_error_becomes_terminal_error_and_releases_provider(
+    settings, monkeypatch
+):
+    provider = _FailingProvider("push_audio")
+    monkeypatch.setattr(
+        "app.services.realtime_manager.create_realtime_provider",
+        lambda _settings: provider,
+    )
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+
+    with pytest.raises(RealtimeASRError, match="provider push exploded") as exc_info:
+        await rm.push_audio(info.session_id, RealtimeAudioChunk(seq=0, audio="AAAA"))
+
+    assert exc_info.value.code == "internal_error"
+    assert rm.get(info.session_id).status == RealtimeSessionStatus.failed
+    events = [evt async for evt in rm.stream(info.session_id)]
+    assert events[-1].error_code == "internal_error"
+    assert provider.exited == 1
+    await rm.close(info.session_id)
+
+
+async def test_provider_finish_error_becomes_terminal_error_and_releases_provider(
+    settings, monkeypatch
+):
+    provider = _FailingProvider("finish")
+    monkeypatch.setattr(
+        "app.services.realtime_manager.create_realtime_provider",
+        lambda _settings: provider,
+    )
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+
+    with pytest.raises(RealtimeASRError, match="provider finish exploded") as exc_info:
+        await rm.finish(info.session_id)
+
+    assert exc_info.value.code == "internal_error"
+    assert rm.get(info.session_id).status == RealtimeSessionStatus.failed
+    events = [evt async for evt in rm.stream(info.session_id)]
+    assert events[-1].error_code == "internal_error"
+    assert provider.exited == 1
+    await rm.close(info.session_id)
 
 
 async def test_finished_sessions_do_not_count_toward_cap(settings):
@@ -194,3 +311,177 @@ async def test_late_subscriber_replays_history(settings):
     assert "online" in types
     assert types[-1] == "done"
     await rm.close(sid)
+
+
+def _read_record(settings, session_id: str) -> dict | None:
+    path = settings.output_dir / f"{session_id}.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+async def test_finished_recording_is_archived_to_history(settings, tmp_path):
+    """A recording must show up in the same history archive as file tasks —
+    otherwise closing the tab loses the transcript entirely."""
+    settings = settings.model_copy(update={"output_dir": tmp_path / "out"})
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate(language="zh", model="zh-base"))
+
+    for i in range(3):
+        await rm.push_audio(info.session_id, RealtimeAudioChunk(seq=i, audio="AAAA"))
+    await rm.finish(info.session_id)
+    await asyncio.sleep(0.1)
+    await rm.close(info.session_id)
+
+    record = _read_record(settings, info.session_id)
+    assert record is not None
+    assert record["task_id"] == info.session_id
+    assert record["kind"] == "realtime"
+    # `done` on the session and `done` in the history list are the same word.
+    assert record["status"] == "done"
+    assert record["session_status"] == "done"
+    # The mock's `done` event carries no text; the last `final` is the record.
+    assert record["text"] == "Mock final transcription."
+    assert record["language"] == "zh"
+    assert record["original_name"].startswith("实时录音 ")
+    assert "zh-base" in record["original_name"]
+    assert record["segments"] == []
+    assert record["chunks_received"] == 3
+    assert record["error"] is None
+    assert record["created_at"] <= record["updated_at"]
+    assert record["duration"] >= 0.0
+
+
+async def test_closed_session_is_archived_as_cancelled(settings, tmp_path):
+    """TTL eviction, DELETE and shutdown all end a session as `closed`, which the
+    history list has no word for — it is filed as `cancelled` (stopped on its own
+    terms), not `failed` (an upstream error)."""
+    settings = settings.model_copy(update={"output_dir": tmp_path / "out"})
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+    for i in range(3):
+        await rm.push_audio(info.session_id, RealtimeAudioChunk(seq=i, audio="AAAA"))
+
+    assert await rm.close(info.session_id) is True
+    # close() archives immediately, then the pump drains the frames finish()
+    # queued and rewrites the record with the fullest text it ever saw.
+    await asyncio.sleep(0.05)
+    record = _read_record(settings, info.session_id)
+    assert record is not None
+    assert record["session_status"] == "closed"
+    assert record["status"] == "cancelled"
+    assert record["text"] == "Mock final transcription."
+
+
+async def test_ttl_eviction_archives_the_session(settings, tmp_path):
+    settings = settings.model_copy(
+        update={"output_dir": tmp_path / "out", "realtime_session_ttl_seconds": 1}
+    )
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+    for i in range(3):
+        await rm.push_audio(info.session_id, RealtimeAudioChunk(seq=i, audio="AAAA"))
+    rm._sessions[info.session_id].info.updated_at -= 5
+
+    async with rm._lock:
+        expired = rm._evict_expired_locked()
+    await rm._exit_expired(expired)
+
+    assert rm.get(info.session_id) is None
+    record = _read_record(settings, info.session_id)
+    assert record is not None
+    assert record["status"] == "cancelled"
+
+
+async def test_failed_recording_archives_its_error_code(settings, tmp_path):
+    settings = settings.model_copy(
+        update={"output_dir": tmp_path / "out", "realtime_max_session_bytes": 4}
+    )
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+    await rm.push_audio(info.session_id, RealtimeAudioChunk(seq=0, audio="AAAA"))
+    with pytest.raises(RealtimeASRError):
+        await rm.push_audio(info.session_id, RealtimeAudioChunk(seq=1, audio="AAAA"))
+    await asyncio.sleep(0.05)
+
+    record = _read_record(settings, info.session_id)
+    assert record is not None
+    assert record["status"] == "failed"
+    assert record["error_code"] == "resource_limit"
+    assert record["retryable"] is False
+    assert record["error"]
+    await rm.close(info.session_id)
+
+
+async def test_archive_survives_teardown_without_regression(settings, tmp_path):
+    """finish -> pump end -> close -> stop may touch the same session several
+    times. The record must keep its transcript and must not be downgraded."""
+    settings = settings.model_copy(update={"output_dir": tmp_path / "out"})
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+    for i in range(3):
+        await rm.push_audio(info.session_id, RealtimeAudioChunk(seq=i, audio="AAAA"))
+    await rm.finish(info.session_id)
+    await asyncio.sleep(0.1)
+
+    record = _read_record(settings, info.session_id)
+    assert record is not None
+    assert record["status"] == "done"
+    assert record["text"] == "Mock final transcription."
+
+    # Same manager, then a second manager running the shutdown funnel: the session
+    # is already gone from the live map, so neither may rewrite the finished record.
+    assert await rm.close(info.session_id) is True
+    await rm.stop()
+    after = _read_record(settings, info.session_id)
+    assert after["status"] == "done"
+    assert after["text"] == "Mock final transcription."
+
+    second = RealtimeManager(settings)
+    await second.start()
+    await second.stop()
+    assert _read_record(settings, info.session_id) == after
+    assert sorted(x.name for x in settings.output_dir.glob("*.json")) == [f"{info.session_id}.json"]
+
+
+async def test_session_without_audio_or_text_is_not_archived(settings, tmp_path):
+    """Creating a session and walking away is not a recording — archiving it would
+    fill the history list with empty rows."""
+    settings = settings.model_copy(update={"output_dir": tmp_path / "out"})
+
+    exits: list[str] = []
+
+    class _SilentProvider:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc) -> None:
+            exits.append("exit")
+
+        def bind_session(self, session_id: str) -> None:
+            pass
+
+        async def start(self, config) -> None:
+            pass
+
+        async def push_audio(self, chunk) -> None:
+            pass
+
+        async def finish(self) -> None:
+            pass
+
+        async def events(self):
+            if False:
+                yield None
+
+    import app.services.realtime_manager as mod
+    original = mod.create_realtime_provider
+    mod.create_realtime_provider = lambda _settings: _SilentProvider()
+    try:
+        rm = RealtimeManager(settings)
+        info = await rm.create(RealtimeSessionCreate())
+        assert await rm.close(info.session_id) is True
+        assert _read_record(settings, info.session_id) is None
+        assert exits == ["exit"]
+    finally:
+        mod.create_realtime_provider = original

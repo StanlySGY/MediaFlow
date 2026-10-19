@@ -9,7 +9,7 @@ class RealtimeASRError(RuntimeError):
     """Provider or session failure with a stable client-facing code.
 
     `code` is one of: invalid_request, unauthorized, session_not_found,
-    session_expired, session_limit, provider_unavailable, provider_timeout,
+    session_expired, session_limit, resource_limit, provider_unavailable, provider_timeout,
     provider_rejected, audio_invalid, internal_error, cancelled, interrupted.
     """
 
@@ -33,6 +33,8 @@ def classify_message(message: str) -> tuple[str, str | None, bool]:
     low = message.lower()
     if "同时录音已达上限" in message:
         return "session_limit", "请等待他人结束录音后重试", True
+    if "累计音频" in message or "录音时长已达上限" in message:
+        return "resource_limit", "本次录音已达到资源上限，请重新开始", False
     if "session not found" in low or "未知会话" in message:
         return "session_not_found", "请确认会话是否已结束", False
     if (

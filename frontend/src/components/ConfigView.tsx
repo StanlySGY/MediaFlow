@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Save, RotateCcw, Activity, Eye, EyeOff, Server, Scissors, Radio, ShieldCheck, RefreshCw, ChevronDown, Plus, Trash2, Check } from 'lucide-react';
 import { SystemConfig } from '../types';
 import { errorMessage } from '../lib/errors';
+import { useConfirmDialog } from './ConfirmDialog';
 
 interface ConfigViewProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
@@ -145,6 +146,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const [profileDirty, setProfileDirty] = useState(false);
   const [profileStatus, setProfileStatus] = useState<string | null>(null);
 
+  const { confirm: confirmDialog, dialog: confirmElement } = useConfirmDialog();
   const selected = profiles?.profiles.find(p => p.id === selectedId) ?? null;
 
   const loadConfig = async () => {
@@ -396,7 +398,28 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
 
   const removeProfile = async (id: string) => {
     const target = profiles?.profiles.find(p => p.id === id);
-    if (!target || !confirm(`删除配置「${target.name}」？`)) return;
+    if (!target) return;
+    // The profile may be the one a running feature is using, so say which
+    // slots point at it instead of asking a yes/no about a name.
+    const usedBy = [
+      profiles?.file === target.id ? '文件转写' : null,
+      profiles?.realtime === target.id ? '实时识别' : null,
+    ].filter(Boolean);
+    const ok = await confirmDialog({
+      title: `删除配置「${target.name}」？`,
+      message: (
+        <>
+          这份配置保存的模型、服务地址和令牌会一起删除，无法恢复。
+          {usedBy.length > 0 ? (
+            <>它当前正被<strong className="font-semibold text-fg">{usedBy.join(' 和 ')}</strong>使用，删除后该功能会退回默认配置。</>
+          ) : (
+            <>它当前没有被任何功能使用。</>
+          )}
+        </>
+      ),
+      confirmLabel: '删除配置',
+    });
+    if (!ok) return;
     const r = await authedFetch(`/asr/profiles/${id}`, { method: 'DELETE' });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) { noteProfile(`✗ ${d.detail || '删除失败'}`); return; }
@@ -441,7 +464,19 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   };
 
   const handleReset = async () => {
-    if (!confirm('确认放弃所有在线修改，恢复为部署时 .env 的默认值？')) return;
+    const dirtyCount = Object.keys(collectDiff()).length;
+    const ok = await confirmDialog({
+      title: '恢复为部署时的默认值？',
+      message: (
+        <>
+          页面上所有在线修改会被丢弃
+          {dirtyCount > 0 ? <>（当前有 <strong className="font-semibold text-fg">{dirtyCount}</strong> 项未保存的改动）</> : null}
+          ，服务改用部署时 <code className="font-mono">.env</code> 里的默认值，包括模型、服务地址、令牌和切分参数。已保存的改动同样会被写回默认值，无法撤销。
+        </>
+      ),
+      confirmLabel: '恢复默认值',
+    });
+    if (!ok) return;
     setSaveStatus('恢复中…');
     try {
       const r = await authedFetch('/asr/config/reset', { method: 'POST' });
@@ -543,7 +578,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
               <button type="button" onClick={() => toggleSecretClear(f.key as 'asr_api_key' | 'realtime_asr_api_key')}
                 aria-label={`${clearSecretDraft[f.key] ? '取消清除' : '清除'}${f.label}`}
                 title={`${clearSecretDraft[f.key] ? '取消清除' : '清除'}${f.label}`}
-                className="absolute right-9 text-muted hover:text-danger p-1 border-none bg-transparent hover:bg-transparent">
+                className="absolute right-9 text-muted hover:text-err p-1 border-none bg-transparent hover:bg-transparent">
                 {clearSecretDraft[f.key] ? <RotateCcw className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
               </button>
             )}
@@ -606,6 +641,8 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
 
   return (
     <div className="flex flex-col gap-6 pb-24">
+      {confirmElement}
+
       <div className="card p-6">
         <div className="flex items-center gap-2">
           <Server className="w-4 h-4 text-muted" />
@@ -623,7 +660,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
               {profiles.file === p.id && <span className="badge">{'文件'}</span>}
               {profiles.realtime === p.id && <span className="badge">{'实时'}</span>}
               <button type="button" onClick={() => removeProfile(p.id)} aria-label={`删除 ${p.name}`}
-                className="text-muted hover:text-danger bg-transparent border-none p-1 hover:bg-transparent">
+                className="text-muted hover:text-err bg-transparent border-none p-1 hover:bg-transparent">
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
             </div>

@@ -8,6 +8,7 @@ export default mergeConfig(baseConfig, {
     strictPort: true,
     proxy: {
       '/asr': 'http://127.0.0.1:8081',
+      '/media': 'http://127.0.0.1:8081',
       '/auth': 'http://127.0.0.1:8081',
       '/health': 'http://127.0.0.1:8081',
     },

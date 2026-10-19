@@ -30,6 +30,22 @@
   --color-err: #b42318;
   --color-err-soft: #fef3f2;
 
+  /* ---- Console (dark) surface: the event log and raw-event panes.
+     Kept in the theme so the dark panels are one palette, not four copies of
+     the same hex literals scattered across components. --color-console-muted
+     is #7885a3 on purpose: it clears AA (4.89:1) on the panel background,
+     where the old #56627d was 2.96:1. */
+  --color-console: #0e1626;
+  --color-console-border: #1d2740;
+  --color-console-text: #cdd6e6;
+  --color-console-muted: #7885a3;
+  --color-console-err: #ff9b96;
+  --color-console-key: #9cc0ff;
+  --color-console-str: #e0a878;
+  --color-console-num: #7fd1a7;
+  --color-console-bool: #c39cff;
+  --color-console-null: #7a869c;
+
   /* ---- Type scale: four steps with real contrast, not a 9-13px smear ---- */
   --text-meta: 11px;
   --text-meta--line-height: 1.45;
@@ -204,7 +220,7 @@ body {
 
 /* ---------------- Event console ---------------- */
 .evlog {
-  @apply bg-[#0e1626] border border-[#1d2740] rounded-xl p-4 h-[300px] overflow-auto leading-relaxed text-xs;
+  @apply bg-console border border-console-border rounded-xl p-4 h-[300px] overflow-auto leading-relaxed text-xs;
 }
 .evlog .ev { @apply py-1.5 border-b border-white/5 flex items-start gap-2 flex-wrap; }
 .evlog .ev:last-child { @apply border-none; }
@@ -214,16 +230,19 @@ body {
 .evlog .ev .ty.online { @apply bg-[#2f6bff]/25 text-[#9cc0ff] border border-[#2f6bff]/40; }
 .evlog .ev .ty.final  { @apply bg-[#14a05a]/20 text-[#5fe3a1] border border-[#14a05a]/40; }
 .evlog .ev .ty.done   { @apply bg-white/10 text-gray-400 border border-white/10; }
-.evlog .ev .ty.error  { @apply bg-[#e0413a]/20 text-[#ff9b96] border border-[#e0413a]/40; }
-/* #7885a3, not #56627d: the old value was 2.96:1 on the #0e1626 panel —
-   below AA for 12px text. This clears 4.89:1 and stays dimmer than the
-   12.36:1 body text, so it still reads as secondary. */
-.evlog .ts { @apply text-[#7885a3] font-semibold; }
-.evlog .ev-text { @apply text-[#cdd6e6] ml-1; }
+.evlog .ev .ty.error  { @apply bg-[#e0413a]/20 text-console-err border border-[#e0413a]/40; }
+/* console-muted is #7885a3, not #56627d: the old value was 2.96:1 on the
+   console panel — below AA for 12px text. This clears 4.89:1 and stays dimmer
+   than the 12.36:1 body text, so it still reads as secondary. */
+.evlog .ts { @apply text-console-muted font-semibold; }
+.evlog .ev-text { @apply text-console-text ml-1; }
 
 /* ---------------- History items ---------------- */
 .hist-item {
-  @apply grid grid-cols-[1fr_auto_auto_auto] gap-4 p-4 bg-white border border-border rounded-lg cursor-pointer items-center transition-colors duration-200;
+  /* Five cells per row: title, status, segment count, duration, delete. The
+     template used to declare four, which dropped the delete button onto a
+     second grid row of its own. */
+  @apply grid grid-cols-[1fr_auto_auto_auto_auto] gap-4 p-4 bg-white border border-border rounded-lg cursor-pointer items-center transition-colors duration-200;
 }
 .hist-item:hover {
   @apply border-border-strong bg-surface-2;
@@ -254,6 +273,18 @@ body {
    (--animate-bounce), and the two collide in the compiled bundle — only the
    theme's transform version survives, so the bars never pulse in height. */
 @keyframes wave-pulse { 0% { height: 8px; } 100% { height: 30px; } }
+
+/* The soundwave is a "something is moving" indicator, not the information
+   itself — the byte counter and packet count carry the state. So it can stop
+   outright for users who asked for less motion, and the badge pulse with it. */
+@media (prefers-reduced-motion: reduce) {
+  .soundwave-container.active .bar { animation: none; height: 14px; }
+  .badge .dot.pulse { animation: none; }
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
 
 /* ---------------- Progress bar ---------------- */
 .progress {

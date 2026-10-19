@@ -1,5 +1,5 @@
 import React from 'react';
-import { UploadCloud, Mic, Settings, FolderArchive, BookOpen, AudioLines, Combine, Activity } from 'lucide-react';
+import { UploadCloud, Mic, Settings, FolderArchive, BookOpen, AudioLines, Combine, Activity, Microscope } from 'lucide-react';
 import { SystemConfig } from '../types';
 
 interface SidebarProps {
@@ -26,6 +26,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const adminItems = [
     { id: 'config', label: '服务配置', icon: Settings },
     { id: 'monitor', label: '调用监控', icon: Activity },
+    { id: 'api-debug', label: '接口调试', icon: Microscope },
   ];
 
   const renderItem = (item: { id: string; label: string; icon: React.ComponentType<{ className?: string }> }) => {

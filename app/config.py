@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -51,6 +54,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GiB
     max_tasks_in_memory: int = 100
     task_ttl_seconds: int = 3600
+    output_ttl_seconds: int = 7 * 24 * 3600
 
     # --- Realtime ---
     realtime_asr_provider: str = "realtime_mock"
@@ -66,6 +70,8 @@ class Settings(BaseSettings):
     # 让超出的请求拿到可控的 429，而不是让所有人一起变卡。
     realtime_max_sessions: int = 4
     realtime_max_chunk_bytes: int = 1024 * 1024  # 1 MiB per audio chunk
+    realtime_max_session_bytes: int = 100 * 1024 * 1024  # 100 MiB per session
+    realtime_max_session_seconds: int = 60 * 60  # 1 hour per session
 
     access_tokens: str = ""
 
@@ -75,7 +81,7 @@ class Settings(BaseSettings):
     # `docker rm -f` 重建容器会把页面上保存的接入配置和密钥一起清掉。
     runtime_config_path: Path = Path("./config/runtime_config.json")
 
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8080
     log_level: str = "info"
 
@@ -121,6 +127,9 @@ WRITABLE_FIELDS: frozenset[str] = frozenset(
         "realtime_session_ttl_seconds",
         "realtime_max_sessions",
         "realtime_max_chunk_bytes",
+        "realtime_max_session_bytes",
+        "realtime_max_session_seconds",
+        "output_ttl_seconds",
     }
 )
 
@@ -130,18 +139,54 @@ SENSITIVE_FIELDS: frozenset[str] = frozenset(
 )
 
 
-def _load_runtime_overrides(path: Path) -> dict:
-    if not path.is_file():
-        return {}
+def _validated_runtime_overrides(settings: Settings, data: dict) -> tuple[dict, set[str]]:
+    overrides = {k: v for k, v in data.items() if k in WRITABLE_FIELDS}
+    invalid: set[str] = set()
+    while True:
+        merged = settings.model_dump()
+        merged.update(overrides)
+        try:
+            validated = Settings.model_validate(merged)
+            return {k: getattr(validated, k) for k in overrides}, invalid
+        except ValidationError as exc:
+            bad = {
+                error["loc"][0]
+                for error in exc.errors()
+                if error.get("loc") and error["loc"][0] in overrides
+            }
+            if not bad:
+                return {}, invalid | set(overrides)
+            invalid.update(bad)
+            for field in bad:
+                overrides.pop(field)
+
+
+def _load_runtime_overrides(path: Path, settings: Settings) -> dict:
+    data = _read_store(path)
+    overrides, invalid = _validated_runtime_overrides(settings, data)
+    if not invalid:
+        return overrides
+
+    backup_path = path.with_name(path.name + ".bak")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            log.warning("runtime overrides at %s is not a JSON object, ignoring", path)
-            return {}
-        return {k: v for k, v in data.items() if k in WRITABLE_FIELDS}
-    except Exception:  # noqa: BLE001
-        log.warning("failed to load runtime overrides from %s", path, exc_info=True)
-        return {}
+        backup_bytes = backup_path.read_bytes()
+        backup_data = _parse_store(backup_bytes)
+    except OSError:
+        backup_data = None
+    if backup_data is not None:
+        backup_overrides, backup_invalid = _validated_runtime_overrides(
+            settings, backup_data
+        )
+        if not backup_invalid:
+            log.warning("restoring invalid runtime overrides from %s", backup_path)
+            try:
+                _atomic_write_bytes(path, backup_bytes)
+            except OSError:
+                log.exception("failed to restore runtime config %s from backup", path)
+            return backup_overrides
+
+    log.warning("ignoring invalid runtime override fields: %s", sorted(invalid))
+    return overrides
 
 
 def _apply_to(settings: Settings, overrides: dict) -> None:
@@ -160,7 +205,7 @@ def get_settings() -> Settings:
     s = Settings()
     s.temp_dir.mkdir(parents=True, exist_ok=True)
     s.output_dir.mkdir(parents=True, exist_ok=True)
-    _apply_to(s, _load_runtime_overrides(s.runtime_config_path))
+    _apply_to(s, _load_runtime_overrides(s.runtime_config_path, s))
     return s
 
 
@@ -171,16 +216,17 @@ def update_runtime_overrides(updates: dict) -> dict:
     if bad:
         raise ValueError(f"fields not writable: {bad}")
 
-    # Force pydantic field validation by validating a merged dict.
+    # Validate once and apply normalized values (for example, integer strings).
     merged = s.model_dump()
     merged.update(updates)
     try:
-        Settings.model_validate(merged)
+        validated = Settings.model_validate(merged)
     except ValidationError as e:
         raise ValueError(str(e)) from e
+    normalized = {k: getattr(validated, k) for k in updates}
 
-    existing = _load_runtime_overrides(s.runtime_config_path)
-    existing.update(updates)
+    existing = _load_runtime_overrides(s.runtime_config_path, s)
+    existing.update(normalized)
     # The file also holds the profile list, which is not a Settings field and
     # would be erased by rewriting it from the flat overrides alone.
     store = _read_store(s.runtime_config_path)
@@ -189,8 +235,8 @@ def update_runtime_overrides(updates: dict) -> dict:
             existing[key] = store[key]
     _write_store(s.runtime_config_path, existing)
 
-    _apply_to(s, updates)
-    return updates
+    _apply_to(s, normalized)
+    return normalized
 
 
 def _read_store(path: Path) -> dict:
@@ -198,14 +244,71 @@ def _read_store(path: Path) -> dict:
     if not path.is_file():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        log.warning("failed to read runtime config %s", path, exc_info=True)
+        data = _parse_store(path.read_bytes())
+    except OSError:
+        data = None
+    if data is not None:
+        return data
+    log.warning("runtime config %s is unreadable or not a JSON object", path)
+
+    backup = path.with_name(path.name + ".bak")
+    try:
+        backup_bytes = backup.read_bytes()
+        backup_data = _parse_store(backup_bytes)
+    except OSError:
         return {}
-    return data if isinstance(data, dict) else {}
+    if backup_data is None:
+        log.warning("runtime config backup %s is unreadable or invalid", backup)
+        return {}
+
+    log.warning("restoring runtime config %s from backup", path)
+    try:
+        _atomic_write_bytes(path, backup_bytes)
+    except OSError:
+        log.exception("failed to restore runtime config %s from backup", path)
+    return backup_data
 
 
-def _write_store(path: Path, data: dict) -> None:
+def _parse_store(data: bytes) -> dict | None:
+    try:
+        parsed = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+        try:
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            log.warning("failed to sync runtime config directory: %s", path.parent)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _preserve_corrupt_file(path: Path) -> None:
+    preserved = path.with_name(f"{path.name}.corrupt-{time.time_ns()}")
+    os.replace(path, preserved)
+    try:
+        preserved.chmod(0o600)
+    except OSError:
+        log.warning("failed to restrict corrupt runtime config permissions: %s", preserved)
+
+
+def _write_store(path: Path, data: dict, *, preserve_previous: bool = True) -> None:
     """Rewrite the runtime config, keeping the previous copy as ``<name>.bak``.
 
     The file holds API keys and the saved endpoint profiles, none of which are
@@ -213,17 +316,19 @@ def _write_store(path: Path, data: dict) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file():
-        backup = path.with_name(path.name + ".bak")
-        backup.write_bytes(path.read_bytes())
-        try:
-            backup.chmod(0o600)
-        except OSError:
-            log.warning("failed to restrict backup permissions: %s", backup)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        log.warning("failed to restrict runtime config permissions: %s", path)
+        current_bytes = path.read_bytes()
+        if _parse_store(current_bytes) is not None:
+            backup = path.with_name(path.name + ".bak")
+            if preserve_previous:
+                _atomic_write_bytes(backup, current_bytes)
+            else:
+                backup.unlink(missing_ok=True)
+        else:
+            _preserve_corrupt_file(path)
+    else:
+        path.with_name(path.name + ".bak").unlink(missing_ok=True)
+    payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    _atomic_write_bytes(path, payload)
 
 
 def _stored_profiles(store: dict) -> list[dict]:
@@ -231,6 +336,35 @@ def _stored_profiles(store: dict) -> list[dict]:
     if not isinstance(raw, list):
         return []
     return [p for p in raw if isinstance(p, dict) and isinstance(p.get("id"), str)]
+
+
+def _backfill_legacy_realtime_fields(settings: Settings, store: dict) -> bool:
+    """Add absent realtime endpoint fields to profiles saved before the split."""
+    profiles = _stored_profiles(store)
+    if not profiles:
+        return False
+
+    active = store.get("active_profile")
+    active_realtime_id = active.get("realtime") if isinstance(active, dict) else None
+    defaults = _profiles().REALTIME_PROFILE_DEFAULTS
+    current_values = {
+        field: getattr(settings, field)
+        for field in _profiles().REALTIME_PROFILE_FIELDS
+    }
+    changed = False
+    for profile in profiles:
+        fallback = (
+            current_values
+            if profile["id"] == active_realtime_id
+            else defaults
+        )
+        for field in _profiles().REALTIME_PROFILE_FIELDS:
+            if field not in profile:
+                profile[field] = fallback[field]
+                changed = True
+    if changed:
+        store["profiles"] = profiles
+    return changed
 
 
 def get_profiles() -> dict:
@@ -248,6 +382,8 @@ def get_profiles() -> dict:
         store["profiles"] = profiles
         store["active_profile"] = {"file": profiles[0]["id"], "realtime": None}
         _write_store(s.runtime_config_path, store)
+    elif _backfill_legacy_realtime_fields(s, store):
+        _write_store(s.runtime_config_path, store)
     active = store.get("active_profile")
     if not isinstance(active, dict):
         active = {}
@@ -264,6 +400,8 @@ def save_profile(profile_id: str | None, fields: dict) -> dict:
     s = get_settings()
     store = _read_store(s.runtime_config_path)
     profiles = _stored_profiles(store)
+    _backfill_legacy_realtime_fields(s, store)
+    profiles = _stored_profiles(store)
 
     name = _profiles().clean_name(fields.get("name"))
     if any(p["name"] == name and p["id"] != profile_id for p in profiles):
@@ -278,7 +416,7 @@ def save_profile(profile_id: str | None, fields: dict) -> dict:
         "id": base["id"] if current else _profiles().new_profile_id(),
         "name": name,
     }
-    for field in _profiles().PROFILE_FIELDS:
+    for field in _profiles().ALL_PROFILE_FIELDS:
         updated[field] = fields[field] if field in fields else base.get(field)
     if not str(updated.get("asr_base_url") or "").strip():
         raise ValueError("接口地址不能为空")
@@ -293,10 +431,14 @@ def save_profile(profile_id: str | None, fields: dict) -> dict:
     active = store.get("active_profile")
     if not isinstance(active, dict) or "file" not in active:
         store["active_profile"] = {"file": updated["id"], "realtime": None}
-        store.update(_profiles().apply_profile(s, updated, target="file"))
+        profile_updates = _profiles().profile_updates(updated, target="file")
+        store.update(profile_updates)
+    else:
+        profile_updates = {}
 
     store["profiles"] = profiles
     _write_store(s.runtime_config_path, store)
+    _apply_to(s, profile_updates)
     return _profiles().public_profile(updated)
 
 
@@ -319,11 +461,12 @@ def activate_profile(profile_id: str, target: str) -> dict:
     """Point a pipeline at a profile and copy it onto the flat settings."""
     s = get_settings()
     store = _read_store(s.runtime_config_path)
+    _backfill_legacy_realtime_fields(s, store)
     profiles = _stored_profiles(store)
     profile = next((p for p in profiles if p["id"] == profile_id), None)
     if profile is None:
         raise ValueError("配置不存在")
-    updates = _profiles().apply_profile(s, profile, target=target)
+    updates = _profiles().profile_updates(profile, target=target)
     active = store.get("active_profile")
     if not isinstance(active, dict):
         active = {}
@@ -331,6 +474,7 @@ def activate_profile(profile_id: str, target: str) -> dict:
     store["active_profile"] = active
     store.update(updates)
     _write_store(s.runtime_config_path, store)
+    _apply_to(s, updates)
     return updates
 
 
@@ -342,11 +486,8 @@ def reset_runtime_overrides() -> None:
     """
     s = get_settings()
     env_only = Settings()
-    for field in WRITABLE_FIELDS:
-        setattr(s, field, getattr(env_only, field))
+    defaults = {field: getattr(env_only, field) for field in WRITABLE_FIELDS}
     store = _read_store(s.runtime_config_path)
     kept = {k: store[k] for k in _PROFILE_STORE_KEYS if k in store}
-    if kept:
-        _write_store(s.runtime_config_path, kept)
-    else:
-        s.runtime_config_path.unlink(missing_ok=True)
+    _write_store(s.runtime_config_path, kept, preserve_previous=False)
+    _apply_to(s, defaults)

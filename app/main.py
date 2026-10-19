@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -27,6 +28,93 @@ SWAGGER_DIR = WEB_DIR / "swagger"
 # blank page on the air-gapped host this ships to. Keep the CDN as the fallback
 # so a local checkout still works, but prefer our own copy when it is present.
 SWAGGER_CDN = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.15"
+MULTIPART_OVERHEAD_BYTES = 64 * 1024
+
+
+class _RequestBodyTooLarge(Exception):
+    pass
+
+
+class MultipartRequestSizeLimitMiddleware:
+    """Reject oversized multipart requests before Starlette spools their files."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        headers = scope.get("headers", [])
+        content_types = [
+            value.lower()
+            for name, value in headers
+            if name.lower() == b"content-type"
+        ]
+        if not any(value.startswith(b"multipart/form-data") for value in content_types):
+            await self.app(scope, receive, send)
+            return
+
+        limit = get_settings().max_upload_bytes + MULTIPART_OVERHEAD_BYTES
+
+        async def reject(status: int, detail: str) -> None:
+            body = json.dumps({"detail": detail}).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": status,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+
+        lengths = [
+            value for name, value in headers if name.lower() == b"content-length"
+        ]
+        if len(lengths) > 1:
+            await reject(400, "invalid Content-Length")
+            return
+        if lengths:
+            try:
+                content_length = int(lengths[0])
+            except ValueError:
+                await reject(400, "invalid Content-Length")
+                return
+            if content_length < 0:
+                await reject(400, "invalid Content-Length")
+                return
+            if content_length > limit:
+                await reject(413, f"request body exceeds {limit} bytes")
+                return
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise _RequestBodyTooLarge
+            return message
+
+        response_started = False
+
+        async def tracked_send(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _RequestBodyTooLarge:
+            if not response_started:
+                await reject(413, f"request body exceeds {limit} bytes")
 
 API_DESCRIPTION = """
 MediaFlow 已封装好语音识别网关，当前重点给第三方调用两类标准接口。
@@ -169,7 +257,8 @@ data: {"type":"done","stream":"file","id":"<task_id>","task_id":"<task_id>","sta
 ## 鉴权说明
 
 如果服务启用了 `ACCESS_TOKENS`，普通 HTTP 请求使用
-`Authorization: Bearer <token>`；SSE 场景可使用 `?token=<token>` 查询参数。
+`Authorization: Bearer <token>`；成功的普通请求会签发短期 HttpOnly SSE cookie，浏览器
+`EventSource` 可直接连接 SSE 地址。命令行客户端仍可使用 `?token=<token>`，但查询串可能进入日志。
 """
 
 # Shown at "/" when the built frontend is absent (e.g. running the backend
@@ -193,6 +282,7 @@ a{color:#2f6bff;text-decoration:none}</style></head><body><div class="box">
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    await app.state.manager.start()
     await app.state.realtime_manager.start()
     await app.state.stream_transcribe_manager.start()
     try:
@@ -200,6 +290,7 @@ async def _lifespan(app: FastAPI):
     finally:
         await app.state.stream_transcribe_manager.stop()
         await app.state.realtime_manager.stop()
+        await app.state.manager.stop()
 
 
 def create_app() -> FastAPI:
@@ -237,6 +328,8 @@ def create_app() -> FastAPI:
             request_metrics.observe(
                 request.method, path, status, time.perf_counter() - started
             )
+
+    app.add_middleware(MultipartRequestSizeLimitMiddleware)
 
     if not settings.asr_api_key:
         logging.getLogger(__name__).warning(
@@ -286,4 +379,4 @@ if __name__ == "__main__":
     import uvicorn
 
     s = get_settings()
-    uvicorn.run("app.main:app", host=s.host, port=s.port, log_level=s.log_level)
+    uvicorn.run(app, host=s.host, port=s.port, log_level=s.log_level)

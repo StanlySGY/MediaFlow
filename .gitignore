@@ -29,8 +29,15 @@ app/web/assets/
 app/web/favicon.svg
 app/web/icons.svg
 
+# Node caches. /node_modules is this repo's own vite cache + a stray symlink to
+# another workspace; frontend/node_modules is covered by frontend/.gitignore.
+/node_modules/
+
 # Local tool metadata sidecars
 **/*.metadata.json
+.playwright-mcp/
+.v2c/
+.zcode/
 
 !temp/.gitkeep
 !outputs/.gitkeep

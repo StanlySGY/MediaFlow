@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import time
 import uuid
@@ -44,6 +45,90 @@ _TERMINAL_STATUSES = frozenset({
     RealtimeSessionStatus.failed,
     RealtimeSessionStatus.closed,
 })
+
+# Realtime recordings are filed into the same history list as file tasks, using
+# the status values that list already understands: `closed` (TTL eviction, manual
+# DELETE, process shutdown) is recorded as `cancelled` because the recording
+# stopped on its own terms instead of failing upstream.
+_KIND_REALTIME = "realtime"
+_RECORD_STATUS = {
+    RealtimeSessionStatus.done: "done",
+    RealtimeSessionStatus.failed: "failed",
+    RealtimeSessionStatus.closed: "cancelled",
+}
+
+
+def _final_text(events: list[RealtimeASREvent]) -> str:
+    """The fullest transcript the provider ever published for this session.
+
+    Every provider emits cumulative text on `final`/`done`, so the last final is
+    the best view available. Two caveats that keep the record approximate:
+    realtime_offline and realtime_mock emit `done` with an empty text, and
+    realtime_ws renders only its last 128 upstream segments, so a long
+    recording has already lost its head by the time the session ends.
+    """
+    text = ""
+    for evt in events:
+        if evt.text and (evt.is_final or evt.type == "final"):
+            text = evt.text
+    if not text:
+        for evt in reversed(events):
+            if evt.text:
+                return evt.text
+    return text
+
+
+def _last_error_event(events: list[RealtimeASREvent]) -> RealtimeASREvent | None:
+    for evt in reversed(events):
+        if evt.type == "error":
+            return evt
+    return None
+
+
+def _archive_record(session: "_Session", status: RealtimeSessionStatus) -> dict | None:
+    """Build the history record for one finished session, or None when there is
+    nothing worth archiving (a session that never received audio)."""
+    info = session.info
+    text = _final_text(session.events)
+    if not text and not info.chunks_received:
+        return None
+
+    error_text = info.error
+    error = _last_error_event(session.events)
+    error_code = error.error_code if error else None
+    hint = error.hint if error else None
+    retryable = error.retryable if error else None
+    if error_text and error_code is None:
+        error_code, hint, retryable = classify_message(error_text)
+
+    started = time.localtime(info.created_at)
+    model = (session.config.model or "").strip()
+    label = f"实时录音 {time.strftime('%Y-%m-%d %H:%M', started)}"
+    if model:
+        label = f"{label} · {model}"
+
+    return {
+        "task_id": info.session_id,
+        "kind": _KIND_REALTIME,
+        "status": _RECORD_STATUS.get(status, "cancelled"),
+        "session_status": status.value,
+        "duration": max(0.0, (info.updated_at or time.time()) - info.created_at),
+        "language": session.config.language,
+        "text": text,
+        # No segments: the upstream frames carry no utterance timestamps, so any
+        # start/end here would be invented rather than measured.
+        "segments": [],
+        "error": error_text,
+        "error_code": error_code,
+        "hint": hint,
+        "retryable": retryable,
+        "original_name": label,
+        "created_at": info.created_at,
+        "updated_at": time.time(),
+        "chunks_received": info.chunks_received,
+        "bytes_received": info.bytes_received,
+        "events_total": len(session.events),
+    }
 
 
 class _Session:
@@ -126,8 +211,9 @@ class RealtimeManager:
         self._sessions: dict[str, _Session] = {}
         self._workers: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
-        self._spawn_queue: asyncio.Queue[str] | None = None
+        self._spawn_queue: asyncio.Queue[_Session] | None = None
         self._pump_loop_task: asyncio.Task | None = None
+        self._cleanup_task: asyncio.Task | None = None
 
     # ---- lifespan ----
 
@@ -137,22 +223,33 @@ class RealtimeManager:
             return
         self._spawn_queue = asyncio.Queue()
         self._pump_loop_task = asyncio.create_task(self._pump_loop())
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     async def stop(self) -> None:
-        for w in list(self._workers):
-            w.cancel()
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+        if self._pump_loop_task is not None:
+            self._pump_loop_task.cancel()
+            try:
+                await self._pump_loop_task
+            except asyncio.CancelledError:
+                pass
+            self._pump_loop_task = None
+        workers = list(self._workers)
+        for worker in workers:
+            worker.cancel()
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
         for sid in list(self._sessions):
             try:
                 await self.close(sid)
             except Exception:  # noqa: BLE001
                 pass
-        if self._pump_loop_task is not None:
-            self._pump_loop_task.cancel()
-            try:
-                await self._pump_loop_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._pump_loop_task = None
 
     async def _pump_loop(self) -> None:
         """Long-lived supervisor: spawns per-session pump tasks. Lives in app lifespan
@@ -161,10 +258,21 @@ class RealtimeManager:
         assert self._spawn_queue is not None
         try:
             while True:
-                session_id = await self._spawn_queue.get()
-                task = asyncio.create_task(self._pump_events(session_id))
+                session = await self._spawn_queue.get()
+                task = asyncio.create_task(self._pump_events(session))
                 self._workers.add(task)
                 task.add_done_callback(self._workers.discard)
+        except asyncio.CancelledError:
+            return
+
+    async def _cleanup_loop(self) -> None:
+        interval = max(1, min(60, self._settings.realtime_session_ttl_seconds))
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                async with self._lock:
+                    expired = self._evict_expired_locked()
+                await self._exit_expired(expired)
         except asyncio.CancelledError:
             return
 
@@ -172,33 +280,44 @@ class RealtimeManager:
 
     async def create(self, config: RealtimeSessionCreate) -> RealtimeSessionInfo:
         s = self._settings
-        self._evict_expired()
-        # Count only non-terminal sessions against the cap: a finished session no
-        # longer holds an upstream connection, and TTL-not-yet-expired `done`
-        # entries must not starve new recordings (they linger for replay).
-        live = sum(
-            1 for ses in self._sessions.values()
-            if ses.info.status not in _TERMINAL_STATUSES
-        )
-        if live >= s.realtime_max_sessions:
-            # 这是普通用户唯一会稳定撞到的容量错误，文案直接进前端提示，
-            # 所以用中文并给出可操作信息，而不是抛出内部 key 的英文串。
-            raise RealtimeASRError(
-                f"同时录音已达上限（{s.realtime_max_sessions} 路），"
-                "请等待他人结束录音后重试",
-                code="session_limit",
-                hint="请等待他人结束录音后重试",
-                retryable=True,
-            )
-
         session_id = uuid.uuid4().hex
-        provider = create_realtime_provider(s)
-        if hasattr(provider, "bind_session"):
-            provider.bind_session(session_id)
-
-        session = _Session(session_id, config, provider)
+        capacity_error: RealtimeASRError | None = None
+        startup_error: BaseException | None = None
+        provider: RealtimeASRProvider | None = None
+        session: _Session | None = None
         async with self._lock:
-            self._sessions[session_id] = session
+            expired = self._evict_expired_locked()
+            # Count only non-terminal sessions against the cap. The check and
+            # registration must be one critical section or concurrent creates
+            # can all observe the same free slot.
+            live = sum(
+                1 for ses in self._sessions.values()
+                if ses.info.status not in _TERMINAL_STATUSES
+            )
+            if live >= s.realtime_max_sessions:
+                capacity_error = RealtimeASRError(
+                    f"同时录音已达上限（{s.realtime_max_sessions} 路），"
+                    "请等待他人结束录音后重试",
+                    code="session_limit",
+                    hint="请等待他人结束录音后重试",
+                    retryable=True,
+                )
+            else:
+                try:
+                    provider = create_realtime_provider(s)
+                    if hasattr(provider, "bind_session"):
+                        provider.bind_session(session_id)
+                    session = _Session(session_id, config, provider)
+                    self._sessions[session_id] = session
+                except Exception as exc:  # noqa: BLE001
+                    startup_error = exc
+
+        await self._exit_expired(expired)
+        if capacity_error is not None:
+            raise capacity_error
+        if startup_error is not None:
+            raise startup_error
+        assert provider is not None and session is not None
 
         try:
             await provider.__aenter__()
@@ -207,7 +326,8 @@ class RealtimeManager:
             session.touch()
         except Exception as e:  # noqa: BLE001
             log.exception("failed to start realtime session %s", session_id)
-            self._sessions.pop(session_id, None)
+            async with self._lock:
+                self._sessions.pop(session_id, None)
             try:
                 await provider.__aexit__(type(e), e, None)
             except Exception:  # noqa: BLE001
@@ -218,14 +338,14 @@ class RealtimeManager:
             # Tests / scripts that drive the manager without app lifespan can
             # still create sessions and pump events synchronously via stream().
             # In production main.py always calls start() before serving.
-            await self._pump_events_direct_fallback(session_id)
+            await self._pump_events_direct_fallback(session)
         else:
-            self._spawn_queue.put_nowait(session_id)
+            self._spawn_queue.put_nowait(session)
         return session.info
 
-    async def _pump_events_direct_fallback(self, session_id: str) -> None:
+    async def _pump_events_direct_fallback(self, session: _Session) -> None:
         """Used only when start() hasn't been called (bare scripts/tests)."""
-        task = asyncio.create_task(self._pump_events(session_id))
+        task = asyncio.create_task(self._pump_events(session))
         self._workers.add(task)
         task.add_done_callback(self._workers.discard)
 
@@ -235,8 +355,6 @@ class RealtimeManager:
         session = self._sessions.get(session_id)
         if session is None:
             raise KeyError("session not found")
-        if session.done.is_set():
-            raise RealtimeASRError("session already closed", code="session_expired")
 
         # validate base64 payload (empty allowed only on final marker)
         if not chunk.audio and not chunk.is_final:
@@ -254,31 +372,74 @@ class RealtimeManager:
                     f"({decoded_size} > {self._settings.realtime_max_chunk_bytes})"
                 )
 
-        session.info.chunks_received += 1
-        session.info.bytes_received += decoded_size
-        session.touch()
+        terminal_error: RealtimeASRError | None = None
+        async with session._lock:
+            if session.done.is_set():
+                raise RealtimeASRError("session already closed", code="session_expired")
 
-        try:
-            await session.provider.push_audio(chunk)
-        except RealtimeASRError as e:
-            session.publish(_error_event(session_id, e))
-            session.complete(RealtimeSessionStatus.failed, str(e))
-            raise
+            next_bytes = session.info.bytes_received + decoded_size
+            if next_bytes > self._settings.realtime_max_session_bytes:
+                terminal_error = RealtimeASRError(
+                    f"累计音频已超过单次上限（{self._settings.realtime_max_session_bytes} bytes）",
+                    code="resource_limit",
+                    hint="请缩短录音后重试",
+                    retryable=False,
+                )
+            elif time.time() - session.info.created_at >= self._settings.realtime_max_session_seconds:
+                terminal_error = RealtimeASRError(
+                    f"录音时长已达上限（{self._settings.realtime_max_session_seconds} 秒）",
+                    code="resource_limit",
+                    hint="请结束当前录音后重新开始",
+                    retryable=False,
+                )
+
+            if terminal_error is not None:
+                session.publish(_error_event(session_id, terminal_error))
+                session.complete(RealtimeSessionStatus.failed, str(terminal_error))
+            else:
+                session.info.chunks_received += 1
+                session.info.bytes_received += decoded_size
+                session.touch()
+                try:
+                    await session.provider.push_audio(chunk)
+                except Exception as exc:  # noqa: BLE001
+                    error = (
+                        exc
+                        if isinstance(exc, RealtimeASRError)
+                        else RealtimeASRError(str(exc))
+                    )
+                    session.publish(_error_event(session_id, error))
+                    session.complete(RealtimeSessionStatus.failed, str(error))
+                    terminal_error = error
+
+        if terminal_error is not None:
+            await self._exit_provider(session)
+            raise terminal_error
         return session.info
 
     async def finish(self, session_id: str) -> None:
         session = self._sessions.get(session_id)
         if session is None:
             raise KeyError("session not found")
-        if session.done.is_set():
-            return
-        session.info.status = RealtimeSessionStatus.finishing
-        session.touch()
-        try:
-            await session.provider.finish()
-        except RealtimeASRError as e:
-            session.publish(_error_event(session_id, e))
-            session.complete(RealtimeSessionStatus.failed, str(e))
+        provider_error: RealtimeASRError | None = None
+        async with session._lock:
+            if session.done.is_set():
+                return
+            session.info.status = RealtimeSessionStatus.finishing
+            session.touch()
+            try:
+                await session.provider.finish()
+            except Exception as exc:  # noqa: BLE001
+                provider_error = (
+                    exc
+                    if isinstance(exc, RealtimeASRError)
+                    else RealtimeASRError(str(exc))
+                )
+                session.publish(_error_event(session_id, provider_error))
+                session.complete(RealtimeSessionStatus.failed, str(provider_error))
+        if provider_error is not None:
+            await self._exit_provider(session)
+            raise provider_error
 
     async def stream(self, session_id: str) -> AsyncIterator[RealtimeASREvent]:
         session = self._sessions.get(session_id)
@@ -288,20 +449,18 @@ class RealtimeManager:
             yield evt
 
     async def close(self, session_id: str) -> bool:
-        session = self._sessions.get(session_id)
+        async with self._lock:
+            session = self._sessions.pop(session_id, None)
         if session is None:
             return False
-        if not session.done.is_set():
-            try:
-                await session.provider.finish()
-            except Exception:  # noqa: BLE001
-                pass
-            session.complete(RealtimeSessionStatus.closed)
-        try:
-            await session.provider.__aexit__(None, None, None)
-        except Exception:  # noqa: BLE001
-            log.warning("provider exit failed for %s", session_id, exc_info=True)
-        self._sessions.pop(session_id, None)
+        async with session._lock:
+            if not session.done.is_set():
+                try:
+                    await session.provider.finish()
+                except Exception:  # noqa: BLE001
+                    pass
+                session.complete(RealtimeSessionStatus.closed)
+        await self._exit_provider(session)
         return True
 
     def get(self, session_id: str) -> RealtimeSessionInfo | None:
@@ -313,21 +472,72 @@ class RealtimeManager:
 
     # ---- internals ----
 
-    def _evict_expired(self) -> None:
+    def _evict_expired_locked(self) -> list[_Session]:
+        """Drop sessions idle past realtime_session_ttl_seconds.
+
+        Archive happens in _exit_provider, which _exit_expired calls after this
+        returns, so the record write stays out of the lock-held stretch.
+        """
         now = time.time()
         ttl = self._settings.realtime_session_ttl_seconds
         expired = [
-            sid for sid, s in self._sessions.items()
+            s for s in self._sessions.values()
             if (now - s.info.updated_at) > ttl
         ]
-        for sid in expired:
-            log.info("evicting expired realtime session %s", sid)
-            asyncio.create_task(self.close(sid))
+        for session in expired:
+            self._sessions.pop(session.info.session_id, None)
+            session.complete(RealtimeSessionStatus.closed)
+            log.info("evicting expired realtime session %s", session.info.session_id)
+        return expired
 
-    async def _pump_events(self, session_id: str) -> None:
-        session = self._sessions.get(session_id)
-        if session is None:
+    async def _exit_expired(self, sessions: list[_Session]) -> None:
+        for session in sessions:
+            await self._exit_provider(session)
+
+    def _archive(self, session: _Session) -> None:
+        """File one finished recording into the history archive.
+
+        Called from the event pump (when the provider stream terminates) and from
+        _exit_provider, which every teardown path funnels through (DELETE, TTL
+        eviction, capacity/resource failure, shutdown) — so a recording lands in
+        历史转写记录 as soon as the upstream connection is released, instead of up to
+        realtime_session_ttl_seconds later, and a record exists even if the cleanup
+        loop was never started.
+
+        Both sites may run for the same session, in either order: DELETE archives
+        while the pump is still draining the provider's last frames. The write is
+        therefore a full rewrite from the events known so far rather than a
+        once-only write — the event list only ever grows, so the last write is the
+        fullest transcript, and an early write is a floor, not the final answer.
+        """
+        record = _archive_record(session, session.info.status)
+        if record is None:
             return
+        path = self._settings.output_dir / f"{record['task_id']}.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            log.warning("failed to archive realtime session %s", record["task_id"], exc_info=True)
+
+    async def _exit_provider(self, session: _Session) -> None:
+        async with session._lock:
+            if session._finished:
+                return
+            session._finished = True
+        self._archive(session)
+        try:
+            await session.provider.__aexit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            log.warning("provider exit failed for %s", session.info.session_id,
+                        exc_info=True)
+
+    async def _pump_events(self, session: _Session) -> None:
+        # The session object, not a lookup by id: DELETE and TTL eviction pop it
+        # from the live map, and a pump that re-looks-up at that moment would drop
+        # the frames finish() had just queued — exactly the tail a recording needs
+        # before it is archived.
+        session_id = session.info.session_id
         try:
             async for evt in session.provider.events():
                 if evt.type == "error" and not evt.error_code:
@@ -351,11 +561,10 @@ class RealtimeManager:
         finally:
             if not session.done.is_set():
                 session.complete(RealtimeSessionStatus.done)
+            # Archive before releasing the provider: this is the point where every
+            # frame the upstream ever sent is in session.events.
+            self._archive(session)
             # Pump ended => the provider will never yield again; release the
             # upstream connection immediately instead of holding one of the
             # upstream's scarce slots until TTL eviction. Events stay for replay.
-            try:
-                await session.provider.__aexit__(None, None, None)
-            except Exception:  # noqa: BLE001
-                log.warning("provider exit after pump failed for %s", session_id,
-                            exc_info=True)
+            await self._exit_provider(session)

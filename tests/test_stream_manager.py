@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 
 from app.config import Settings
-from app.models.schemas import SegmentEvent, TaskResult, TaskStatus
+from app.models.schemas import Segment, SegmentEvent, TaskResult, TaskStatus
+from app.services import stream_manager
+from app.services.asr.base import ASRResult
 from app.services.stream_manager import TaskManager, _Task
 
 
@@ -116,3 +119,95 @@ async def test_eviction_keeps_inflight_tasks(settings: Settings):
 
     assert "running" in mgr._tasks
     assert sum(1 for tid in mgr._tasks if tid.startswith("done")) == 2
+
+
+def _segment(segment_id: int) -> Segment:
+    return Segment(
+        segment_id=segment_id,
+        start=0,
+        end=1,
+        file_path=Path(f"/tmp/segment-{segment_id}.wav"),
+    )
+
+
+async def test_asr_call_limit_is_shared_across_tasks(settings: Settings, monkeypatch):
+    settings.asr_concurrency = 2
+    manager = TaskManager(settings)
+
+    class Provider:
+        active = 0
+        peak = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def transcribe(self, _file_path):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return ASRResult(text="recognized")
+
+    provider = Provider()
+
+    @asynccontextmanager
+    async def create_provider(_settings):
+        yield provider
+
+    monkeypatch.setattr(stream_manager, "create_provider", create_provider)
+    first = _Task("first", settings)
+    second = _Task("second", settings)
+    await asyncio.gather(
+        manager._transcribe_all(first, [_segment(1), _segment(2)]),
+        manager._transcribe_all(second, [_segment(3), _segment(4)]),
+    )
+
+    assert provider.peak == settings.asr_concurrency
+    assert first.info.finished_segments + second.info.finished_segments == 4
+
+
+async def test_cancelled_task_waiting_for_asr_slot_does_not_call_provider(
+    settings: Settings, monkeypatch
+):
+    settings.asr_concurrency = 1
+    manager = TaskManager(settings)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class Provider:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def transcribe(self, _file_path):
+            self.calls += 1
+            if self.calls == 1:
+                first_started.set()
+                await release_first.wait()
+            return ASRResult(text="recognized")
+
+    provider = Provider()
+
+    @asynccontextmanager
+    async def create_provider(_settings):
+        yield provider
+
+    monkeypatch.setattr(stream_manager, "create_provider", create_provider)
+    first = _Task("first", settings)
+    queued = _Task("queued", settings)
+    first_run = asyncio.create_task(manager._transcribe_all(first, [_segment(1)]))
+    await first_started.wait()
+    queued_run = asyncio.create_task(manager._transcribe_all(queued, [_segment(2)]))
+    await asyncio.sleep(0.01)
+    queued.cancel_requested = True
+    release_first.set()
+    await asyncio.gather(first_run, queued_run)
+
+    assert provider.calls == 1

@@ -11,12 +11,11 @@ from typing import AsyncIterator
 from app.config import Settings
 from app.models.schemas import (
     RealtimeASREvent,
-    RealtimeAudioChunk,
     RealtimeSessionCreate,
 )
 from app.services.asr import ASRError, create_provider
 from app.services.asr_monitoring import asr_call_context
-from app.services.asr.realtime_base import RealtimeASRError, classify_message
+from app.services.asr.realtime_base import classify_message
 from app.services.ffmpeg_service import normalize_to_wav
 
 log = logging.getLogger(__name__)
@@ -32,6 +31,8 @@ class StreamTranscribeManager:
         self._workers: set[asyncio.Task] = set()
         self._spawn_queue: asyncio.Queue[str] | None = None
         self._supervisor: asyncio.Task | None = None
+        self._cleanup_task: asyncio.Task | None = None
+        self._stopping = False
 
     # ---- lifespan ----
 
@@ -46,12 +47,13 @@ class StreamTranscribeManager:
         """
         if self._supervisor is not None:
             return
+        self._stopping = False
         self._spawn_queue = asyncio.Queue()
         self._supervisor = asyncio.create_task(self._spawn_loop())
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
 
     async def stop(self) -> None:
-        for w in list(self._workers):
-            w.cancel()
+        self._stopping = True
         if self._supervisor is not None:
             self._supervisor.cancel()
             try:
@@ -59,6 +61,42 @@ class StreamTranscribeManager:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             self._supervisor = None
+        self._spawn_queue = None
+        if self._cleanup_task is not None:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+        workers = list(self._workers)
+        for worker in workers:
+            worker.cancel()
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
+
+    async def _cleanup_loop(self) -> None:
+        interval = max(1, min(60, self._settings.realtime_session_ttl_seconds))
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                async with self._lock:
+                    self._evict_expired_locked()
+        except asyncio.CancelledError:
+            return
+
+    def _evict_expired_locked(self) -> None:
+        cutoff = time.time() - self._settings.realtime_session_ttl_seconds
+        expired = [
+            session_id
+            for session_id, session in self._sessions.items()
+            if session.done.is_set()
+            and session.completed_at is not None
+            and session.completed_at < cutoff
+        ]
+        for session_id in expired:
+            self._sessions.pop(session_id, None)
+            log.info("evicting expired stream transcription session %s", session_id)
 
     async def _spawn_loop(self) -> None:
         assert self._spawn_queue is not None
@@ -74,9 +112,14 @@ class StreamTranscribeManager:
     async def create_session(
         self, file_path: Path, config: RealtimeSessionCreate
     ) -> str:
+        if self._stopping:
+            raise RuntimeError("transcription manager is stopping")
         session_id = uuid.uuid4().hex
         session = _TranscribeSession(session_id, file_path, config, self._settings)
         async with self._lock:
+            if self._stopping:
+                raise RuntimeError("transcription manager is stopping")
+            self._evict_expired_locked()
             self._sessions[session_id] = session
         if self._spawn_queue is None:
             # Bare scripts/tests that never called start(); the task is then
@@ -181,6 +224,8 @@ class _TranscribeSession:
         "events",
         "subscribers",
         "done",
+        "created_at",
+        "completed_at",
     )
 
     def __init__(
@@ -197,6 +242,8 @@ class _TranscribeSession:
         self.events: list[RealtimeASREvent] = []
         self.subscribers: set[asyncio.Queue[RealtimeASREvent | None]] = set()
         self.done = asyncio.Event()
+        self.created_at = time.time()
+        self.completed_at: float | None = None
 
     def publish(self, evt: RealtimeASREvent) -> None:
         self.events.append(evt)
@@ -205,6 +252,7 @@ class _TranscribeSession:
 
     def complete(self) -> None:
         self.done.set()
+        self.completed_at = time.time()
         for q in self.subscribers:
             q.put_nowait(None)
 

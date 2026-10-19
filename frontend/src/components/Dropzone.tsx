@@ -1,13 +1,20 @@
 import React, { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { UploadCloud } from 'lucide-react';
+import { FALLBACK_ALLOWED_EXTS, extLabel, formatSize } from '../lib/uploadPreflight';
 
 interface DropzoneProps {
   onFileSelect: (file: File) => void;
   disabled?: boolean;
+  /** Live limits from GET /asr/config. The picker can only filter on the
+   *  extensions the server actually accepts, and the hint has to state the
+   *  real size cap — the old sentence promised "2 小时以上的录音", which was
+   *  a duration guess unrelated to any limit. */
+  maxBytes?: number;
+  allowedExts?: string[];
 }
 
-export const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, disabled }) => {
+export const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, disabled, maxBytes, allowedExts }) => {
   const [isDragActive, setIsDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -54,7 +61,7 @@ export const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, disabled }) =>
         ref={fileInputRef}
         onChange={handleChange}
         hidden
-        accept="audio/*,video/*,.pcm"
+        accept={['audio/*', 'video/*', ...(allowedExts || FALLBACK_ALLOWED_EXTS).map((e) => `*.${e.replace(/^\./, '')}`)].join(',')}
         disabled={disabled}
       />
       
@@ -83,7 +90,8 @@ export const Dropzone: React.FC<DropzoneProps> = ({ onFileSelect, disabled }) =>
             {isDragActive ? '松手即可上传' : '点击选择文件，或把音频/视频拖到这里'}
           </span>
           <span className="text-meta text-muted max-w-md mx-auto">
-            支持 mp3 / wav / m4a / flac / aac / ogg / mp4 / mov / mkv / pcm，最长可处理 2 小时以上的录音
+            支持 {extLabel(allowedExts && allowedExts.length ? allowedExts : FALLBACK_ALLOWED_EXTS)}
+            {maxBytes ? <>，单个文件上限 {formatSize(maxBytes)}</> : null}
           </span>
         </div>
       </motion.div>

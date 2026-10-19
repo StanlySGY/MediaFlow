@@ -1,14 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { AlertTriangle, FolderClosed, RefreshCw, Search, Trash2, X } from 'lucide-react';
+import { AlertTriangle, FolderClosed, Mic, RefreshCw, Search, Trash2, X } from 'lucide-react';
 import { HistoryTask } from '../types';
 import { errorMessage, responseError } from '../lib/errors';
+import { useConfirmDialog } from './ConfirmDialog';
+import { HistoryTranscriptDialog } from './HistoryTranscriptDialog';
+
+/**
+ * The filters and page that are currently in force. App owns them when the
+ * console is hash-routed so a link like #/history?status=failed&page=2 opens
+ * the same list it says; the props are optional so the view still works as a
+ * standalone component (and in tests) with its own state.
+ */
+export interface HistoryFilters {
+  q: string;
+  status: string;
+  since: string;
+  until: string;
+  page: number;
+}
 
 interface HistoryViewProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
   onLoadTask: (taskId: string) => void;
   /** Navigate to the upload view — used by the empty state. */
   onGoToTasks?: () => void;
+  filters?: HistoryFilters;
+  onFiltersChange?: (next: HistoryFilters) => void;
 }
 
 const PAGE = 20;
@@ -44,28 +62,37 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   authedFetch,
   onLoadTask,
   onGoToTasks,
+  filters: filtersProp,
+  onFiltersChange,
 }) => {
   const [tasks, setTasks] = useState<HistoryTask[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [q, setQ] = useState('');
-  const [status, setStatus] = useState('');
-  const [since, setSince] = useState('');
-  const [until, setUntil] = useState('');
-  const [page, setPage] = useState(0);
+  // Draft filter values. They start from whatever the URL carried and only
+  // become a request on 筛选 / Enter — typing in a search box should not fire
+  // a history query per keystroke.
+  const [q, setQ] = useState(filtersProp?.q ?? '');
+  const [status, setStatus] = useState(filtersProp?.status ?? '');
+  const [since, setSince] = useState(filtersProp?.since ?? '');
+  const [until, setUntil] = useState(filtersProp?.until ?? '');
+  const [page, setPage] = useState(filtersProp?.page ?? 0);
+  // Archived realtime recordings have no media file to open, so they are read
+  // here instead of being loaded into the 文件转写 workspace.
+  const [reading, setReading] = useState<HistoryTask | null>(null);
+  const { confirm: confirmDialog, dialog: confirmElement } = useConfirmDialog();
 
-  const loadHistory = async (nextPage = page) => {
+  const loadHistory = async (next: HistoryFilters) => {
     setLoading(true);
     setError(null);
     const params = new URLSearchParams({
       limit: String(PAGE),
-      offset: String(nextPage * PAGE),
+      offset: String(next.page * PAGE),
     });
-    if (q.trim()) params.set('q', q.trim());
-    if (status) params.set('status', status);
-    const sinceSec = dayStart(since);
-    const untilSec = dayEnd(until);
+    if (next.q.trim()) params.set('q', next.q.trim());
+    if (next.status) params.set('status', next.status);
+    const sinceSec = dayStart(next.since);
+    const untilSec = dayEnd(next.until);
     if (sinceSec) params.set('since', sinceSec);
     if (untilSec) params.set('until', untilSec);
     try {
@@ -81,22 +108,47 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     }
   };
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
-  useEffect(() => { loadHistory(0); }, []);
+  const draft = (): HistoryFilters => ({ q, status, since, until, page });
 
-  const applyFilters = () => {
-    setPage(0);
-    void loadHistory(0);
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
+  useEffect(() => { loadHistory(draft()); }, []);
+
+  /**
+   * Publish a filter/page change: the request uses the values passed in (not
+   * whatever the inputs held when the response arrived), and the same object
+   * goes to the URL so the address bar and the list never disagree.
+   */
+  const commit = (next: HistoryFilters) => {
+    setQ(next.q);
+    setStatus(next.status);
+    setSince(next.since);
+    setUntil(next.until);
+    setPage(next.page);
+    onFiltersChange?.(next);
+    void loadHistory(next);
   };
 
-  const removeTask = async (taskId: string) => {
-    if (!confirm('确认从历史中删除这条记录？')) return;
+  const applyFilters = () => commit({ q, status, since, until, page: 0 });
+
+  const clearFilters = () => commit({ q: '', status: '', since: '', until: '', page: 0 });
+
+  const removeTask = async (task: HistoryTask) => {
+    const ok = await confirmDialog({
+      title: '删除这条历史记录？',
+      message: (
+        <>
+          删除后这条记录及其识别结果、分片和生成的字幕文件都会从服务端移除，无法恢复。
+          本机浏览器里如果还留着这段任务的缓存视图，关闭后也不再能重新打开。
+        </>
+      ),
+      confirmLabel: '删除记录',
+    });
+    if (!ok) return;
     try {
-      const r = await authedFetch(`/asr/task/${taskId}`, { method: 'DELETE' });
+      const r = await authedFetch(`/asr/task/${task.task_id}`, { method: 'DELETE' });
       if (!r.ok) throw await responseError(r);
       const nextPage = tasks.length === 1 && page > 0 ? page - 1 : page;
-      setPage(nextPage);
-      await loadHistory(nextPage);
+      commit({ q, status, since, until, page: nextPage });
     } catch (e) {
       setError(`删除失败: ${errorMessage(e)}`);
     }
@@ -118,6 +170,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
   return (
     <div className="flex flex-col gap-6">
+      {confirmElement}
+      {reading && (
+        <HistoryTranscriptDialog task={reading} authedFetch={authedFetch} onClose={() => setReading(null)} />
+      )}
+
       <div className="card p-6">
         <h3 className="section-title justify-between mb-5">
           <div className="flex items-center gap-2.5">
@@ -126,7 +183,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           </div>
 
           <button
-            onClick={() => void loadHistory()}
+            onClick={() => void loadHistory(draft())}
             disabled={loading}
             className="text-[12px] px-3.5 py-1.5"
           >
@@ -173,11 +230,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           </button>
           {(q || status || since || until) && (
             <button
-              onClick={() => {
-                setQ(''); setStatus(''); setSince(''); setUntil('');
-                setPage(0);
-                void loadHistory(0);
-              }}
+              onClick={clearFilters}
               className="text-[12px] px-3.5 py-1.5"
             >
               <X className="w-3.5 h-3.5" />
@@ -204,14 +257,12 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             <p className="text-meta text-muted-2 mt-1">
               {q || status || since || until
                 ? '换个条件，或清空筛选看看全部记录'
-                : '在「文件转写」上传音频后，任务会自动归档到这里'}
+                : '「文件转写」的任务和「实时识别」的录音结束后都会自动归档到这里，保留 7 天'}
             </p>
             <button
               onClick={() => {
                 if (q || status || since || until) {
-                  setQ(''); setStatus(''); setSince(''); setUntil('');
-                  setPage(0);
-                  void loadHistory(0);
+                  clearFilters();
                 } else {
                   onGoToTasks?.();
                 }
@@ -224,7 +275,13 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         ) : (
           <div className="flex flex-col gap-3">
             {tasks.map((t) => {
+              const isRealtime = t.kind === 'realtime';
               const title = t.original_name || t.text || '（暂无文本预览）';
+              // A restart is not an upstream ASR failure. The backend stores it as
+              // status=failed with error_code="interrupted" (it refuses any other
+              // status value), so the only way to tell the two apart is the code.
+              const interrupted = t.error_code === 'interrupted';
+              const failure = [t.error, t.hint].filter(Boolean).join(' · ');
               return (
                 <motion.div
                   key={t.task_id}
@@ -233,14 +290,31 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   <button
                     type="button"
                     className="!block min-w-0 !rounded-none !border-0 !bg-transparent !px-0 !py-0 !pr-4 !text-left !font-normal !select-text hover:!border-transparent hover:!bg-transparent"
-                    aria-label={`打开任务：${title}`}
-                    onClick={() => onLoadTask(t.task_id)}
+                    aria-label={isRealtime ? `查看录音：${title}` : `打开任务：${title}`}
+                    onClick={() => { if (isRealtime) setReading(t); else onLoadTask(t.task_id); }}
                   >
-                    <div className="text-fg font-semibold text-[13.5px] truncate max-w-2xl leading-normal">
-                      {title}
+                    <div className="flex items-center gap-2 min-w-0">
+                      {isRealtime && <Mic className="w-3.5 h-3.5 shrink-0 text-muted" aria-hidden="true" />}
+                      <span className="text-fg font-semibold text-[13.5px] truncate max-w-2xl leading-normal">
+                        {title}
+                      </span>
                     </div>
                     {t.original_name && t.text && (
                       <div className="text-[12px] text-muted truncate max-w-2xl mt-0.5">{t.text}</div>
+                    )}
+                    {/* The reason a row failed belongs to the row itself: hiding
+                        it behind the status badge means the user has to open the
+                        task to learn there is nothing to open. */}
+                    {t.status === 'failed' && failure && (
+                      <div className="mt-1 flex items-start gap-2 text-[12px] text-err">
+                        {interrupted && (
+                          <span className="badge err shrink-0">
+                            <span className="dot" />
+                            <span>服务中断</span>
+                          </span>
+                        )}
+                        <span className="line-clamp-2 max-w-2xl">{failure}</span>
+                      </div>
                     )}
                     <div className="tid font-mono text-meta text-muted-2 mt-1">
                       #{t.task_id} · {formatWhen(t.created_at)}
@@ -248,14 +322,16 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   </button>
 
                   <div className="flex items-center shrink-0 justify-end">
-                    <span className={`badge ${statusClass(t.status)}`}>
+                    <span className={`badge ${statusClass(t.status)}`} title={t.status === 'failed' ? t.error || undefined : undefined}>
                       <span className="dot" />
                       <span>{STATUS_LABEL[t.status] || t.status}</span>
                     </span>
                   </div>
 
                   <div className="shrink-0 text-right text-sm text-muted tabular-nums">
-                    {t.finished_segments || 0}/{t.total_segments || 0} 片
+                    {/* A realtime archive has no segments by construction, so
+                        "0/0 片" would read as a pipeline that produced nothing. */}
+                    {isRealtime ? '整段' : `${t.finished_segments || 0}/${t.total_segments || 0} 片`}
                   </div>
 
                   <div className="shrink-0 text-right text-sm text-muted tabular-nums">
@@ -265,7 +341,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   <button
                     className="danger p-1.5"
                     aria-label={`删除任务：${title}`}
-                    onClick={() => void removeTask(t.task_id)}
+                    onClick={() => void removeTask(t)}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -279,22 +355,14 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           <div className="flex items-center justify-end gap-3 mt-5 text-sm text-muted">
             <button
               disabled={page === 0 || loading}
-              onClick={() => {
-                const next = page - 1;
-                setPage(next);
-                void loadHistory(next);
-              }}
+              onClick={() => commit({ q, status, since, until, page: page - 1 })}
             >
               上一页
             </button>
             <span className="tabular-nums">{page + 1} / {pages}</span>
             <button
               disabled={page + 1 >= pages || loading}
-              onClick={() => {
-                const next = page + 1;
-                setPage(next);
-                void loadHistory(next);
-              }}
+              onClick={() => commit({ q, status, since, until, page: page + 1 })}
             >
               下一页
             </button>

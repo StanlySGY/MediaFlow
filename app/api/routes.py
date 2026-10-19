@@ -9,6 +9,7 @@ import wave
 from pathlib import Path
 
 import aiofiles
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from sse_starlette.sse import EventSourceResponse
@@ -37,7 +38,7 @@ from app.models.schemas import (
     TaskResult,
     TaskStatus,
 )
-from app.security import require_token
+from app.security import SSE_AUTH_COOKIE, require_token
 from app.services.asr import (
     ASRError,
     create_provider,
@@ -111,6 +112,13 @@ ALLOWED_EXTS = {
     ".mov",
     ".mkv",
 }
+
+# The /asr/task spellings predate /asr/file and are kept for callers that
+# already integrated them. /asr/file is the documented entry point: it returns
+# the status/events/result URLs, so a client never has to assemble them itself.
+LEGACY_TASK_ALIAS_NOTE = (
+    "已废弃：与 `/asr/file` 系列是同一个任务，新调用方请用 `/asr/file` 写法。"
+)
 
 STANDARD_FILE_ASR_DOC = """
 给第三方调用的标准「上传 WAV/音频文件转文字」入口。
@@ -186,8 +194,9 @@ data: {"type":"done","stream":"file","id":"...","text":"","is_final":true,"task_
 `/asr/file/{task_id}/events`。如果任务已经完成，建议直接请求
 `/asr/file/{task_id}/result` 获取最终结果。
 
-如果启用了访问令牌，浏览器 `EventSource` 不能加 Header，可使用
-`?token=你的token` 查询参数。
+如果启用了访问令牌，先用 `Authorization: Bearer <token>` 请求任一普通接口；服务会签发短期
+HttpOnly SSE cookie，浏览器 `EventSource` 随后可直接连接此地址。为兼容命令行客户端，仍接受
+`?token=你的token`，但查询串可能进入访问日志，生产环境不建议使用。
 """
 
 STANDARD_FILE_EVENTS_RESPONSE = {
@@ -328,8 +337,9 @@ data: {"type":"done","stream":"realtime","id":"...","text":"","delta":null,"is_f
 - 使用原生 Qwen3-ASR WebSocket 时，设置 `REALTIME_ASR_PROVIDER=realtime_ws` 和
   `REALTIME_ASR_BASE_URL=ws://<host>:8022/v1/asr/stream`；录音期间会持续返回中间结果。
 
-如果启用了访问令牌，浏览器 `EventSource` 不能加 Header，可使用
-`?token=你的token` 查询参数。
+如果启用了访问令牌，先用 `Authorization: Bearer <token>` 请求创建会话或推送音频；服务会签发短期
+HttpOnly SSE cookie，浏览器 `EventSource` 随后可直接连接此地址。为兼容命令行客户端，仍接受
+`?token=你的token`，但查询串可能进入访问日志，生产环境不建议使用。
 """
 
 REALTIME_EVENTS_RESPONSE = {
@@ -419,7 +429,8 @@ data: {"type":"call_finished","call":{"call_id":"...","status":"ok","elapsed_ms"
 `call_updated` 只出现在跑过程中能增量刷新统计的来源（目前是实时录音），页面按 `call_id` 原地覆盖即可。
 
 如果调用失败，`call.status=error`，`call.error` 中会包含上游 HTTP 状态、超时或协议错误摘要。
-如果启用了访问令牌，浏览器 `EventSource` 可使用 `?token=你的token` 查询参数。
+如果启用了访问令牌，先通过普通 HTTP 请求完成 Bearer 鉴权，服务会签发短期 HttpOnly SSE cookie；
+浏览器 `EventSource` 不应把长期访问令牌放进 URL。命令行客户端仍可使用 `?token=你的token` 兼容接入。
 """
 
 
@@ -586,7 +597,12 @@ def _standard_realtime_sse_message(
     )
 
 
-@router.post("/task")
+@router.post(
+    "/task",
+    deprecated=True,
+    summary="（已废弃）上传文件转文字",
+    description=LEGACY_TASK_ALIAS_NOTE + " 请改用 `POST /asr/file`（返回 status_url / events_url / result_url）。",
+)
 async def create_task(
     file: UploadFile = File(...),
     model: str | None = Form(default=None),
@@ -775,7 +791,13 @@ async def concat_media_files(files: list[UploadFile] = File(...)) -> FileRespons
     )
 
 
-@router.get("/task/{task_id}", response_model=TaskInfo)
+@router.get(
+    "/task/{task_id}",
+    response_model=TaskInfo,
+    deprecated=True,
+    summary="（已废弃）查询任务状态",
+    description=LEGACY_TASK_ALIAS_NOTE + " 请改用 `GET /asr/file/{task_id}`。",
+)
 async def get_status(
     task_id: str, manager: TaskManager = Depends(get_manager)
 ) -> TaskInfo:
@@ -797,7 +819,12 @@ async def get_file_status(
     return await get_status(task_id=task_id, manager=manager)
 
 
-@router.get("/task/{task_id}/stream")
+@router.get(
+    "/task/{task_id}/stream",
+    deprecated=True,
+    summary="（已废弃）任务 SSE 流",
+    description=LEGACY_TASK_ALIAS_NOTE + " 请改用 `GET /asr/file/{task_id}/events`（事件名为 message，data 为 ASRStreamEvent）。",
+)
 async def stream_task(
     task_id: str, manager: TaskManager = Depends(get_manager)
 ) -> EventSourceResponse:
@@ -836,14 +863,20 @@ async def stream_file_transcription(
     return EventSourceResponse(event_gen())
 
 
-@router.get("/task/{task_id}/result", response_model=TaskResult)
+@router.get(
+    "/task/{task_id}/result",
+    response_model=TaskResult,
+    deprecated=True,
+    summary="（已废弃）任务最终结果",
+    description=LEGACY_TASK_ALIAS_NOTE + " 请改用 `GET /asr/file/{task_id}/result`。",
+)
 async def get_result(
     task_id: str, manager: TaskManager = Depends(get_manager)
 ) -> TaskResult | Response:
     result = manager.get_result(task_id)
     if result is None:
         raise HTTPException(404, "task not found")
-    if result.status not in {TaskStatus.done, TaskStatus.failed}:
+    if result.status not in {TaskStatus.done, TaskStatus.failed, TaskStatus.cancelled}:
         return JSONResponse(status_code=202, content=result.model_dump(mode="json"))
     return result
 
@@ -860,7 +893,13 @@ async def get_file_result(
     return await get_result(task_id=task_id, manager=manager)
 
 
-@router.get("/task/{task_id}/subtitle", response_class=PlainTextResponse)
+@router.get(
+    "/task/{task_id}/subtitle",
+    response_class=PlainTextResponse,
+    deprecated=True,
+    summary="（已废弃）字幕下载",
+    description=LEGACY_TASK_ALIAS_NOTE + " 请改用 `GET /asr/file/{task_id}/subtitle`。",
+)
 async def get_subtitle(
     task_id: str,
     format: str = "srt",
@@ -898,9 +937,9 @@ async def get_file_subtitle(
     return await get_subtitle(task_id=task_id, format=format, manager=manager)
 
 
-@meta_router.get("/metrics")
+@meta_router.get("/metrics", dependencies=[Depends(require_token)])
 async def prometheus_metrics(request: Request) -> PlainTextResponse:
-    """Prometheus text exposition. No auth: scrape it from the private network."""
+    """Prometheus text exposition, protected by ACCESS_TOKENS when configured."""
     manager: TaskManager = request.app.state.manager
     realtime: RealtimeManager = request.app.state.realtime_manager
     active_tasks = sum(
@@ -925,6 +964,12 @@ async def prometheus_metrics(request: Request) -> PlainTextResponse:
 @meta_router.get("/auth/info")
 async def auth_info() -> dict[str, bool]:
     return {"auth_required": bool(get_settings().access_tokens_list)}
+
+
+@meta_router.post("/auth/logout", status_code=204)
+async def auth_logout(response: Response) -> None:
+    """Clear the browser-only SSE cookie; Bearer tokens remain client-managed."""
+    response.delete_cookie(SSE_AUTH_COOKIE, path="/")
 
 
 @router.get("/config")
@@ -952,12 +997,18 @@ async def get_config() -> dict:
         "ffmpeg_timeout": s.ffmpeg_timeout,
         "ffmpeg_concurrency": s.ffmpeg_concurrency,
         "max_upload_bytes": s.max_upload_bytes,
+        # The upload gate the client is about to hit. Without this the browser
+        # can only hardcode a guess, and a mismatch means a multi-GB file is
+        # put on the wire before a 413 arrives halfway through.
+        "allowed_exts": sorted(ALLOWED_EXTS),
         "realtime_asr_provider": s.realtime_asr_provider,
         "realtime_asr_base_url": s.realtime_asr_base_url,
         "realtime_asr_model": s.realtime_asr_model,
         "realtime_session_ttl_seconds": s.realtime_session_ttl_seconds,
         "realtime_max_sessions": s.realtime_max_sessions,
         "realtime_max_chunk_bytes": s.realtime_max_chunk_bytes,
+        "realtime_max_session_bytes": s.realtime_max_session_bytes,
+        "realtime_max_session_seconds": s.realtime_max_session_seconds,
         "realtime_api_key_set": bool(s.realtime_asr_api_key),
         "api_key_set": bool(s.asr_api_key),
         "access_tokens_count": len(s.access_tokens_list),
@@ -1062,16 +1113,7 @@ async def activate_profile_route(profile_id: str, body: dict) -> dict:
     return get_profiles()
 
 
-@router.get("/models")
-async def get_models(base_url: str = "", api_key: str = "") -> dict:
-    """List model ids the upstream advertises at {base_url}/models.
-
-    `base_url` and `api_key` default to the saved file-ASR config, so the
-    settings page can ask before anything is saved. The key is never echoed back.
-    """
-    s = get_settings()
-    url = base_url.strip() or s.asr_base_url
-    key = api_key or s.asr_api_key
+async def _models_response(url: str, key: str) -> dict:
     if not url:
         raise HTTPException(400, "未填写接口地址")
     try:
@@ -1081,6 +1123,96 @@ async def get_models(base_url: str = "", api_key: str = "") -> dict:
     except Exception as e:  # noqa: BLE001 — upstream transport/protocol failure
         raise HTTPException(502, f"读取模型列表失败：{e}")
     return {"base_url": url, "models": models}
+
+
+def _saved_models_key(url: str, target: str | None) -> str:
+    settings = get_settings()
+    endpoint = _normalize_models_endpoint(url)
+    file_match = bool(endpoint) and endpoint == _normalize_models_endpoint(settings.asr_base_url)
+    realtime_match = bool(endpoint) and endpoint == _normalize_models_endpoint(
+        settings.realtime_asr_base_url
+    )
+    if target == "file":
+        return settings.asr_api_key if file_match else ""
+    if target == "realtime":
+        return settings.realtime_asr_api_key if realtime_match else ""
+    if file_match and realtime_match:
+        return settings.asr_api_key if settings.asr_api_key == settings.realtime_asr_api_key else ""
+    if file_match:
+        return settings.asr_api_key
+    if realtime_match:
+        return settings.realtime_asr_api_key
+    return ""
+
+
+def _models_endpoint_is_saved(url: str, target: str) -> bool:
+    field = "asr_base_url" if target == "file" else "realtime_asr_base_url"
+    endpoints = [getattr(get_settings(), field)]
+    endpoints.extend(
+        profile.get(field, "") for profile in get_profiles().get("profiles", [])
+    )
+    normalized = _normalize_models_endpoint(url)
+    return bool(normalized) and any(
+        normalized == _normalize_models_endpoint(endpoint)
+        for endpoint in endpoints
+        if endpoint
+    )
+
+
+@router.get("/models")
+async def get_models(base_url: str = "") -> dict:
+    """List model ids the upstream advertises at {base_url}/models.
+
+    Compatibility endpoint for callers probing the saved configuration. Explicit
+    credentials use POST /models so they do not appear in query strings.
+    """
+    s = get_settings()
+    url = base_url.strip() or s.asr_base_url
+    if not _models_endpoint_is_saved(url, "file"):
+        raise HTTPException(400, "请先将接口地址保存到配置档案后再探测模型")
+    return await _models_response(url, _saved_models_key(url, None))
+
+
+@router.post("/models")
+async def post_models(body: dict) -> dict:
+    """Discover models using an explicit pipeline and an optional one-shot key."""
+    if not isinstance(body, dict):
+        raise HTTPException(400, "body must be a JSON object")
+    target = body.get("target")
+    if target not in {"file", "realtime"}:
+        raise HTTPException(400, "target must be file or realtime")
+    base_url = body.get("base_url", "")
+    api_key = body.get("api_key", "")
+    if not isinstance(base_url, str) or not isinstance(api_key, str):
+        raise HTTPException(400, "base_url and api_key must be strings")
+    settings = get_settings()
+    url = base_url.strip()
+    if not url:
+        url = settings.asr_base_url if target == "file" else settings.realtime_asr_base_url
+    if not _models_endpoint_is_saved(url, target):
+        raise HTTPException(400, "请先将接口地址保存到配置档案后再探测模型")
+    key = api_key or _saved_models_key(url, target)
+    return await _models_response(url, key)
+
+
+def _normalize_models_endpoint(base_url: str) -> str:
+    """Normalize a configured endpoint the same way model discovery does."""
+    root = base_url.strip().rstrip("/")
+    if not root:
+        return ""
+    try:
+        parsed = httpx.URL(root)
+    except httpx.InvalidURL:
+        return ""
+    if parsed.scheme in ("ws", "wss"):
+        parsed = parsed.copy_with(scheme="https" if parsed.scheme == "wss" else "http")
+    default_port = 443 if parsed.scheme == "https" else 80 if parsed.scheme == "http" else None
+    if parsed.port == default_port and default_port is not None:
+        parsed = parsed.copy_with(port=None)
+    root = str(parsed).rstrip("/")
+    if root.endswith("/asr/stream"):
+        root = root[: -len("/asr/stream")]
+    return root
 
 
 @router.post("/config/reset")
@@ -1299,7 +1431,11 @@ async def delete_task(
     return {"ok": True}
 
 
-@router.get("/task/{task_id}/segments/{segment_id}/raw")
+@router.get(
+    "/task/{task_id}/segments/{segment_id}/raw",
+    summary="单个分片的上游原始返回（调试用）",
+    description="返回该分片的 elapsed_ms、word 时间戳、上游 raw 与分片级 error。任务或分片不存在时返回 404。",
+)
 async def get_segment_raw(
     task_id: str,
     segment_id: int,
@@ -1308,7 +1444,7 @@ async def get_segment_raw(
     """Return the raw upstream ASR payload for a single segment (debug aid)."""
     result = manager.get_result(task_id)
     if result is None:
-        raise HTTPException(404, "task not found")
+        raise _http_message(404, "task not found", code="invalid_request")
     for seg in result.segments:
         if seg.segment_id == segment_id:
             return {
@@ -1318,7 +1454,7 @@ async def get_segment_raw(
                 "raw": seg.raw,
                 "error": seg.error,
             }
-    raise HTTPException(404, "segment not found")
+    raise _http_message(404, "segment not found", code="invalid_request")
 
 
 # -------------------- Realtime --------------------
@@ -1338,7 +1474,8 @@ async def create_realtime_session(
     try:
         return await rm.create(config)
     except RealtimeASRError as e:
-        raise _http_error(503, e)
+        status = 429 if e.code == "session_limit" else 503
+        raise _http_error(status, e)
 
 
 @router.get(
@@ -1390,7 +1527,8 @@ async def push_realtime_audio(
     except ValueError as e:
         raise _http_message(400, str(e))
     except RealtimeASRError as e:
-        raise _http_error(502, e)
+        status = 413 if e.code == "resource_limit" else 502
+        raise _http_error(status, e)
     return {
         "ok": True,
         "seq": chunk.seq,
@@ -1443,6 +1581,9 @@ async def end_realtime_session(
         await rm.finish(session_id)
     except KeyError:
         raise _http_message(404, "session not found", code="session_not_found")
+    except RealtimeASRError as e:
+        status = 413 if e.code == "resource_limit" else 502
+        raise _http_error(status, e)
     return {"ok": True}
 
 

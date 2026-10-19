@@ -54,12 +54,38 @@ class TaskCancelled(Exception):
     """Raised inside the pipeline when the caller asked to stop."""
 
 
+class _ASRCallLimiter:
+    """Dynamically sized, manager-wide cap on active provider calls."""
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._active = 0
+        self._condition = asyncio.Condition()
+
+    async def __aenter__(self):
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: self._active < max(1, self._settings.asr_concurrency)
+            )
+            self._active += 1
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        async with self._condition:
+            self._active -= 1
+            self._condition.notify_all()
+
+
 def _read_json(path: Path) -> dict | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return None
     return data if isinstance(data, dict) else None
+
+
+_KIND_FILE = "file"
+_KIND_REALTIME = "realtime"
 
 
 def _empty_record(task_id: str, created_at: float) -> dict:
@@ -79,6 +105,11 @@ def _empty_record(task_id: str, created_at: float) -> dict:
         "created_at": created_at,
         "updated_at": created_at,
         "in_memory": False,
+        # What produced this row. File tasks are the default; realtime recordings
+        # are archived into the same list (see realtime_manager._archive) and carry
+        # "realtime". /tasks returns this dict unchanged, so the client can tell a
+        # recording without a media file apart from an upload.
+        "kind": _KIND_FILE,
     }
 
 
@@ -199,12 +230,43 @@ class TaskManager:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._asr_limiter = _ASRCallLimiter(settings)
         self._tasks: dict[str, _Task] = {}
         self._lock = asyncio.Lock()
         self._bg: set[asyncio.Task] = set()
+        self._cleanup_task: asyncio.Task | None = None
         self.recover_interrupted()
+        self._cleanup_expired_outputs()
 
     # ---- lifecycle ----
+
+    async def start(self) -> None:
+        """Start periodic memory and terminal-output cleanup."""
+        if self._cleanup_task is not None:
+            return
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+
+    async def stop(self) -> None:
+        """Stop periodic cleanup without cancelling in-flight transcription work."""
+        if self._cleanup_task is None:
+            return
+        self._cleanup_task.cancel()
+        try:
+            await self._cleanup_task
+        except asyncio.CancelledError:
+            pass
+        self._cleanup_task = None
+
+    async def _cleanup_loop(self) -> None:
+        # Check often enough to make the TTL useful during a continuously
+        # running deployment, while keeping the background task negligible.
+        interval = max(1, min(60, self._settings.output_ttl_seconds))
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                self._evict_if_needed()
+        except asyncio.CancelledError:
+            return
 
     async def submit(
         self, source_path: Path, original_name: str, *, overrides: dict | None = None
@@ -303,6 +365,8 @@ class TaskManager:
                 item["hint"] = data.get("hint") if data.get("hint") is not None else item["hint"]
                 if data.get("retryable") is not None:
                     item["retryable"] = bool(data["retryable"])
+                if data.get("kind"):
+                    item["kind"] = str(data["kind"])
                 item["total_segments"] = len(data.get("segments") or []) or item["total_segments"]
                 item["finished_segments"] = item["total_segments"]
                 if not item["created_at"]:
@@ -437,6 +501,7 @@ class TaskManager:
 
     def _evict_if_needed(self) -> None:
         s = self._settings
+        self._cleanup_expired_outputs()
         now = time.monotonic()
         expired = [
             tid
@@ -460,6 +525,34 @@ class TaskManager:
             overflow = len(self._tasks) - s.max_tasks_in_memory
             for tid, _ in completed[:overflow]:
                 self._tasks.pop(tid, None)
+
+    def _cleanup_expired_outputs(self) -> int:
+        """Remove old terminal history while preserving active state files."""
+        output_dir = self._settings.output_dir
+        if not output_dir.is_dir():
+            return 0
+        cutoff = time.time() - self._settings.output_ttl_seconds
+        removed = 0
+        state_dir = output_dir / "state"
+        for path in output_dir.glob("*.json"):
+            data = _read_json(path)
+            if not data or data.get("status") not in {s.value for s in _TERMINAL}:
+                continue
+            if path.stat().st_mtime >= cutoff:
+                continue
+            task_id = str(data.get("task_id") or path.stem)
+            try:
+                path.unlink()
+                removed += 1
+                state_path = state_dir / f"{task_id}.json"
+                state_data = _read_json(state_path) if state_path.is_file() else None
+                if state_data and state_data.get("status") in {s.value for s in _TERMINAL}:
+                    state_path.unlink()
+            except OSError:
+                log.warning("failed to remove expired output %s", path, exc_info=True)
+        if removed:
+            log.info("removed %d expired task output(s)", removed)
+        return removed
 
     def _rehydrate(self, task_id: str) -> _Task | None:
         """Reload a finished task from disk when it's no longer in memory."""
@@ -590,13 +683,18 @@ class TaskManager:
                     t0 = time.perf_counter()
                     last_err: Exception | None = None
                     for attempt in range(s.asr_max_retries + 1):
+                        if task.cancel_requested:
+                            return
                         try:
-                            with asr_call_context(
-                                source="file_task",
-                                task_id=task.info.task_id,
-                                segment_id=seg.segment_id,
-                            ):
-                                res = await provider.transcribe(seg.file_path)
+                            async with self._asr_limiter:
+                                if task.cancel_requested:
+                                    return
+                                with asr_call_context(
+                                    source="file_task",
+                                    task_id=task.info.task_id,
+                                    segment_id=seg.segment_id,
+                                ):
+                                    res = await provider.transcribe(seg.file_path)
                             seg.text = res.text
                             seg.words = [
                                 Word(

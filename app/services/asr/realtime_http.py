@@ -106,9 +106,15 @@ class RealtimeHTTPProvider:
         if self._client is None or not self._down_session_id:
             return
         try:
-            await self._client.post(f"/session/{self._down_session_id}/end")
+            response = await self._client.post(f"/session/{self._down_session_id}/end")
+            if response.status_code >= 400:
+                raise RealtimeASRError(
+                    f"downstream /end failed {response.status_code}: {response.text[:200]}"
+                )
+        except RealtimeASRError:
+            raise
         except Exception:  # noqa: BLE001
-            log.warning("downstream /end call failed", exc_info=True)
+            raise RealtimeASRError("downstream /end call failed") from None
 
     async def _read_events(self) -> None:
         assert self._client is not None and self._down_session_id is not None

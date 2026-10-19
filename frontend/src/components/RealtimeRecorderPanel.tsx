@@ -10,7 +10,13 @@ interface RealtimeRecorderPanelProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
   sseUrl: (path: string) => string;
   realtimeProvider?: string;
+  /** Server-side cap on simultaneous recordings (realtime_max_sessions). */
+  maxSessions?: number;
 }
+
+/** RealtimeManager.list() returns every session it still holds, including the
+ *  terminal ones; only non-terminal ones occupy a slot in the cap. */
+const CAPACITY_TERMINAL_STATUSES = ['done', 'failed', 'closed'];
 
 const RECORDER_MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg'];
 type RealtimeRecorderState = 'idle' | 'connecting' | 'recording' | 'processing' | 'completed' | 'error';
@@ -54,6 +60,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   authedFetch,
   sseUrl,
   realtimeProvider,
+  maxSessions,
 }) => {
   const [state, setState] = useState<RealtimeRecorderState>('idle');
   const isRecording = state === 'recording';
@@ -66,6 +73,10 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   const [logs, setLogs] = useState<string[]>([]);
   const [chunks, setChunks] = useState(0);
   const [bytes, setBytes] = useState(0);
+  // null = not fetched yet. Advisory only: the server re-checks the cap when
+  // the session is created, so a stale count can never start a 5th recording.
+  const [liveSessions, setLiveSessions] = useState<number | null>(null);
+  const mountedRef = useRef(true);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -78,6 +89,24 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   const generationRef = useRef(0);
   const committedTextRef = useRef('');
   const releasePromiseRef = useRef<Promise<void>>(Promise.resolve());
+
+  const refreshCapacity = useCallback(async () => {
+    // Without a known cap the count has nothing to be compared against, so do
+    // not spend a request on it.
+    if (typeof maxSessions !== 'number') return;
+    try {
+      const response = await authedFetch('/asr/realtime/sessions');
+      if (!response.ok) return;
+      const data = await response.json();
+      const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+      const live = sessions.filter(
+        (ses: { status?: string }) => !CAPACITY_TERMINAL_STATUSES.includes(ses?.status || ''),
+      ).length;
+      if (mountedRef.current) setLiveSessions(live);
+    } catch {
+      /* capacity is advisory; the create call reports the real answer */
+    }
+  }, [authedFetch, maxSessions]);
 
   const appendLog = (event: string, data: Record<string, unknown> = {}) => {
     const line = JSON.stringify({ ts: new Date().toISOString(), event, ...data });
@@ -116,10 +145,18 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     releaseSession(sessionId);
   }, [releaseSession]);
 
-  useEffect(() => () => {
-    generationRef.current += 1;
-    cleanup();
-  }, [cleanup]);
+  useEffect(() => {
+    // Wrapped in a microtask-free async IIFE so the count lands in a callback
+    // rather than the effect body (react-hooks/set-state-in-effect).
+    void (async () => {
+      await refreshCapacity();
+    })();
+    return () => {
+      mountedRef.current = false;
+      generationRef.current += 1;
+      cleanup();
+    };
+  }, [cleanup, refreshCapacity]);
 
   const subscribe = (sessionId: string, generation: number) => {
     eventSourceRef.current?.close();
@@ -132,6 +169,11 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         generation !== generationRef.current
         || sessionIdRef.current !== sessionId
       ) return;
+      // EventSource reconnects by itself, and the server rebuilds the delta
+      // chain from an empty baseline for every new connection (previous_text is
+      // per-connection in stream_realtime_session; there is no Last-Event-ID
+      // resume), so the replayed events only line up against a cleared local
+      // transcript — removing this reset would double-apply the replay.
       if (hasOpened) {
         committedTextRef.current = '';
         setTranscript('');
@@ -314,6 +356,8 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       }
       recordingSessionId = session.session_id as string;
       sessionIdRef.current = recordingSessionId;
+      // Our own session now holds one of the shared slots.
+      void refreshCapacity();
       appendLog('session_created', { session_id: recordingSessionId, format });
       subscribe(recordingSessionId, generation);
 
@@ -401,6 +445,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       appendLog('recording_stop');
       recorderRef.current.stop();
       if (!uploadFailedRef.current) setState('processing');
+      void refreshCapacity();
     }
   };
 
@@ -429,6 +474,16 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
               {realtimeProvider === 'realtime_mock'
                 ? '演示模式 · 不调用真实 ASR'
                 : realtimeProvider}
+            </span>
+          )}
+          {typeof maxSessions === 'number' && (
+            <span
+              className="text-meta font-normal text-muted-2"
+              title="名额由服务端按所有客户端的活跃会话计数，别人正在录音也会占用"
+            >
+              {liveSessions === null
+                ? `并发上限 ${maxSessions} 路`
+                : `在用 ${liveSessions}/${maxSessions} 路`}
             </span>
           )}
         </div>
@@ -525,7 +580,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
           <textarea
             readOnly
             value={logs.join('\n')}
-            className="w-full h-[160px] font-mono text-meta leading-relaxed rounded-[8px] bg-[#0e1626] border border-[#1d2740] text-[#cdd6e6] px-3 py-2.5 resize-y"
+            className="w-full h-[160px] font-mono text-meta leading-relaxed rounded-[8px] bg-console border border-console-border text-console-text px-3 py-2.5 resize-y"
             placeholder="录音、上传、SSE 事件和错误会显示在这里。"
           />
         </div>

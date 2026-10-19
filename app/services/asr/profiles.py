@@ -1,9 +1,7 @@
 """Named ASR endpoint profiles.
 
-The console keeps one flat set of ASR settings, which means it can only point
-at a single upstream. A profile bundles the fields that describe one upstream
-(provider, address, key, model, language, biasing hints) so several can be
-saved and the file / realtime pipelines can each pick one.
+Each profile stores independent endpoint settings for file and realtime ASR,
+so the two pipelines can use their own provider namespaces and credentials.
 
 The legacy flat fields on Settings stay the source of truth for everything
 that already reads them. Profiles are stored alongside them in the runtime
@@ -28,13 +26,18 @@ PROFILE_FIELDS: tuple[str, ...] = (
     "asr_timeout",
 )
 
-# Realtime has its own address and key; everything else is shared with the
-# file pipeline, so a profile used for realtime maps these across.
-_REALTIME_MAP: dict[str, str] = {
-    "asr_provider": "realtime_asr_provider",
-    "asr_base_url": "realtime_asr_base_url",
-    "asr_api_key": "realtime_asr_api_key",
-    "asr_model": "realtime_asr_model",
+REALTIME_PROFILE_FIELDS: tuple[str, ...] = (
+    "realtime_asr_provider",
+    "realtime_asr_base_url",
+    "realtime_asr_api_key",
+    "realtime_asr_model",
+)
+ALL_PROFILE_FIELDS: tuple[str, ...] = PROFILE_FIELDS + REALTIME_PROFILE_FIELDS
+REALTIME_PROFILE_DEFAULTS: dict[str, str] = {
+    "realtime_asr_provider": "realtime_mock",
+    "realtime_asr_base_url": "",
+    "realtime_asr_api_key": "",
+    "realtime_asr_model": "",
 }
 
 _NAME_LIMIT = 40
@@ -58,14 +61,18 @@ def profile_from_settings(settings: object, *, name: str, profile_id: str | None
     return {
         "id": profile_id or new_profile_id(),
         "name": name,
-        **{field: getattr(settings, field) for field in PROFILE_FIELDS},
+        **{field: getattr(settings, field) for field in ALL_PROFILE_FIELDS},
     }
 
 
 def public_profile(profile: dict) -> dict:
     """The profile as the API returns it: the key is never echoed, only whether it is set."""
-    out = {k: v for k, v in profile.items() if k != "asr_api_key"}
+    out = {
+        k: v for k, v in profile.items()
+        if k not in ("asr_api_key", "realtime_asr_api_key")
+    }
     out["api_key_set"] = bool(profile.get("asr_api_key"))
+    out["realtime_api_key_set"] = bool(profile.get("realtime_asr_api_key"))
     return out
 
 
@@ -75,12 +82,15 @@ def apply_profile(settings: object, profile: dict, *, target: str) -> dict:
     Returns the flat-field updates, so the caller can persist them the same way
     as any other runtime override.
     """
+    updates = profile_updates(profile, target=target)
+    for field, value in updates.items():
+        setattr(settings, field, value)
+    return updates
+
+
+def profile_updates(profile: dict, *, target: str) -> dict:
+    """Return the flat settings changes for a profile without applying them."""
     if target not in ("file", "realtime"):
         raise ValueError(f"unknown profile target: {target}")
-    mapping = _REALTIME_MAP if target == "realtime" else {f: f for f in PROFILE_FIELDS}
-    updates: dict = {}
-    for src, dest in mapping.items():
-        if src in profile:
-            setattr(settings, dest, profile[src])
-            updates[dest] = profile[src]
-    return updates
+    fields = REALTIME_PROFILE_FIELDS if target == "realtime" else PROFILE_FIELDS
+    return {field: profile[field] for field in fields if field in profile}

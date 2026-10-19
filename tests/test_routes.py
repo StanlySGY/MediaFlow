@@ -40,6 +40,58 @@ def test_upload_rejected_when_over_limit(client: TestClient):
     assert r.status_code == 413
 
 
+def test_oversized_multipart_rejected_before_form_parsing(client: TestClient):
+    # Invalid multipart would otherwise fail parsing with 400; size is rejected first.
+    r = client.post(
+        "/asr/task",
+        content=b"x" * (70 * 1024),
+        headers={"Content-Type": "multipart/form-data; boundary=missing"},
+    )
+    assert r.status_code == 413
+    assert "request body exceeds" in r.json()["detail"]
+
+
+async def test_streamed_multipart_body_is_limited_without_content_length(client):
+    from app.main import MultipartRequestSizeLimitMiddleware
+
+    messages = [
+        {"type": "http.request", "body": b"a" * 40_000, "more_body": True},
+        {"type": "http.request", "body": b"b" * 30_000, "more_body": False},
+    ]
+    sent = []
+
+    async def receive():
+        return messages.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    async def downstream(scope, receive, send):
+        while (await receive()).get("more_body", False):
+            pass
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/asr/task",
+        "raw_path": b"/asr/task",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"content-type", b"multipart/form-data; boundary=x")],
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 12345),
+    }
+
+    await MultipartRequestSizeLimitMiddleware(downstream)(scope, receive, send)
+
+    assert sent[0]["status"] == 413
+
+
 def test_missing_task_returns_404(client: TestClient):
     r = client.get("/asr/task/doesnotexist")
     assert r.status_code == 404

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { AlertTriangle, Check, ChevronDown, Copy, Play } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, Copy, PenLine, Play } from 'lucide-react';
 import { ASRSegment } from '../types';
 import { errorMessage } from '../lib/errors';
 
@@ -21,13 +21,15 @@ function highlightJson(json: string): string {
   return esc.replace(
     /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,
     (match) => {
-      let cls = 'text-[#7fd1a7]'; // number
+      // Syntax palette for the dark console inset — every value is a
+      // --color-console-* token so the dark panels stay one palette.
+      let cls = 'text-console-num';
       if (/^"/.test(match)) {
-        cls = /:$/.test(match) ? 'text-[#9cc0ff]' : 'text-[#e0a878]'; // key : string
+        cls = /:$/.test(match) ? 'text-console-key' : 'text-console-str';
       } else if (/true|false/.test(match)) {
-        cls = 'text-[#c39cff]'; // boolean
+        cls = 'text-console-bool';
       } else if (/null/.test(match)) {
-        cls = 'text-[#7a869c]'; // null
+        cls = 'text-console-null';
       }
       return `<span class="${cls}">${match}</span>`;
     },
@@ -102,7 +104,9 @@ export const SegmentList: React.FC<SegmentListProps> = ({
   return (
     <div className="flex flex-col gap-2">
       {onEditText && editable > 0 && (
-        <p className="hint">双击文本可就地校对；校对后在「完整文本」导出精修字幕。</p>
+        <p className="hint">
+          双击文本或点每行的「校对」按钮就地改字（Enter 保存，Esc 放弃）；校对后在「完整文本」导出精修字幕。
+        </p>
       )}
 
       <div className="rounded-[10px] border border-border bg-surface overflow-hidden divide-y divide-border">
@@ -187,6 +191,16 @@ export const SegmentList: React.FC<SegmentListProps> = ({
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0 pt-0.5">
+                  {canEdit && !isEditing && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); startEdit(seg); }}
+                      title="校对这段文本"
+                      aria-label={`校对第 ${seg.segment_id} 段`}
+                      className="w-7 h-7 p-0 border-0 bg-transparent text-muted opacity-0 group-hover/seg:opacity-100 focus-visible:opacity-100 hover:text-accent transition-opacity"
+                    >
+                      <PenLine className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                   {onSeek && !seg.error && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onSeek(seg.start); }}
@@ -231,7 +245,7 @@ export const SegmentList: React.FC<SegmentListProps> = ({
                       ) : (
                         /* Dark inset: the syntax palette below is tuned for it. */
                         <pre
-                          className="text-meta font-mono overflow-auto max-h-[280px] leading-relaxed rounded-[8px] bg-[#0e1626] border border-[#1d2740] px-3 py-2.5 text-[#cdd6e6]"
+                          className="text-meta font-mono overflow-auto max-h-[280px] leading-relaxed rounded-[8px] bg-console border border-console-border px-3 py-2.5 text-console-text"
                           dangerouslySetInnerHTML={{ __html: highlightJson(rawData[seg.segment_id] || '无返回数据') }}
                         />
                       )}

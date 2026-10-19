@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Trash2, FileText, FolderDown, Check, Download, Copy, AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Check, CircleStop, Copy, Download, FileText, FolderDown, Hourglass, RotateCcw, Trash2, X } from 'lucide-react';
 
 import { useAuth } from './hooks/useAuth';
 import { useFileTask } from './hooks/useFileTask';
@@ -10,15 +10,47 @@ import { Dropzone } from './components/Dropzone';
 import { Accordion } from './components/Accordion';
 import { SegmentList } from './components/SegmentList';
 import { RealtimeView } from './components/RealtimeView';
+import { RealtimeApiDebugView } from './components/RealtimeApiDebugView';
 import { ConfigView } from './components/ConfigView';
 import { HistoryView } from './components/HistoryView';
 import { ConcatView } from './components/ConcatView';
 import { MonitorView } from './components/MonitorView';
+import { TokenDialog } from './components/TokenDialog';
 import { downloadFile } from './lib/download';
+import { DEFAULT_VIEW, parseHash, readQuery, readView, writeQuery, writeView } from './lib/hashRoute';
 import { SystemConfig } from './types';
 
+/**
+ * Page title + subtitle per view. Declared at module scope because the initial
+ * title has to match the view the URL opened, before any handler exists.
+ */
+const VIEW_META: { [key: string]: { title: string; crumb: string } } = {
+  tasks: { title: '文件转写', crumb: '上传音频或视频，自动切分识别，导出完整文本与字幕' },
+  concat: { title: '音视频合并', crumb: '多个同格式音频或视频按顺序无损合并，不重新编码' },
+  realtime: { title: '实时识别', crumb: '对着麦克风录音，边说边出文字，停止后自动归档' },
+  monitor: { title: '调用监控', crumb: '实时查看本进程内的 ASR 上游调用、耗时、状态和错误' },
+  config: { title: '服务配置', crumb: '填写并测试 ASR 接口，所有修改即时生效、无需重启' },
+  // 手动会话 / 文件分包 / 事件流控制台：验证接口本身用的，不是日常识别路径。
+  'api-debug': { title: '接口调试', crumb: '手动创建会话、按包推送音频、查看原始事件流，用于验证上游接口' },
+  // Realtime recordings are archived here too, and those rows only open a
+  // read-only viewer — "点击可重新打开" was true of file tasks only.
+  history: { title: '历史记录', crumb: '查看 7 天内归档的转写任务与录音，文件任务可重新打开，录音可在线查看' },
+};
+
+const viewMeta = (view: string) => VIEW_META[view] || VIEW_META[DEFAULT_VIEW];
+
+const serverDefaultText = (value: unknown) =>
+  value === undefined || value === null || value === '' ? '服务端默认' : `服务端默认 ${value}`;
+
 export default function App() {
-  const { token, setToken, clearSession, authedFetch, sseUrl } = useAuth();
+  const {
+    token, setToken, authedFetch, sseUrl,
+    tokenRequest, openTokenRequest, submitToken, cancelTokenRequest,
+  } = useAuth();
+
+  // Topbar / Footer connection info. Declared before useFileTask because the
+  // upload preflight reads the limits straight out of this payload.
+  const [config, setConfig] = useState<SystemConfig | null>(null);
 
   // File-transcription lifecycle (upload / SSE / polling / proofreading / export).
   const {
@@ -29,17 +61,33 @@ export default function App() {
     ovHints, setOvHints, ovTimestamps, setOvTimestamps, setOvTimestampsTouched,
     activePane, setActivePane, copied,
     uploadProgress, mediaUrl, mediaIsVideo, segmentsEdited, mediaRef,
-    resetTask, handleSeek, handleEditSegment, handleFileSelect,
+    resetTask, abortTask, retryTask, handleSeek, handleEditSegment, handleFileSelect,
     loadHistoricalTask, statusLabel, downloadSubtitle, handleCopy,
-  } = useFileTask(authedFetch, sseUrl);
+    taskError, clearTaskError, taskErrorHint, taskErrorCode, canRetryTask,
+  } = useFileTask(authedFetch, sseUrl, {
+    maxBytes: config?.max_upload_bytes,
+    allowedExts: config?.allowed_exts,
+  });
 
-  // Views Router State
-  const [currentView, setCurrentView] = useState<string>('tasks');
-  const [viewTitle, setViewTitle] = useState('文件转写');
-  const [viewCrumb, setViewCrumb] = useState('上传音频或视频，自动切分识别，导出完整文本与字幕');
+  // Views Router State. The initial view comes from the URL fragment so a
+  // history link (or a refresh on one) opens the page it points at.
+  const [currentView, setCurrentView] = useState<string>(() => readView());
+  const [viewTitle, setViewTitle] = useState(() => viewMeta(readView()).title);
+  const [viewCrumb, setViewCrumb] = useState(() => viewMeta(readView()).crumb);
+  // Filters and page for the history list, lifted here because the URL is what
+  // makes them shareable: 历史记录 opened from a link keeps its query.
+  const [historyNav, setHistoryNav] = useState(0);
+  const [historyRoute, setHistoryRoute] = useState(() => {
+    const query = readQuery();
+    return {
+      q: query.get('q') || '',
+      status: query.get('status') || '',
+      since: query.get('since') || '',
+      until: query.get('until') || '',
+      page: Math.max(0, parseInt(query.get('page') || '0', 10) || 0),
+    };
+  });
 
-  // Topbar / Footer connection info
-  const [config, setConfig] = useState<SystemConfig | null>(null);
   const [footStatus, setFootStatus] = useState<{ text: string; status: 'ok' | 'err' | 'warn' | '' }>({ text: '未测试', status: '' });
 
   // Responsive sidebar (mobile drawer)
@@ -83,45 +131,71 @@ export default function App() {
         const r = await fetch('/auth/info');
         const info = await r.json();
         if (info.auth_required && !token) {
-          const tok = prompt('需要访问令牌（已启用鉴权）');
-          const nextToken = tok?.trim();
-          if (!nextToken) return;
-          setToken(nextToken);
+          // Ask in the page instead of prompt(): a cancelled dialog leaves the
+          // console readable, and a second prompt is not stacked on top of it.
+          openTokenRequest('required');
           return;
         }
       } catch {}
       refreshTopbar();
     })();
-  }, [token, setToken, refreshTopbar]);
+  }, [token, setToken, refreshTopbar, openTokenRequest]);
 
   // View routing handler
   const handleViewChange = (view: string) => {
     setCurrentView(view);
-    const routerMeta: { [key: string]: { title: string; crumb: string } } = {
-      tasks: { title: '文件转写', crumb: '上传音频或视频，自动切分识别，导出完整文本与字幕' },
-      concat: { title: '音视频合并', crumb: '多个同格式音频或视频按顺序无损合并，不重新编码' },
-      realtime: { title: '实时识别', crumb: '创建会话后边发音频边出结果，适合直播、会议等实时场景' },
-      monitor: { title: '调用监控', crumb: '实时查看 Qwen ASR 上游调用、耗时、状态和错误' },
-      config: { title: '服务配置', crumb: '填写并测试 ASR 接口，所有修改即时生效、无需重启' },
-      history: { title: '历史记录', crumb: '查看以往已完成的转写任务，点击可重新打开' },
+    const meta = viewMeta(view);
+    setViewTitle(meta.title);
+    setViewCrumb(meta.crumb);
+    // Leaving a view drops its query: the fragments stay short, and the
+    // history filters are not meant to leak into 文件转写.
+    writeView(view);
+  };
+
+  // Back/forward and hand-edited fragments drive the view.
+  useEffect(() => {
+    const onHashChange = () => {
+      const { view, query } = parseHash(window.location.hash);
+      setCurrentView((prev) => {
+        if (prev === view) return prev;
+        const meta = viewMeta(view);
+        setViewTitle(meta.title);
+        setViewCrumb(meta.crumb);
+        return view;
+      });
+      if (view === 'history') {
+        setHistoryNav((n) => n + 1);
+        setHistoryRoute({
+          q: query.get('q') || '',
+          status: query.get('status') || '',
+          since: query.get('since') || '',
+          until: query.get('until') || '',
+          page: Math.max(0, parseInt(query.get('page') || '0', 10) || 0),
+        });
+      }
     };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
 
-    if (routerMeta[view]) {
-      setViewTitle(routerMeta[view].title);
-      setViewCrumb(routerMeta[view].crumb);
-    }
+  const setHistoryFilters = (next: { q: string; status: string; since: string; until: string; page: number }) => {
+    setHistoryRoute(next);
+    writeQuery({
+      q: next.q,
+      status: next.status,
+      since: next.since,
+      until: next.until,
+      page: next.page > 0 ? next.page : undefined,
+    });
   };
 
-  const handleSetToken = () => {
-    const tok = prompt('访问令牌（留空 = 清除）', token);
-    if (tok !== null) {
-      const nextToken = tok.trim();
-      if (nextToken) setToken(nextToken);
-      else clearSession();
-      refreshTopbar();
-    }
-  };
+  // Token entry point (the key button in the header). submitToken owns the
+  // write/clear decision; leaving the field empty clears the session.
+  const handleSetToken = () => openTokenRequest('manual');
 
+  // Readiness of the *file* transcription upstream only. The realtime route
+  // has its own provider (realtime_asr_provider, default realtime_mock) and is
+  // not covered by api_key_set.
   const isReady = !!(config && config.api_key_set) || footStatus.status === 'ok';
 
   return (
@@ -175,6 +249,9 @@ export default function App() {
                       <li>2 测试连接</li>
                       <li>3 拖入音频开始转写</li>
                     </ol>
+                    <span className="text-[12px] text-muted-2">
+                      以上只覆盖文件转写；实时录音默认是演示 provider（不调用真实 ASR），要在配置页换成 realtime_ws / realtime_http 才走真实服务。
+                    </span>
                     <span className="flex-1" />
                     <button onClick={() => handleViewChange('config')} className="primary text-[12px] py-1.5 px-3">去配置</button>
                   </div>
@@ -190,7 +267,42 @@ export default function App() {
                       <button onClick={() => handleViewChange('config')} className="text-[12px] py-1 px-2.5">去服务配置</button>
                     </div>
                   )}
-                  <Dropzone onFileSelect={handleFileSelect} disabled={taskStatus === 'uploading' || taskStatus === 'processing'} />
+                  {taskError && (
+                    <div role="alert" className="flex items-start gap-2.5 rounded-[10px] border border-err/30 bg-err-soft px-4 py-3 mb-4 text-sm text-err">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium break-words">{taskError}</div>
+                        {taskErrorHint && (
+                          <div className="text-[12px] text-muted mt-1 break-words">{taskErrorHint}</div>
+                        )}
+                        {taskErrorCode && (
+                          <div className="font-mono text-meta text-muted-2 mt-1">错误码 {taskErrorCode}</div>
+                        )}
+                      </div>
+                      {canRetryTask && (
+                        <button
+                          onClick={() => void retryTask()}
+                          className="text-[12px] py-1 px-2.5 shrink-0"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>重试</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={clearTaskError}
+                        aria-label="关闭错误提示"
+                        className="ghost w-7 h-7 p-0 shrink-0"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                  <Dropzone
+                    onFileSelect={handleFileSelect}
+                    disabled={taskStatus === 'uploading' || taskStatus === 'processing'}
+                    maxBytes={config?.max_upload_bytes}
+                    allowedExts={config?.allowed_exts}
+                  />
 
                   {/* Real upload progress */}
                   {uploadProgress >= 0 && (
@@ -210,17 +322,17 @@ export default function App() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-5">
                       <label className="field">
                         <span>模型名称</span>
-                        <input type="text" value={ovModel} onChange={e=>setOvModel(e.target.value)} placeholder="qwen3-asr-flash" />
+                        <input type="text" value={ovModel} onChange={e=>setOvModel(e.target.value)} placeholder={serverDefaultText(config?.model)} />
                       </label>
                       <label className="field">
                         <span>识别语言</span>
-                        <input type="text" value={ovLanguage} onChange={e=>setOvLanguage(e.target.value)} placeholder="zh / en / 留空自动" />
+                        <input type="text" value={ovLanguage} onChange={e=>setOvLanguage(e.target.value)} placeholder={serverDefaultText(config?.language)} />
                         <span className="field-hint">留空自动判断;zh 会按 Chinese 传给模型</span>
                       </label>
                       <label className="field">
                         <span>切分策略</span>
                         <select value={ovSplit} onChange={e=>setOvSplit(e.target.value)}>
-                          <option value="">默认</option>
+                          <option value="">默认（服务端 {serverDefaultText(config?.split_strategy)}）</option>
                           <option value="fixed">fixed（固定时长）</option>
                           <option value="silence">silence（按静音）</option>
                           <option value="overlap">overlap（重叠切分）</option>
@@ -228,19 +340,19 @@ export default function App() {
                       </label>
                       <label className="field">
                         <span>每片时长（秒）</span>
-                        <input type="number" value={ovChunk} onChange={e=>setOvChunk(e.target.value)} placeholder="30" min="5" step="5" />
+                        <input type="number" value={ovChunk} onChange={e=>setOvChunk(e.target.value)} placeholder={serverDefaultText(config?.chunk_seconds)} min="5" step="5" />
                       </label>
                       <label className="field">
                         <span>重叠时长（秒）</span>
-                        <input type="number" value={ovOverlap} onChange={e=>setOvOverlap(e.target.value)} placeholder="2" min="0" step="0.5" />
+                        <input type="number" value={ovOverlap} onChange={e=>setOvOverlap(e.target.value)} placeholder={serverDefaultText(config?.overlap_seconds)} min="0" step="0.5" />
                       </label>
                       <label className="field">
                         <span>热词</span>
-                        <input type="text" value={ovHotwords} onChange={e=>setOvHotwords(e.target.value)} placeholder="逗号分隔的专有名词" />
+                        <input type="text" value={ovHotwords} onChange={e=>setOvHotwords(e.target.value)} placeholder={serverDefaultText(config?.hotwords) === '服务端默认' ? '逗号分隔的专有名词' : serverDefaultText(config?.hotwords)} />
                       </label>
                       <label className="field">
                         <span>上下文提示</span>
-                        <input type="text" value={ovHints} onChange={e=>setOvHints(e.target.value)} placeholder="告诉模型这段音频的背景" />
+                        <input type="text" value={ovHints} onChange={e=>setOvHints(e.target.value)} placeholder={serverDefaultText(config?.prompt_hints) === '服务端默认' ? '告诉模型这段音频的背景' : serverDefaultText(config?.prompt_hints)} />
                       </label>
 
                       <label className="field check">
@@ -252,7 +364,7 @@ export default function App() {
                             setOvTimestampsTouched(true);
                           }}
                         />
-                        <span>请求逐字时间戳（字幕更精准）</span>
+                        <span>请求逐字时间戳（字幕更精准）{config?.timestamps === false ? ' · 服务端默认关闭' : ''}</span>
                       </label>
                     </div>
                   </Accordion>
@@ -293,7 +405,24 @@ export default function App() {
                         <div style={{ width: `${taskProgress * 100}%` }} />
                       </div>
 
-                      <button onClick={() => void resetTask()}>
+                      {/* 中止 and 清空 are different requests. Cancelling stops
+                          the work but keeps the segments already recognized;
+                          clearing only takes this workspace off the screen and
+                          lets the task finish in the background, where it shows
+                          up in 历史转写记录. */}
+                      {(taskStatus === 'processing' || taskStatus === 'uploading' || taskStatus === 'queued') && (
+                        <button
+                          onClick={() => void abortTask()}
+                          title="停止识别，保留已识别出的分片"
+                        >
+                          <CircleStop className="w-3.5 h-3.5" />
+                          <span>中止</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => void resetTask()}
+                        title="清空当前任务与结果"
+                      >
                         <Trash2 className="w-3.5 h-3.5" />
                         <span>清空</span>
                       </button>
@@ -310,14 +439,23 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* Segmented pane controllers */}
-                    <div className="tabs-container" role="tablist">
+                    {/* Segmented pane controllers. Roving tabindex: the group is
+                        one stop in the tab order and the arrows move inside it,
+                        which is how a keyboard user switches panes at all. */}
+                    <div className="tabs-container" role="tablist" aria-label="识别结果视图"
+                      onKeyDown={(e) => {
+                        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                        e.preventDefault();
+                        setActivePane(e.key === 'ArrowLeft' ? 'final' : 'live');
+                      }}>
                       {([['live', `分片明细 (${segments.length})`], ['final', '完整文本']] as const).map(([pane, label]) => (
                         <div
                           key={pane}
+                          id={`pane-tab-${pane}`}
                           role="tab"
-                          tabIndex={0}
+                          tabIndex={activePane === pane ? 0 : -1}
                           aria-selected={activePane === pane}
+                          aria-controls={`pane-${pane}`}
                           onClick={() => setActivePane(pane)}
                           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setActivePane(pane); } }}
                           className={`tab outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded-t-md ${activePane === pane ? 'active' : ''}`}
@@ -330,7 +468,7 @@ export default function App() {
                     {/* Sub-panels display */}
                     <div className="mt-4">
                       {activePane === 'live' ? (
-                        <div className="pane">
+                        <div id="pane-live" role="tabpanel" aria-labelledby="pane-tab-live" tabIndex={0} className="pane outline-none">
                           <SegmentList
                             segments={segments}
                             taskId={taskId}
@@ -340,7 +478,7 @@ export default function App() {
                           />
                           {segments.length === 0 && (
                             <div className="empty flex flex-col items-center justify-center py-14 border border-dashed border-border rounded-lg">
-                              <span className="ico text-3xl">⏳</span>
+                              <Hourglass className="w-7 h-7 text-muted-2" aria-hidden="true" />
                               <p className="text-muted text-xs mt-3">
                                 正在切分音频，马上开始逐片识别…
                               </p>
@@ -348,7 +486,7 @@ export default function App() {
                           )}
                         </div>
                       ) : (
-                        <div className="pane flex flex-col gap-4">
+                        <div id="pane-final" role="tabpanel" aria-labelledby="pane-tab-final" tabIndex={0} className="pane flex flex-col gap-4 outline-none">
                           <p className="hint">
                             {segmentsEdited
                               ? '已应用分片校对，SRT/VTT 按校对后的文本导出。'
@@ -413,6 +551,25 @@ export default function App() {
                   authedFetch={authedFetch}
                   sseUrl={sseUrl}
                   realtimeProvider={config?.realtime_asr_provider}
+                  maxSessions={config?.realtime_max_sessions}
+                />
+              </motion.div>
+            )}
+
+            {/* 2b. API DEBUG ROUTE */}
+            {currentView === 'api-debug' && (
+              <motion.div
+                key="api-debug"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+              >
+                <RealtimeApiDebugView
+                  authedFetch={authedFetch}
+                  sseUrl={sseUrl}
+                  maxChunkBytes={config?.realtime_max_chunk_bytes}
+                  maxSessionBytes={config?.realtime_max_session_bytes}
+                  maxSessionSeconds={config?.realtime_max_session_seconds}
                 />
               </motion.div>
             )}
@@ -450,7 +607,10 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
               >
                 <HistoryView
+                  key={historyNav}
                   authedFetch={authedFetch}
+                  filters={historyRoute}
+                  onFiltersChange={setHistoryFilters}
                   onLoadTask={async (tid) => { if (await loadHistoricalTask(tid)) handleViewChange('tasks'); }}
                   onGoToTasks={() => handleViewChange('tasks')}
                 />
@@ -472,6 +632,18 @@ export default function App() {
           </AnimatePresence>
         </div>
       </main>
+
+      {tokenRequest && (
+        <TokenDialog
+          // A dialog opened for a different reason is a different question, so
+          // it gets a fresh mount rather than the previous one's half-typed value.
+          key={tokenRequest.reason}
+          request={tokenRequest}
+          currentToken={token}
+          onSubmit={(value) => void submitToken(value)}
+          onCancel={cancelTokenRequest}
+        />
+      )}
     </div>
   );
 }

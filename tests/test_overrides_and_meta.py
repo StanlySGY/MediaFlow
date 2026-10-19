@@ -227,9 +227,12 @@ async def test_models_strips_realtime_stream_path(client):
             200, json={"model_path": "/data/models/Qwen3-ASR-1.7B"},
         ),
     )
-    r = await client.get(
+    from app.config import get_settings
+
+    get_settings().realtime_asr_base_url = "wss://example.test/v1/asr/stream"
+    r = await client.post(
         "/asr/models",
-        params={"base_url": "wss://example.test/v1/asr/stream"},
+        json={"base_url": "wss://example.test/v1/asr/stream", "target": "realtime"},
     )
     assert r.status_code == 200
     assert r.json()["models"] == ["Qwen3-ASR-1.7B"]

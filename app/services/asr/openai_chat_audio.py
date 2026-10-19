@@ -203,7 +203,7 @@ def _parse_response(payload: dict) -> ASRResult:
                         ))
                 i += 1
 
-    return ASRResult(text=text, language=None, duration=None, words=words, raw=payload)
+    return ASRResult(text=text, language=language, duration=None, words=words, raw=payload)
 
 
 _: type[ASRProvider] = OpenAIChatAudioProvider

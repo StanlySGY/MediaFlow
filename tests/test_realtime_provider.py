@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-
 import pytest
+import httpx
+import respx
 
 from app.models.schemas import RealtimeAudioChunk, RealtimeSessionCreate
+from app.services.asr.realtime_base import RealtimeASRError
+from app.services.asr.realtime_http import RealtimeHTTPProvider
 from app.services.asr.realtime_mock import RealtimeMockProvider
 
 
@@ -47,6 +50,25 @@ async def test_mock_rejects_push_after_finish():
         from app.services.asr.realtime_base import RealtimeASRError
         with pytest.raises(RealtimeASRError):
             await p.push_audio(RealtimeAudioChunk(seq=1, audio="AAAA"))
+
+
+@respx.mock
+async def test_http_finish_propagates_downstream_end_failure():
+    respx.post("https://example.test/session").mock(
+        return_value=httpx.Response(200, json={"session_id": "down-1"})
+    )
+    end_route = respx.post("https://example.test/session/down-1/end").mock(
+        return_value=httpx.Response(503, text="overloaded")
+    )
+
+    provider = RealtimeHTTPProvider(base_url="https://example.test")
+    provider.bind_session("local-1")
+    async with provider:
+        await provider.start(RealtimeSessionCreate())
+        with pytest.raises(RealtimeASRError, match="downstream /end failed 503"):
+            await provider.finish()
+
+    assert end_route.called
 
 
 def test_realtime_registry_resolves_builtin_providers():

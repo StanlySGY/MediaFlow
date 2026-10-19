@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown } from 'lucide-react';
 
@@ -9,12 +9,16 @@ interface AccordionProps {
 
 export const Accordion: React.FC<AccordionProps> = ({ title, children }) => {
   const [isOpen, setIsOpen] = useState(false);
+  // The trigger has to name the region it opens: without aria-controls a
+  // screen reader announces expanded with nowhere to move the content.
+  const panelId = useId();
 
   return (
     <div className={`border rounded-lg bg-white overflow-hidden transition-colors duration-150 ${isOpen ? 'border-accent/30' : 'border-border'}`}>
       <button
         onClick={() => setIsOpen(!isOpen)}
         aria-expanded={isOpen}
+        aria-controls={panelId}
         className="w-full flex items-center justify-between px-5 py-3.5 cursor-pointer text-left text-fg-dim hover:text-fg hover:bg-surface-2 select-none transition-colors border-none bg-transparent"
       >
         <span className="text-[13px] font-semibold">{title}</span>
@@ -31,7 +35,7 @@ export const Accordion: React.FC<AccordionProps> = ({ title, children }) => {
             exit={{ height: 0 }}
             transition={{ duration: 0.25, ease: 'easeInOut' }}
           >
-            <div className="border-t border-border bg-surface-2">
+            <div id={panelId} role="region" aria-label={title} className="border-t border-border bg-surface-2">
               {children}
             </div>
           </motion.div>

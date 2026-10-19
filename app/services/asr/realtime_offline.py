@@ -85,9 +85,28 @@ class RealtimeOfflineProvider:
             raise RealtimeASRError("session already finished")
         if chunk.audio:
             try:
-                self._audio.extend(base64.b64decode(chunk.audio, validate=True))
+                decoded = base64.b64decode(chunk.audio, validate=True)
             except Exception as e:
                 raise RealtimeASRError(f"invalid base64 audio: {e}") from e
+            if len(self._audio) + len(decoded) > self._settings.realtime_max_session_bytes:
+                raise RealtimeASRError(
+                    f"累计音频已超过单次上限（{self._settings.realtime_max_session_bytes} bytes）",
+                    code="resource_limit",
+                    hint="本次录音已达到资源上限，请重新开始",
+                    retryable=False,
+                )
+            self._audio.extend(decoded)
+        if (
+            self._started_at
+            and time.perf_counter() - self._started_at
+            > self._settings.realtime_max_session_seconds
+        ):
+            raise RealtimeASRError(
+                f"录音时长已达上限（{self._settings.realtime_max_session_seconds} 秒）",
+                code="resource_limit",
+                hint="本次录音已达到资源上限，请重新开始",
+                retryable=False,
+            )
         if chunk.format and not self._chunk_format:
             self._chunk_format = chunk.format
         if chunk.sample_rate:

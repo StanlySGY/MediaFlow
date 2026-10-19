@@ -35,6 +35,9 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+      - name: Run Ruff
+        run: ruff check app asr-deploy-code
+
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -57,6 +60,10 @@ jobs:
 
       - name: Run tests
         run: npm test
+        working-directory: frontend
+
+      - name: Lint
+        run: npm run lint
         working-directory: frontend
 
   docker:

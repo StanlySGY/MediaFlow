@@ -3,6 +3,7 @@ import type { ASRSegment, StandardASRStreamEvent } from '../types';
 import { buildSrt, buildVtt } from '../lib/subtitle';
 import { downloadFile, formatDur } from '../lib/download';
 import { errorMessage } from '../lib/errors';
+import { rejectUploadFile, type UploadLimits } from '../lib/uploadPreflight';
 
 type AuthedFetch = (url: string, opts?: RequestInit) => Promise<Response>;
 type SseUrl = (path: string) => string;
@@ -15,9 +16,16 @@ type RawTaskInfo = {
   progress?: number;
   total_segments?: number;
   finished_segments?: number;
+  // The backend classifies every failure into error / error_code / hint /
+  // retryable (see TaskManager._failure_protocol). Reading only status leaves
+  // the page saying "失败" with no reason and no way to tell a quota rejection
+  // from a one-off upstream blip that a resend would fix.
+  error?: string | null;
+  error_code?: string | null;
+  hint?: string | null;
+  retryable?: boolean | null;
 };
-type RawTaskResult = {
-  status?: string;
+type RawTaskResult = RawTaskInfo & {
   duration?: number;
   text?: string;
   segments?: RawSeg[];
@@ -49,7 +57,7 @@ const STATUS_LABEL: { [k: string]: string } = {
 // Owns the whole file-transcription lifecycle: upload (XHR for progress), SSE segment
 // stream, status polling, result fetch, local-media proofreading and subtitle export.
 // App only wires the returned state/handlers into the JSX.
-export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
+export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: UploadLimits = {}) {
   const [segments, setSegments] = useState<ASRSegment[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<string>('—');
@@ -70,6 +78,22 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
   const [ovTimestamps, setOvTimestamps] = useState(true);
   const [ovTimestampsTouched, setOvTimestampsTouched] = useState(false);
 
+  // Inline error channel replacing window.alert(). The alerts froze the tab and
+  // vanished the moment they were dismissed, so a failed upload left the page
+  // looking idle with the reason nowhere to be read.
+  const [taskError, setTaskError] = useState<string | null>(null);
+  // Whether the failure the banner is describing can be fixed by resending the
+  // same file — the server already decided this when it classified the error.
+  const [taskRetryable, setTaskRetryable] = useState(false);
+  // The server's own advice about the failure ("取消后再删除", "请重新提交该
+  // 文件") and the stable code behind it, kept separate from the message so
+  // the banner can show them as their own lines.
+  // A retry is only offered when the failed file is still in this tab — after
+  // a page reload the persisted task id is there but the File object is not.
+  const [hasSubmittableFile, setHasSubmittableFile] = useState(false);
+  const [taskErrorHint, setTaskErrorHint] = useState<string | null>(null);
+  const [taskErrorCode, setTaskErrorCode] = useState<string | null>(null);
+
   const [activePane, setActivePane] = useState<'live' | 'final'>('live');
   const [copied, setCopied] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(-1);
@@ -82,6 +106,9 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
   const mediaRef = useRef<HTMLAudioElement & HTMLVideoElement | null>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
   const taskIdRef = useRef<string | null>(null);
+  // The last file handed to the pipeline, kept so a retryable failure can be
+  // resubmitted without asking the user to find the file again.
+  const lastFileRef = useRef<File | null>(null);
   const taskGenerationRef = useRef(0);
   const terminalHandlingRef = useRef<string | null>(null);
 
@@ -100,6 +127,8 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
 
   const clearTaskView = () => {
     stopTaskStream();
+    setTaskRetryable(false);
+    setHasSubmittableFile(false);
     if (xhrRef.current) {
       xhrRef.current.abort();
       xhrRef.current = null;
@@ -140,6 +169,32 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
     return generation;
   };
 
+  /**
+   * Stop an in-flight task but keep the workspace on screen.
+   *
+   * resetTask() (清空) throws the whole view away, which is not what "stop this
+   * run" means: the segments already recognized are real work, and the user who
+   * cancels a 40-minute file usually wants the first 10 minutes of it. The
+   * server flips the task to cancelled at the next stage boundary, the stream
+   * closes, and the terminal path fills in whatever the pipeline managed to
+   * merge.
+   */
+  const abortTask = async () => {
+    const currentTaskId = taskIdRef.current;
+    if (!currentTaskId) return false;
+    try {
+      const response = await authedFetch(`/asr/task/${currentTaskId}/cancel`, { method: 'POST' });
+      if (!response.ok && response.status !== 404) {
+        setTaskError(`中止任务失败：HTTP ${response.status}`);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      setTaskError(`中止任务失败：${errorMessage(error)}`);
+      return false;
+    }
+  };
+
   const detachTaskView = () => {
     const generation = ++taskGenerationRef.current;
     persistTaskId(null);
@@ -162,8 +217,21 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
   };
 
   const handleFileSelect = async (file: File) => {
+    // Preflight against the limits the server reported, before any bytes go on
+    // the wire: a rejected file used to cost a full upload attempt (a cancelled
+    // task, a progress bar, then a 400/413 arriving after minutes of transfer).
+    // Checked before resetTask so a mistyped pick cannot destroy the task the
+    // user is still looking at.
+    const rejected = rejectUploadFile(file, limits);
+    if (rejected) {
+      setTaskError(rejected);
+      return;
+    }
+
     const generation = await resetTask();
     if (generation !== taskGenerationRef.current) return;
+    lastFileRef.current = file;
+    setHasSubmittableFile(true);
     setTaskStatus('uploading');
     setUploadProgress(0);
 
@@ -229,7 +297,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
       const msg = errorMessage(e);
       if (msg === '已取消') return;
       setTaskStatus('failed');
-      alert('上传音频或发起切分任务失败: ' + msg);
+      setTaskError(`上传失败：${msg}`);
     }
   };
 
@@ -281,6 +349,21 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
     setTaskStatus(status);
     setTaskProgress(status === 'done' ? 1 : fallbackProgress);
     setActivePane('final');
+
+    // A failed or cancelled run still shows whatever the pipeline managed to
+    // merge above; the banner below explains why it stopped and whether a
+    // resend is worth trying.
+    if (status === 'failed' || status === 'cancelled') {
+      setTaskError(result.error || (status === 'cancelled' ? '任务已取消' : '转写失败'));
+      setTaskErrorHint(result.hint || null);
+      setTaskErrorCode(result.error_code || null);
+      setTaskRetryable(result.retryable === true);
+    } else {
+      setTaskError(null);
+      setTaskErrorHint(null);
+      setTaskErrorCode(null);
+      setTaskRetryable(false);
+    }
   };
 
   const markTaskMissing = (id: string, generation: number) => {
@@ -417,7 +500,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
     const generation = detachTaskView();
     if (generation !== taskGenerationRef.current) return false;
     try {
-      const statusResponse = await authedFetch(`/asr/task/${tid}`);
+      const statusResponse = await authedFetch(`/asr/file/${tid}`);
       if (generation !== taskGenerationRef.current) return false;
       if (!statusResponse.ok) throw new Error(`HTTP ${statusResponse.status}`);
       const info = await statusResponse.json() as RawTaskInfo;
@@ -437,7 +520,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
         return true;
       }
 
-      const resultResponse = await authedFetch(`/asr/task/${tid}/result`);
+      const resultResponse = await authedFetch(`/asr/file/${tid}/result`);
       if (generation !== taskGenerationRef.current) return false;
       if (!resultResponse.ok) throw new Error(`HTTP ${resultResponse.status}`);
       const result = await resultResponse.json() as RawTaskResult;
@@ -448,7 +531,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
       applyTaskResult(tid, generation, result, info.progress || 0);
       return true;
     } catch (e) {
-      alert('加载历史记录失败: ' + errorMessage(e));
+      setTaskError(`打开历史记录失败：${errorMessage(e)}`);
       return false;
     }
   };
@@ -465,7 +548,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         if (cancelled || generation !== taskGenerationRef.current) return;
         try {
-          const response = await authedFetch(`/asr/task/${persistedId}`);
+          const response = await authedFetch(`/asr/file/${persistedId}`);
           if (cancelled || generation !== taskGenerationRef.current) return;
           if (response.status === 404) {
             persistTaskId(null);
@@ -514,13 +597,32 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
     try {
       const r = await authedFetch(`/asr/file/${taskId}/subtitle?format=${fmt}`);
       if (!r.ok) {
-        alert(`导出字幕失败: HTTP ${r.status}`);
+        setTaskError(`导出字幕失败：HTTP ${r.status}`);
         return;
       }
       downloadFile(`${taskId}.${fmt}`, await r.text(), mime);
     } catch (e) {
-      alert(`网络异常: ${errorMessage(e)}`);
+      setTaskError(`导出字幕失败：${errorMessage(e)}`);
     }
+  };
+
+  /**
+   * Resend the last submitted file after a failure the server labelled
+   * retryable. Cancelled and permanent failures (bad audio, rejected by the
+   * upstream) are not resent — the server already decided which is which.
+   */
+  const retryTask = async () => {
+    const file = lastFileRef.current;
+    if (!file) return false;
+    await handleFileSelect(file);
+    return true;
+  };
+
+  const clearTaskError = () => {
+    setTaskError(null);
+    setTaskErrorHint(null);
+    setTaskErrorCode(null);
+    setTaskRetryable(false);
   };
 
   const handleCopy = () => {
@@ -535,9 +637,10 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl) {
     ovModel, setOvModel, ovLanguage, setOvLanguage, ovSplit, setOvSplit,
     ovChunk, setOvChunk, ovOverlap, setOvOverlap, ovHotwords, setOvHotwords,
     ovHints, setOvHints, ovTimestamps, setOvTimestamps, ovTimestampsTouched, setOvTimestampsTouched,
-    activePane, setActivePane, copied,
+    activePane, setActivePane, copied, taskError, clearTaskError,
+    taskErrorHint, taskErrorCode, taskRetryable, canRetryTask: taskRetryable && hasSubmittableFile,
     uploadProgress, mediaUrl, mediaIsVideo, segmentsEdited, mediaRef,
-    resetTask, handleSeek, handleEditSegment, handleFileSelect,
+    resetTask, abortTask, retryTask, handleSeek, handleEditSegment, handleFileSelect,
     loadHistoricalTask, statusLabel, downloadSubtitle, handleCopy,
   };
 }

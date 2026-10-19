@@ -36,42 +36,47 @@ describe('useAuth', () => {
     expect(result.current.token).toBe('');
   });
 
-  it('shares one token prompt across concurrent 401 responses', async () => {
+  it('shares one token dialog across concurrent 401 responses', async () => {
     const unauthorized = { status: 401 } as Response;
     const ok = { status: 200, ok: true } as Response;
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(unauthorized)
       .mockResolvedValueOnce(unauthorized)
       .mockResolvedValue(ok);
-    const promptMock = vi.fn(() => 'fresh-token');
+    // No native prompt may be used any more: it blocked the page and showed
+    // the token in an unmasked browser dialog.
+    vi.stubGlobal('prompt', vi.fn(() => { throw new Error('native prompt must not be used'); }));
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('prompt', promptMock);
     const { result } = renderHook(() => useAuth());
+    let first!: Promise<Response>;
+    let second!: Promise<Response>;
 
-    await act(async () => {
-      await Promise.all([
-        result.current.authedFetch('/first'),
-        result.current.authedFetch('/second'),
-      ]);
+    act(() => {
+      first = result.current.authedFetch('/first');
+      second = result.current.authedFetch('/second');
     });
+    await waitFor(() => expect(result.current.tokenRequest).not.toBeNull());
+    expect(result.current.tokenRequest?.reason).toBe('required');
 
-    expect(promptMock).toHaveBeenCalledTimes(1);
+    // One dialog for both failures: resolving it retries both requests.
+    await act(async () => { await result.current.submitToken('fresh-token'); });
+    await act(async () => { await Promise.all([first, second]); });
+
+    expect(result.current.tokenRequest).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(localStorage.getItem('asr_token')).toBe('fresh-token');
     expect(new Headers(fetchMock.mock.calls[2]?.[1]?.headers).get('Authorization')).toBe('Bearer fresh-token');
     expect(new Headers(fetchMock.mock.calls[3]?.[1]?.headers).get('Authorization')).toBe('Bearer fresh-token');
   });
 
-  it('does not prompt again for a later in-flight 401 after cancellation', async () => {
+  it('does not open a second dialog for a later in-flight 401 after cancellation', async () => {
     let resolveSecond!: (response: Response) => void;
     const secondResponse = new Promise<Response>(resolve => { resolveSecond = resolve; });
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ status: 401 } as Response)
       .mockReturnValueOnce(secondResponse)
       .mockResolvedValue({ status: 204, ok: true } as Response);
-    const promptMock = vi.fn(() => null);
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('prompt', promptMock);
     const { result } = renderHook(() => useAuth());
     let firstRequest!: Promise<Response>;
     let secondRequest!: Promise<Response>;
@@ -80,24 +85,27 @@ describe('useAuth', () => {
       firstRequest = result.current.authedFetch('/first');
       secondRequest = result.current.authedFetch('/second');
     });
+    await waitFor(() => expect(result.current.tokenRequest).not.toBeNull());
+    act(() => result.current.cancelTokenRequest());
     await act(async () => { await firstRequest; });
     resolveSecond({ status: 401 } as Response);
     await act(async () => { await secondRequest; });
 
-    expect(promptMock).toHaveBeenCalledTimes(1);
+    expect(result.current.tokenRequest).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[2]?.[0]).toBe('/auth/logout');
   });
 
-  it('clears the browser SSE cookie when a 401 prompt is cancelled', async () => {
+  it('clears the browser SSE cookie when a 401 token dialog is cancelled', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ status: 401 } as Response);
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('prompt', vi.fn(() => null));
     const { result } = renderHook(() => useAuth());
+    let request!: Promise<Response>;
 
-    await act(async () => {
-      await result.current.authedFetch('/protected');
-    });
+    act(() => { request = result.current.authedFetch('/protected'); });
+    await waitFor(() => expect(result.current.tokenRequest).not.toBeNull());
+    act(() => result.current.cancelTokenRequest());
+    await act(async () => { await request; });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[1]).toEqual(['/auth/logout', {
@@ -133,30 +141,52 @@ describe('useAuth', () => {
     expect(promptMock).not.toHaveBeenCalled();
   });
 
-  it('keeps a newer token when it changes while the 401 prompt is pending', async () => {
+  it('retries with a newer token and keeps it when the pending dialog is cancelled', async () => {
     localStorage.setItem('asr_token', 'old-token');
-    let resolvePrompt!: (value: string | null) => void;
-    const pendingPrompt = new Promise<string | null>(resolve => { resolvePrompt = resolve; });
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ status: 401 } as Response)
       .mockResolvedValueOnce({ status: 200, ok: true } as Response);
-    const promptMock = vi.fn(() => pendingPrompt);
     vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('prompt', promptMock);
     const { result } = renderHook(() => useAuth());
     let request!: Promise<Response>;
 
     act(() => { request = result.current.authedFetch('/protected'); });
-    await waitFor(() => expect(promptMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.tokenRequest).not.toBeNull());
     act(() => result.current.setToken('new-token'));
-    await act(async () => {
-      resolvePrompt('prompt-token');
-      await request;
-    });
+    act(() => result.current.cancelTokenRequest());
+    await act(async () => { await request; });
 
+    // The dialog was opened against the old token, so cancelling it must not
+    // log out the session the user already moved on to.
     expect(localStorage.getItem('asr_token')).toBe('new-token');
+    expect(result.current.token).toBe('new-token');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).not.toBe('/auth/logout');
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('Authorization')).toBe('Bearer new-token');
+  });
+
+  it('opening a dialog for an existing one does not stack a second request', async () => {
+    const { result } = renderHook(() => useAuth());
+    act(() => result.current.openTokenRequest('manual'));
+    act(() => result.current.openTokenRequest('required'));
+    expect(result.current.tokenRequest).toEqual({ reason: 'manual' });
+    act(() => result.current.cancelTokenRequest());
+    expect(result.current.tokenRequest).toBeNull();
+  });
+
+  it('submitting an empty token in the dialog ends the session', async () => {
+    const logoutMock = vi.fn().mockResolvedValue({ status: 204, ok: true } as Response);
+    vi.stubGlobal('fetch', logoutMock);
+    localStorage.setItem('asr_token', 'abc');
+    const { result } = renderHook(() => useAuth());
+
+    act(() => result.current.openTokenRequest('manual'));
+    await act(async () => { await result.current.submitToken(''); });
+
+    expect(result.current.tokenRequest).toBeNull();
+    expect(localStorage.getItem('asr_token')).toBeNull();
+    expect(result.current.token).toBe('');
+    expect(logoutMock).toHaveBeenCalledWith('/auth/logout', { method: 'POST', credentials: 'same-origin' });
   });
 
   it('sseUrl keeps the access token out of the EventSource URL', () => {

@@ -178,7 +178,7 @@ class ASRStreamEvent(BaseModel):
         description=(
             "结构化错误代码，仅 type=error 时有值。便于客户端程序化处理。"
             "常见值：invalid_request、unauthorized、session_not_found、session_expired、"
-            "session_limit、provider_unavailable、provider_timeout、provider_rejected、"
+            "session_limit、resource_limit、provider_unavailable、provider_timeout、provider_rejected、"
             "audio_invalid、internal_error、cancelled、interrupted。"
         ),
     )

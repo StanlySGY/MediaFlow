@@ -35,6 +35,22 @@ def secured_client(tmp_path: Path, monkeypatch):
         yield c
 
 
+@pytest.fixture
+def limited_client(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("TEMP_DIR", str(tmp_path / "tmp"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("RUNTIME_CONFIG_PATH", str(tmp_path / "rc.json"))
+    monkeypatch.setenv("REALTIME_ASR_PROVIDER", "realtime_mock")
+    monkeypatch.setenv("REALTIME_MAX_SESSIONS", "1")
+    monkeypatch.setenv("REALTIME_MAX_SESSION_BYTES", "3")
+    monkeypatch.setenv("ACCESS_TOKENS", "")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    from app.main import create_app
+    with TestClient(create_app()) as c:
+        yield c
+
+
 def _apply_utf16_splice(previous: str, delta: dict) -> str:
     encoded = previous.encode("utf-16-le", errors="surrogatepass")
     start = delta["start"] * 2
@@ -54,6 +70,28 @@ def test_create_session_returns_urls(client):
     assert data["events_url"] == f"/asr/realtime/{sid}/events"
     assert data["audio_url"] == f"/asr/realtime/{sid}/audio"
     assert data["end_url"] == f"/asr/realtime/{sid}/end"
+
+
+def test_session_limit_returns_429(limited_client):
+    first = limited_client.post("/asr/realtime/session", json={})
+    assert first.status_code == 200
+    second = limited_client.post("/asr/realtime/session", json={})
+    assert second.status_code == 429
+    assert second.json()["detail"]["code"] == "session_limit"
+
+
+def test_session_resource_limit_returns_413(limited_client):
+    sid = limited_client.post("/asr/realtime/session", json={}).json()["session_id"]
+    assert limited_client.post(
+        f"/asr/realtime/{sid}/audio",
+        json={"seq": 1, "audio": "AAAA"},
+    ).status_code == 200
+    response = limited_client.post(
+        f"/asr/realtime/{sid}/audio",
+        json={"seq": 2, "audio": "AAAA"},
+    )
+    assert response.status_code == 413
+    assert response.json()["detail"]["code"] == "resource_limit"
 
 
 def test_push_audio_ok(client):

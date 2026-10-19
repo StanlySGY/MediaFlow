@@ -20,7 +20,9 @@ export const responseError = async (r: Response): Promise<Error> => {
     } else if (body && typeof body === 'object') {
       const message = typeof body.message === 'string' ? body.message : '';
       const hint = typeof body.hint === 'string' ? body.hint : '';
-      detail = message && hint ? `${message}（${hint}）` : message;
+      // Some backend errors already spell the hint inside the sentence (the
+      // realtime capacity error does), so appending it again reads as a stutter.
+      detail = message && hint && !message.includes(hint) ? `${message}（${hint}）` : message;
     }
   } catch {
     /* not JSON; use the raw body below */

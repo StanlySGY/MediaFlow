@@ -10,7 +10,7 @@
 - 时间轴感知拼接（ASR 返回 word 级时间戳时按重叠中点裁剪；否则最长公共子串去重）
 - SRT / VTT 字幕导出
 - 可插拔 ASR Provider 抽象层（默认 OpenAI 兼容，可扩展 FunASR / Whisper / SenseVoice 等）
-- 可选 Bearer Token 鉴权（同时支持 `?token=` 用于 SSE）
+- 可选 Bearer Token 鉴权（浏览器 SSE 使用短期 HttpOnly cookie，兼容 `?token=`）
 - 失败分片隔离，自动指数退避重试
 - 任务结果持久化到 `outputs/`，进程重启后 `/result` 仍可用
 - Docker 一键部署（内置 ffmpeg）
@@ -26,7 +26,7 @@
 cp .env.example .env
 # 编辑 .env，填入 ASR_API_KEY
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8080
+uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
 需要本机已安装 `ffmpeg` 与 `ffprobe`。访问 `http://localhost:8080/` 打开 Web UI，`/docs` 查看 API。
@@ -40,7 +40,11 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-部署后访问 `http://<服务器IP>:8080/`（端口由 `.env` 的 `PORT` 决定，默认 8080）。
+默认只发布到宿主机 loopback，部署后在本机访问 `http://localhost:8080/`（端口由 `.env` 的 `PORT` 决定，默认 8080）。
+
+已有部署的 `.env` 不会因升级而自动覆盖；从旧版样例升级时，请检查 `HOST` 是否仍为 `0.0.0.0`。仅本机使用时改为 `127.0.0.1`；确需远程访问时，先配置令牌再按下文显式开放。
+
+需要从其他机器访问时，先在 `.env` 设置强随机 `ACCESS_TOKENS`（可用 `openssl rand -hex 32` 生成），再按部署方式显式开放网络：普通 Compose 将端口发布改为 `"8080:8080"`；host-network 部署将 `HOST` 改为 `0.0.0.0`。同时配置宿主机防火墙/安全组。不要在未启用令牌时对外开放服务。
 
 #### 浏览器打不开 / 端口连不上？
 
@@ -53,7 +57,7 @@ docker compose up -d --build
   docker compose -f docker-compose.host.yml up -d --build
   ```
 
-  外网访问仍需宿主机防火墙放行该端口；若无权限，可把 `.env` 的 `PORT` 改成一个已放行的端口。
+  host-network 模式仍遵循 `.env` 的 `HOST`：样例配置只绑定 loopback。远程访问前须设置 `ACCESS_TOKENS`，然后将 `HOST` 改为 `0.0.0.0` 并配置防火墙/安全组。
 
 ### 离线现场部署（air-gapped）
 
@@ -81,7 +85,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 `docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.7.3`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
 
-> `docker-compose.prod.yml` 默认用 `network_mode: host`：MAAS/OpenStack、firewalld 节点会丢弃发往 docker bridge 的流量、令发布端口静默失效，host 网络直接绑宿主端口在各类环境都通。外网访问仍需宿主防火墙/安全组放行 8080（`ufw allow 8080/tcp`、`firewall-cmd`、OpenStack 安全组）。普通主机若想要端口隔离，可把 `network_mode: host` 换回 `ports: ["8080:8080"]`。
+> `docker-compose.prod.yml` 默认用 `network_mode: host` 以绕开部分主机的 Docker bridge 转发问题，但 `.env.example` 将 `HOST` 设为 `127.0.0.1`。远程访问必须先设置 `ACCESS_TOKENS`，再将 `HOST` 改为 `0.0.0.0` 并放行宿主防火墙/安全组。普通 Docker 主机可改用 bridge 网络；默认端口映射应保留 loopback，远程发布也必须先启用令牌。
 
 > ⚠️ **单 worker 运行**：任务状态、SSE 订阅、实时会话都在单进程内存中，请勿给 uvicorn 加 `--workers`，多进程间状态不共享会导致任务与事件错乱。镜像默认即单 worker。
 
@@ -287,19 +291,21 @@ curl -X POST http://localhost:8080/media/concat \
 | POST | `/asr/config` | 更新运行时配置（白名单字段）；自动持久化到 `config/runtime_config.json`，**不需重启** |
 | POST | `/asr/config/reset` | 清除运行时改动，所有白名单字段回到 `.env` 默认 |
 | POST | `/asr/ping` | 用 1s 静音 WAV 试探上游 ASR |
-| POST | `/asr/task` | `multipart/form-data` 上传音频，返回 `task_id`。可选覆盖字段：`model`、`language`、`split_strategy`、`chunk_seconds`、`overlap_seconds`、`hotwords`、`prompt_hints`、`timestamps`，仅作用于本次任务 |
-| GET  | `/asr/task/{task_id}` | 任务状态与进度 |
-| GET  | `/asr/task/{task_id}/stream` | SSE 流式推送每个分片的识别事件（含 `elapsed_ms`） |
-| GET  | `/asr/task/{task_id}/result` | 任务最终 JSON 结果（含 segments、word 时间戳、每片耗时与上游 raw） |
-| GET  | `/asr/task/{task_id}/segments/{segment_id}/raw` | 单个分片的 ASR 原始返回（调试用） |
-| GET  | `/asr/task/{task_id}/subtitle?format=srt\|vtt` | 字幕下载 |
-| POST | `/asr/file` | 标准文件 ASR 入口，上传 WAV/音视频文件并返回 `status_url`、`events_url`、`result_url` |
-| GET  | `/asr/file/{task_id}/events` | 标准文件 ASR SSE 流式结果（内部复用 `/asr/task/{task_id}/stream`） |
-| GET  | `/asr/file/{task_id}/result` | 标准文件 ASR 最终 JSON 结果 |
+| POST | `/asr/file` | **标准文件 ASR 入口**：`multipart/form-data` 上传 WAV/音视频文件，返回 `task_id` 与 `status_url`、`events_url`、`result_url`（调用方不必自己拼 URL）。可选覆盖字段：`model`、`language`、`split_strategy`、`chunk_seconds`、`overlap_seconds`、`hotwords`、`prompt_hints`、`timestamps`，仅作用于本次任务 |
+| GET  | `/asr/file/{task_id}` | 任务状态与进度 |
+| GET  | `/asr/file/{task_id}/events` | SSE 流式推送每个分片的识别事件（含 `elapsed_ms`） |
+| GET  | `/asr/file/{task_id}/result` | 任务最终 JSON 结果（含 segments、word 时间戳、每片耗时与上游 raw） |
+| GET  | `/asr/file/{task_id}/subtitle?format=srt\|vtt` | 字幕下载 |
+| POST | `/asr/task` | 已废弃：与 `POST /asr/file` 是同一个任务，只是不返回 `*_url` 字段。新调用方请用 `/asr/file` |
+| GET  | `/asr/task/{task_id}` | 已废弃：同 `GET /asr/file/{task_id}` |
+| GET  | `/asr/task/{task_id}/stream` | 已废弃：同 `GET /asr/file/{task_id}/events` |
+| GET  | `/asr/task/{task_id}/result` | 已废弃：同 `GET /asr/file/{task_id}/result` |
+| GET  | `/asr/task/{task_id}/subtitle?format=srt\|vtt` | 已废弃：同 `GET /asr/file/{task_id}/subtitle` |
+| GET  | `/asr/task/{task_id}/segments/{segment_id}/raw` | 单个分片的 ASR 原始返回（调试用）。**只有 `/task` 拼写**，`/asr/file` 侧无对应路径 |
 | GET  | `/asr/tasks` | 历史任务。查询参数：`q`、`status`（queued/processing/done/failed/cancelled）、`since`、`until`（unix 秒）、`offset`、`limit` |
-| POST | `/asr/task/{task_id}/cancel` | 取消尚未完成的文件任务（阶段之间生效，不自动续跑） |
-| DELETE | `/asr/task/{task_id}` | 删除已结束的历史任务。进行中返回 409 |
-| GET  | `/metrics` | Prometheus 文本指标（无需令牌） |
+| POST | `/asr/task/{task_id}/cancel` | 取消尚未完成的文件任务（阶段之间生效，不自动续跑）。**只有 `/task` 拼写** |
+| DELETE | `/asr/task/{task_id}` | 删除已结束的历史任务。进行中返回 409。**只有 `/task` 拼写** |
+| GET  | `/metrics` | Prometheus 文本指标（启用 `ACCESS_TOKENS` 时需令牌） |
 | POST | `/asr/realtime/session` | 创建实时会话（body：`RealtimeSessionCreate`） |
 | GET  | `/asr/realtime/sessions` | 当前活跃会话与可用 realtime providers |
 | GET  | `/asr/realtime/{session_id}` | 单个会话状态 |
@@ -310,7 +316,7 @@ curl -X POST http://localhost:8080/media/concat \
 | POST | `/media/concat` | `multipart/form-data` 上传 ≥2 个**同格式**音/视频文件，按上传顺序无损拼接（`-c copy`），返回合并文件；混格式 / 单文件 → 400 |
 | GET  | `/health` | 健康检查 |
 
-> 启用鉴权时（`ACCESS_TOKENS=...`），所有 `/asr/*`、`/media/*` 请求需附带 `Authorization: Bearer <token>`；SSE 用 `?token=<token>` 查询串。`/`、`/auth/info`、`/health` 不受影响。
+> 启用鉴权时（`ACCESS_TOKENS=...`），普通 `/asr/*`、`/media/*`、`/metrics` 请求需附带 `Authorization: Bearer <token>`。成功请求会签发短期 HttpOnly cookie，浏览器 `EventSource` 直接连接 SSE 地址即可，不要把长期 token 放入 URL。命令行客户端仍兼容 `?token=<token>`，但查询串可能进入访问日志。`/`、`/auth/info`、`/health` 不受影响。
 
 ### 标准文件转写
 
@@ -366,8 +372,16 @@ curl http://localhost:8080/asr/file/ab12.../result
 | `ASR_CONCURRENCY` | 并发分片数 | `4` |
 | `ASR_MAX_RETRIES` | 单分片最大重试次数 | `3` |
 | `MAX_UPLOAD_BYTES` | 单次上传上限 | 2 GiB |
+| `TASK_TTL_SECONDS` | 内存中任务状态的保留时长 | 3600 |
+| `OUTPUT_TTL_SECONDS` | 已结束任务的产物（音频/结果/字幕）保留时长，历史记录页按此说明展示 | 7 天 |
 | `REALTIME_ASR_PROVIDER` | 实时后端：`realtime_mock` / `realtime_http` / `realtime_ws` / `realtime_offline` | `realtime_mock` |
-| `ACCESS_TOKENS` | 逗号分隔的访问令牌，空 = 关闭鉴权 | *(空)* |
+| `REALTIME_MAX_SESSIONS` | 同时进行的实时会话上限（按所有客户端合计计数，超了返回 429） | 4 |
+| `REALTIME_MAX_CHUNK_BYTES` | 单个实时音频块上限 | 1 MiB |
+| `REALTIME_MAX_SESSION_BYTES` | 单个实时录音的累计字节上限 | 100 MiB |
+| `REALTIME_MAX_SESSION_SECONDS` | 单个实时录音的时长上限 | 3600 |
+| `ACCESS_TOKENS` | 逗号分隔的访问令牌；远程开放服务前必须设置 | *(空，仅建议 loopback 部署)* |
+
+模型列表探测只会访问当前运行配置或已保存配置档案中的 endpoint。新增自托管 ASR 地址时先保存配置档案，再执行模型探测；已保存的内网地址仍可使用。
 
 ## 目录结构
 

@@ -91,10 +91,20 @@ export interface StandardASRStreamEvent {
 export interface HistoryTask {
   task_id: string;
   status: string;
+  /** What produced this row. A realtime recording has no media file and no
+   *  segments, so it is read in place instead of opened in 文件转写. */
+  kind?: 'file' | 'realtime';
   phase?: string;
   duration?: number;
   text?: string;
   error?: string | null;
+  /** Failure vocabulary the backend already publishes for history rows
+   *  (stream_manager.list_history). error_code is what lets the UI name a
+   *  specific failure — "interrupted" means a service restart cut the task,
+   *  which is not the same message as an upstream ASR error. */
+  error_code?: string | null;
+  hint?: string | null;
+  retryable?: boolean | null;
   original_name?: string;
   created_at?: number;
   finished_segments?: number;
@@ -120,6 +130,8 @@ export interface SystemConfig {
   silence_noise_db?: number;
   silence_min_duration?: number;
   max_upload_bytes?: number;
+  /** Server-side upload gate, reported by GET /asr/config. */
+  allowed_exts?: string[];
   realtime_asr_provider?: string;
   realtime_asr_base_url?: string;
   realtime_asr_api_key?: string;

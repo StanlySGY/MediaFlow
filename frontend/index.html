@@ -5,8 +5,15 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MediaFlow · 音视频处理</title>
+    <!-- First paint before the stylesheet lands: these two values are the
+         --color-bg / --color-fg tokens in src/index.css, kept in sync by hand
+         and by nothing else. The class on <body> was a second, off-system
+         pair of greys (#f3f5f9 / #1c2330) that the token palette ignored. -->
+    <style>
+      html, body { background-color: #f6f7f9; color: #16181d; }
+    </style>
   </head>
-  <body class="bg-[#f3f5f9] text-[#1c2330]">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
