@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MediaFlow — 长音频切分 · 流式 ASR 转写 · 无损合并</title>
+<meta name="description" content="FastAPI / asyncio / FFmpeg 的音视频处理工具箱：长音频切分、OpenAI 兼容 ASR 流式转写、SRT/VTT 字幕导出、实时识别、无损音视频合并。不含 ASR 模型，识别由你的上游服务完成。">
+<style>
+:root{
+  --bg:#f7f7f8; --panel:#fff; --ink:#1c1f23; --muted:#5b636c; --line:#e2e4e8;
+  --accent:#2f6feb;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){ --bg:#111315; --panel:#171a1d; --ink:#e8eaed; --muted:#9aa3ad; --line:#282c31; --accent:#6ea0ff; }
+}
+:root[data-theme="dark"]{ --bg:#111315; --panel:#171a1d; --ink:#e8eaed; --muted:#9aa3ad; --line:#282c31; --accent:#6ea0ff; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:32px 16px 56px}
+h1{font-size:30px;margin:0 0 6px;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:0 0 18px}
+.badges{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 24px}
+.shots{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:0 0 14px}
+.shots figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;overflow:hidden}
+.shots img{display:block;width:100%;height:auto;border-radius:6px}
+figcaption{color:var(--muted);font-size:13px;margin-top:8px}
+.shots.wide{grid-template-columns:repeat(3,1fr)}
+h2{font-size:19px;margin:34px 0 10px}
+ul{margin:0 0 12px;padding-left:20px}
+li{margin:3px 0}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow:auto;font-size:13px;line-height:1.6}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.note{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:12px 14px;color:var(--muted);margin:14px 0}
+a{color:var(--accent)}
+table{border-collapse:collapse;width:100%;font-size:14px;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
+th{background:transparent;color:var(--muted);font-weight:600}
+footer{color:var(--muted);font-size:13px;margin-top:36px}
+@media (max-width:720px){ .shots,.shots.wide{grid-template-columns:1fr} h1{font-size:24px} }
+</style>
+</head>
+<body>
+<main>
+  <h1>MediaFlow</h1>
+  <p class="sub">长音频切分 · OpenAI 兼容 ASR 流式转写 · 无损音视频合并。FastAPI / asyncio / FFmpeg + React 控制台。</p>
+  <div class="badges">
+    <a href="https://github.com/StanlySGY/MediaFlow/actions/workflows/ci.yml"><img src="https://github.com/StanlySGY/MediaFlow/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/StanlySGY/MediaFlow/releases"><img src="https://img.shields.io/github/v/release/StanlySGY/MediaFlow" alt="Release"></a>
+    <a href="https://github.com/StanlySGY/MediaFlow/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT"></a>
+  </div>
+
+  <div class="shots">
+    <figure><img src="screenshots/file-flow.gif" alt="文件转写：上传 → 分片进度 → 双击校对 → 字幕导出"><figcaption>文件转写：上传 → 分片进度 → 双击校对 → 字幕导出</figcaption></figure>
+    <figure><img src="screenshots/realtime.gif" alt="实时识别：partial 流式增长 → final"><figcaption>实时识别：partial 流式增长 → final</figcaption></figure>
+  </div>
+  <div class="shots wide">
+    <figure><img src="screenshots/monitor.png" alt="服务配置与上游连通测试"><figcaption>服务配置 / 上游连通测试</figcaption></figure>
+    <figure><img src="screenshots/history.png" alt="历史任务"><figcaption>历史任务</figcaption></figure>
+    <figure><img src="screenshots/raw-response.png" alt="单个分片的上游原始响应"><figcaption>单个分片的上游原始响应</figcaption></figure>
+  </div>
+  <p class="sub">截图中的 ASR 地址已改写为 <code>asr.internal</code>，不含真实内网 IP。</p>
+
+  <div class="note"><strong>本项目不含任何 ASR 模型。</strong>MediaFlow 只发 HTTP 请求，识别质量等于你的上游模型质量；diarization 同样由上游负责。</div>
+
+  <h2>30 秒接起来</h2>
+  <pre><code>cp .env.example .env            # 填 ASR_API_KEY
+pip install -r requirements.txt
+uvicorn app.main:app --host 127.0.0.1 --port 8080</code></pre>
+  <p>Docker：<code>docker compose up -d --build</code>（默认只发布 loopback；远程访问先设 <code>ACCESS_TOKENS</code>）。</p>
+
+  <h2>已有上游，改 4 行 .env</h2>
+  <table>
+    <tr><th>上游</th><th>ASR_PROVIDER</th><th>Word 时间戳</th></tr>
+    <tr><td>faster-whisper OpenAI 网关 / OpenAI 官方</td><td><code>openai_compat</code></td><td><code>ASR_TIMESTAMPS=true</code></td></tr>
+    <tr><td>FunASR <code>funasr-server</code></td><td><code>openai_compat</code></td><td><code>ASR_TIMESTAMPS=false</code>（该网关无 <code>timestamp_granularities</code>）</td></tr>
+    <tr><td>vLLM 服务 Qwen3-ASR</td><td><code>openai_chat_audio</code></td><td>仅当上游额外返回 <code>segments[]</code></td></tr>
+  </table>
+
+  <h2>能力</h2>
+  <ul>
+    <li>多格式输入（mp3/wav/m4a/flac/aac/ogg/pcm/mp4/mov/mkv），FFmpeg 归一化为 16k mono <code>pcm_s16le</code></li>
+    <li>三种切分策略：<code>fixed</code> / <code>silence</code> / <code>overlap</code></li>
+    <li>分片并发调用 ASR（信号量限流）+ 指数退避重试 + 失败分片隔离</li>
+    <li>SSE 推送每个分片结果，多订阅 + 历史回放，刷新页面不丢消息</li>
+    <li>时间轴感知拼接；无 word 时间戳时回落最长公共子串去重</li>
+    <li>SRT / VTT 字幕导出，前端双击校对后可导出精修字幕</li>
+    <li>实时 pipeline：<code>realtime_mock</code> / <code>realtime_http</code> / <code>realtime_ws</code> / <code>realtime_offline</code></li>
+    <li>无损合并：<code>POST /media/concat</code>，concat demuxer + <code>-c copy</code>，不转码</li>
+    <li>可选 Bearer Token 鉴权；SSE 用短期 HttpOnly cookie</li>
+    <li>单 worker 运行：任务状态 / SSE 订阅 / 实时会话都在进程内存</li>
+  </ul>
+
+  <p><a href="https://github.com/StanlySGY/MediaFlow">仓库与完整文档（中文）</a> · <a href="https://github.com/StanlySGY/MediaFlow/blob/main/README.en.md">English README</a> · <a href="https://github.com/StanlySGY/MediaFlow/blob/main/CHANGELOG.md">CHANGELOG</a></p>
+
+  <footer>MIT © 2026 shigy</footer>
+</main>
+</body>
+</html>
