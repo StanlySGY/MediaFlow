@@ -150,6 +150,50 @@ def test_checkpoint_write_replaces_json_atomically(settings: Settings, monkeypat
     assert list(state_path.parent.glob("*.tmp")) == []
 
 
+def test_recovery_does_not_overwrite_state_when_read_fails(settings: Settings, monkeypatch):
+    state_dir = settings.output_dir / "state"
+    state_dir.mkdir(parents=True)
+    path = state_dir / "unreadable-task.json"
+    original = '{"task_id":"unreadable-task","status":"transcribing"}'
+    path.write_text(original, encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def fail_for_state_file(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("temporary read failure")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_for_state_file)
+    TaskManager(settings)
+    monkeypatch.setattr(Path, "read_text", original_read_text)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+async def test_pipeline_directory_creation_failure_is_persisted(settings: Settings, monkeypatch):
+    manager = TaskManager(settings)
+    task = _Task("mkdir-failure", settings)
+    task.original_name = "source.wav"
+    manager._tasks[task.info.task_id] = task
+    source = settings.temp_dir / "source.wav"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"audio")
+    original_mkdir = Path.mkdir
+    work_dir = settings.temp_dir / task.info.task_id
+
+    def fail_for_work_dir(self, *args, **kwargs):
+        if self == work_dir:
+            raise PermissionError("temporary directory creation failure")
+        return original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_for_work_dir)
+    await manager._run(task.info.task_id, source, "source.wav")
+
+    assert task.info.status == TaskStatus.failed
+    assert task.done.is_set()
+    assert task.result.error
+    assert (settings.output_dir / f"{task.info.task_id}.json").is_file()
+
 async def test_eviction_keeps_inflight_tasks(settings: Settings):
     mgr = TaskManager(settings)
     # 3 completed + 1 in-flight; max_tasks_in_memory=3 → 1 completed should be evicted.

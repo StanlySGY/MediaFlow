@@ -68,7 +68,41 @@ async def test_http_finish_propagates_downstream_end_failure():
         with pytest.raises(RealtimeASRError, match="downstream /end failed 503"):
             await provider.finish()
 
-    assert end_route.called
+    assert end_route.call_count == 2  # context teardown retries after the first 503
+
+
+async def test_http_finish_cancellation_is_retryable():
+    import asyncio
+
+    class _Response:
+        status_code = 200
+
+    class _Client:
+        calls = 0
+
+        async def post(self, _path):
+            self.calls += 1
+            if self.calls == 1:
+                started.set()
+                await asyncio.Event().wait()
+            return _Response()
+
+    started = asyncio.Event()
+    client = _Client()
+    provider = RealtimeHTTPProvider(base_url="https://example.test")
+    provider._client = client
+    provider._down_session_id = "down-cancel"
+
+    finishing = asyncio.create_task(provider.finish())
+    await asyncio.wait_for(started.wait(), timeout=2)
+    finishing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.shield(finishing)
+
+    assert provider._finished is False
+    await provider.finish()
+    assert client.calls == 2
+    assert provider._finished is True
 
 
 def test_realtime_registry_resolves_builtin_providers():

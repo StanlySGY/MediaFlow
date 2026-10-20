@@ -436,8 +436,19 @@ class TaskManager:
         recovered = 0
         now = time.time()
         for path in state_dir.glob("*.json"):
-            data = _read_json(path)
-            if data is None:
+            # Distinguish corrupt contents from a transient filesystem error. A
+            # read failure must never be mistaken for malformed JSON and overwritten
+            # with a synthetic interrupted-task record.
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except OSError:
+                log.warning("failed to read task state during recovery: %s", path, exc_info=True)
+                continue
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                data = None
+            if not isinstance(data, dict):
                 # State files are written atomically now, but older versions or
                 # abrupt disk failures may have left malformed JSON. Do not leave
                 # such a task permanently queued with no recoverable result.
@@ -626,9 +637,11 @@ class TaskManager:
         task = self._tasks[task_id]
         s = task.settings
         work_dir = s.temp_dir / task_id
-        work_dir.mkdir(parents=True, exist_ok=True)
 
         try:
+            # Directory creation is part of the pipeline: failures must flow
+            # through the normal terminal-state persistence and completion path.
+            work_dir.mkdir(parents=True, exist_ok=True)
             self._raise_if_cancelled(task)
             task.info.status = TaskStatus.preprocessing
             self._checkpoint(task)

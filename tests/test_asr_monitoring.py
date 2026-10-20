@@ -98,6 +98,41 @@ async def test_monitor_records_failed_asr_call(tmp_path: Path):
     assert "400" in snapshot["calls"][0]["error"]
 
 
+@respx.mock
+async def test_monitor_finishes_cancelled_asr_call(tmp_path: Path):
+    from app.services.asr.openai_compat import OpenAICompatProvider
+    from app.services.asr_monitoring import asr_monitor
+
+    asr_monitor.reset()
+    started = asyncio.Event()
+
+    async def block_request(_request):
+        started.set()
+        await asyncio.Event().wait()
+
+    respx.post("https://example.test/v1/audio/transcriptions").mock(
+        side_effect=block_request
+    )
+    provider = OpenAICompatProvider(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        model="qwen3-asr-flash",
+        max_retries=0,
+    )
+    async with provider:
+        task = asyncio.create_task(provider.transcribe(_wav(tmp_path / "cancel.wav")))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    snapshot = asr_monitor.snapshot()
+    assert snapshot["summary"]["total"] == 1
+    assert snapshot["summary"]["failed"] == 1
+    assert snapshot["calls"][0]["status"] == "error"
+    assert snapshot["calls"][0]["error"] == "ASR call cancelled"
+
+
 async def test_monitor_route_includes_runtime_config(monkeypatch):
     from app.api.routes import get_asr_monitor
     from app.services.asr_monitoring import asr_monitor

@@ -131,6 +131,11 @@ class OpenAICompatProvider:
                     await asyncio.sleep(delay)
 
             raise ASRError(f"transcribe failed after {self._max_retries + 1} attempts: {last_err}")
+        except asyncio.CancelledError:
+            # Cancellation is a BaseException, not an Exception. Close the monitor
+            # row before propagating it so abandoned requests do not stay "running".
+            asr_monitor.finish_call(call_id, ok=False, error="ASR call cancelled")
+            raise
         except Exception as e:
             asr_monitor.finish_call(call_id, ok=False, error=str(e))
             raise

@@ -59,17 +59,29 @@ class RealtimeHTTPProvider:
         return self
 
     async def __aexit__(self, *exc) -> None:
-        if self._reader_task and not self._reader_task.done():
-            self._reader_task.cancel()
-            try:
-                await self._reader_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
-        if not self._finished:
-            self._queue.put_nowait(None)
+        try:
+            # If /end failed or was cancelled, make one best-effort teardown attempt
+            # before closing the HTTP client; otherwise the downstream session can
+            # outlive this gateway session until its own TTL expires.
+            if self._down_session_id and not self._finished:
+                try:
+                    await self.finish()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    log.warning("downstream /end cleanup failed", exc_info=True)
+        finally:
+            if self._reader_task and not self._reader_task.done():
+                self._reader_task.cancel()
+                try:
+                    await self._reader_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+            if self._client is not None:
+                await self._client.aclose()
+                self._client = None
+            if not self._finished:
+                self._queue.put_nowait(None)
 
     def bind_session(self, session_id: str) -> None:
         self._session_id = session_id
@@ -102,8 +114,8 @@ class RealtimeHTTPProvider:
     async def finish(self) -> None:
         if self._finished:
             return
-        self._finished = True
         if self._client is None or not self._down_session_id:
+            self._finished = True
             return
         try:
             response = await self._client.post(f"/session/{self._down_session_id}/end")
@@ -113,8 +125,11 @@ class RealtimeHTTPProvider:
                 )
         except RealtimeASRError:
             raise
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001
             raise RealtimeASRError("downstream /end call failed") from None
+        self._finished = True
 
     async def _read_events(self) -> None:
         assert self._client is not None and self._down_session_id is not None
