@@ -130,3 +130,61 @@ def _minimal_wav(duration: float = 0.1, sample_rate: int = 16000) -> bytes:
         wf.setframerate(sample_rate)
         wf.writeframes(b"\x00\x00" * int(sample_rate * duration))
     return buf.getvalue()
+
+
+async def test_cancelled_stream_upload_cleans_partial_temp_file(tmp_path, monkeypatch):
+    from app.api import routes
+
+    settings = Settings(
+        temp_dir=tmp_path / "tmp",
+        output_dir=tmp_path / "out",
+        runtime_config_path=tmp_path / "runtime.json",
+    )
+    settings.temp_dir.mkdir(parents=True)
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+
+    class _CancelledUpload:
+        filename = "cancel.wav"
+
+        async def read(self, _size=-1):
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await routes.create_transcribe_stream(
+            file=_CancelledUpload(), model=None, language=None, stm=object()
+        )
+
+    assert list(settings.temp_dir.iterdir()) == []
+
+
+async def test_transcribe_session_creation_failure_cleans_uploaded_file(tmp_path, monkeypatch):
+    from app.api import routes
+
+    settings = Settings(
+        temp_dir=tmp_path / "tmp",
+        output_dir=tmp_path / "out",
+        runtime_config_path=tmp_path / "runtime.json",
+    )
+    settings.temp_dir.mkdir(parents=True)
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+
+    class _Upload:
+        filename = "uploaded.wav"
+
+        def __init__(self):
+            self._data = io.BytesIO(_minimal_wav())
+
+        async def read(self, size=-1):
+            return self._data.read(size)
+
+    class _FailingManager:
+        async def create_session(self, file_path, config):
+            assert file_path.is_file()
+            raise RuntimeError("test create session failure")
+
+    with pytest.raises(RuntimeError, match="test create session failure"):
+        await routes.create_transcribe_stream(
+            file=_Upload(), model=None, language=None, stm=_FailingManager()
+        )
+
+    assert list(settings.temp_dir.iterdir()) == []

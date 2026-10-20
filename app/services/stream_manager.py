@@ -299,7 +299,15 @@ class TaskManager:
         task.created_at = time.time()
         async with self._lock:
             self._tasks[task_id] = task
-        self._checkpoint(task)
+        try:
+            self._checkpoint(task)
+        except Exception:
+            # A checkpoint failure happens before the worker is spawned. Roll back
+            # the in-memory registration so history cannot show a task that will
+            # remain pending forever and can never produce a result.
+            async with self._lock:
+                self._tasks.pop(task_id, None)
+            raise
 
         bg = asyncio.create_task(self._run(task_id, source_path, original_name))
         self._bg.add(bg)

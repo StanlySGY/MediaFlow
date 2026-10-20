@@ -268,3 +268,81 @@ def test_concat_merges_video(concat_client: TestClient, tmp_path: Path):
         text=True,
     )
     assert float(probe.stdout.strip()) > 1.6  # two ~1s clips merged end to end
+
+
+async def test_cancelled_file_upload_cleans_partial_temp_file(tmp_path, monkeypatch):
+    from app.api import routes
+    from app.config import Settings
+
+    settings = Settings(
+        temp_dir=tmp_path / "tmp",
+        output_dir=tmp_path / "out",
+        runtime_config_path=tmp_path / "runtime.json",
+    )
+    settings.temp_dir.mkdir(parents=True)
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+
+    class _CancelledUpload:
+        filename = "cancel.wav"
+
+        async def read(self, _size=-1):
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await routes.create_task(
+            file=_CancelledUpload(),
+            model=None,
+            language=None,
+            split_strategy=None,
+            chunk_seconds=None,
+            overlap_seconds=None,
+            hotwords=None,
+            prompt_hints=None,
+            timestamps=None,
+            manager=object(),
+        )
+
+    assert list(settings.temp_dir.iterdir()) == []
+
+
+async def test_submit_failure_cleans_uploaded_file(tmp_path, monkeypatch):
+    from app.api import routes
+    from app.config import Settings
+
+    settings = Settings(
+        temp_dir=tmp_path / "tmp",
+        output_dir=tmp_path / "out",
+        runtime_config_path=tmp_path / "runtime.json",
+    )
+    settings.temp_dir.mkdir(parents=True)
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+
+    class _Upload:
+        filename = "uploaded.wav"
+
+        def __init__(self):
+            self._data = io.BytesIO(_wav_bytes())
+
+        async def read(self, size=-1):
+            return self._data.read(size)
+
+    class _FailingManager:
+        async def submit(self, source_path, original_name, *, overrides=None):
+            assert source_path.is_file()
+            raise RuntimeError("test manager submit failure")
+
+    with pytest.raises(RuntimeError, match="test manager submit failure"):
+        await routes.create_task(
+            file=_Upload(),
+            model=None,
+            language=None,
+            split_strategy=None,
+            chunk_seconds=None,
+            overlap_seconds=None,
+            hotwords=None,
+            prompt_hints=None,
+            timestamps=None,
+            manager=_FailingManager(),
+        )
+
+    assert list(settings.temp_dir.iterdir()) == []

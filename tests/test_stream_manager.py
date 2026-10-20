@@ -334,3 +334,20 @@ async def test_cancelled_task_waiting_for_asr_slot_does_not_call_provider(
     await asyncio.gather(first_run, queued_run)
 
     assert provider.calls == 1
+
+
+async def test_submit_checkpoint_failure_rolls_back_registered_task(settings, tmp_path, monkeypatch):
+    manager = TaskManager(settings)
+    source = tmp_path / "checkpoint-failure.wav"
+    source.write_bytes(b"audio")
+
+    def fail_checkpoint(_task):
+        raise OSError("checkpoint storage unavailable")
+
+    monkeypatch.setattr(manager, "_checkpoint", fail_checkpoint)
+    with pytest.raises(OSError, match="checkpoint storage unavailable"):
+        await manager.submit(source, "checkpoint-failure.wav")
+
+    assert manager._tasks == {}
+    assert manager._bg == set()
+    assert source.exists()

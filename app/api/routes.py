@@ -639,6 +639,10 @@ async def create_task(
     except HTTPException:
         dst.unlink(missing_ok=True)
         raise
+    except asyncio.CancelledError:
+        # A disconnected client must not leave a partial upload on disk.
+        dst.unlink(missing_ok=True)
+        raise
     except Exception:
         dst.unlink(missing_ok=True)
         raise
@@ -680,6 +684,12 @@ async def create_task(
         dst.unlink(missing_ok=True)
         messages = [str(item.get("msg", "invalid value")) for item in exc.errors()]
         raise HTTPException(400, f"invalid task parameters: {'; '.join(messages)}") from exc
+    except asyncio.CancelledError:
+        dst.unlink(missing_ok=True)
+        raise
+    except Exception:
+        dst.unlink(missing_ok=True)
+        raise
     return {"task_id": task_id}
 
 
@@ -1654,15 +1664,26 @@ async def create_transcribe_stream(
     except HTTPException:
         dst.unlink(missing_ok=True)
         raise
+    except asyncio.CancelledError:
+        # A disconnected client must not leave a partial upload on disk.
+        dst.unlink(missing_ok=True)
+        raise
     except Exception:
         dst.unlink(missing_ok=True)
         raise
 
-    config = RealtimeSessionCreate(
-        model=model or settings.asr_model,
-        language=language or settings.asr_language,
-    )
-    session_id = await stm.create_session(dst, config)
+    try:
+        config = RealtimeSessionCreate(
+            model=model or settings.asr_model,
+            language=language or settings.asr_language,
+        )
+        session_id = await stm.create_session(dst, config)
+    except asyncio.CancelledError:
+        dst.unlink(missing_ok=True)
+        raise
+    except Exception:
+        dst.unlink(missing_ok=True)
+        raise
     return {
         "session_id": session_id,
         "events_url": f"/asr/transcribe-stream/{session_id}/events",
