@@ -39,14 +39,16 @@ class Settings(BaseSettings):
     asr_prompt_hints: str = ""
 
     split_strategy: str = Field("silence", pattern="^(fixed|silence|overlap)$")
-    split_chunk_seconds: float = Field(30.0, gt=0)
+    # Avoid pathological configurations that explode a long upload into thousands
+    # of tiny FFmpeg/ASR chunks or create impractically large requests.
+    split_chunk_seconds: float = Field(30.0, ge=1.0, le=600.0)
     split_overlap_seconds: float = Field(2.0, ge=0)
     silence_noise_db: float = -30.0
     silence_min_duration: float = 0.4
 
     asr_concurrency: int = 4
-    asr_max_retries: int = 3
-    asr_retry_backoff: float = 1.5
+    asr_max_retries: int = Field(3, ge=0, le=10)
+    asr_retry_backoff: float = Field(1.5, ge=1.0, le=10.0)
 
     ffmpeg_timeout: float = 1800.0  # per-ffmpeg-process wall-clock cap (anti-hang)
     ffmpeg_concurrency: int = 4  # max concurrent ffmpeg slice processes

@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Iterator
 
 _context: ContextVar[dict[str, Any]] = ContextVar("asr_call_context", default={})
 _TEXT_PREVIEW_CHARS = 200
+_SUBSCRIBER_QUEUE_SIZE = 256
 
 # 会话进行中才能确定的统计字段，允许在 finish 之前由 update_call 增量刷新。
 # 白名单而非任意 setattr：防止调用方把 status/text 这类终态字段改回去。
@@ -105,8 +106,16 @@ class ASRMonitor:
         self._by_id.clear()
         self.calls_total = 0
         self.errors_total = 0
+        snapshot = self.snapshot()
         for queue in list(self._subscribers):
-            queue.put_nowait({"type": "reset", "snapshot": self.snapshot()})
+            # Discard pre-reset telemetry first; otherwise buffered call_started /
+            # call_finished events could reappear after clients receive reset.
+            while not queue.empty():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            self._enqueue(queue, {"type": "reset", "snapshot": snapshot})
 
     def start_call(
         self,
@@ -207,7 +216,9 @@ class ASRMonitor:
         }
 
     async def subscribe(self) -> AsyncIterator[dict[str, Any]]:
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        # A disconnected or slow SSE client must not accumulate an unbounded
+        # number of monitoring events while ASR calls continue to run.
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_SIZE)
         self._subscribers.add(queue)
         try:
             while True:
@@ -215,9 +226,25 @@ class ASRMonitor:
         finally:
             self._subscribers.discard(queue)
 
+    @staticmethod
+    def _enqueue(queue: asyncio.Queue[dict[str, Any]], event: dict[str, Any]) -> None:
+        # Monitoring is best-effort telemetry, not the source of truth. When a
+        # subscriber falls behind, drop the oldest queued event and preserve the
+        # newest state instead of blocking provider calls or growing memory.
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            # Defensive against unexpected concurrent queue manipulation.
+            pass
+
     def _publish(self, event: dict[str, Any]) -> None:
         for queue in list(self._subscribers):
-            queue.put_nowait(event)
+            self._enqueue(queue, event)
 
 
 asr_monitor = ASRMonitor()

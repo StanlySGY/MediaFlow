@@ -126,7 +126,7 @@ class OpenAICompatProvider:
                     last_err = e
                     if attempt >= self._max_retries:
                         break
-                    delay = self._retry_backoff ** attempt
+                    delay = min(self._retry_backoff ** attempt, 30.0)
                     log.warning("asr retry %d/%d after %.1fs: %s", attempt + 1, self._max_retries, delay, e)
                     await asyncio.sleep(delay)
 

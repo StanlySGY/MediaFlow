@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 
 @pytest.fixture
@@ -144,6 +145,24 @@ def test_runtime_config_ignores_invalid_split_combination_without_dropping_other
     assert "split_strategy" not in overrides
     assert "split_chunk_seconds" not in overrides
     assert "split_overlap_seconds" not in overrides
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("split_chunk_seconds", 0.01),
+        ("split_chunk_seconds", 601),
+        ("asr_max_retries", -1),
+        ("asr_max_retries", 11),
+        ("asr_retry_backoff", 0.5),
+        ("asr_retry_backoff", 10.1),
+    ],
+)
+def test_resource_sensitive_settings_reject_pathological_values(field, value):
+    from app.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings.model_validate({field: value})
 
 
 def test_failed_atomic_config_replace_keeps_primary_and_backup(tmp_path, monkeypatch):

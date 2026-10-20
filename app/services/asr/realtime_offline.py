@@ -135,6 +135,11 @@ class RealtimeOfflineProvider:
             # Build text with speaker labels if words have speaker info
             text_with_speakers = self._build_text_with_speakers(result.words, result.text)
             await self._emit_text(text_with_speakers)
+        except asyncio.CancelledError:
+            # finish() is marked started before awaiting ASR; ensure event consumers
+            # still receive the sentinel when shutdown cancels the transcription.
+            self._queue.put_nowait(None)
+            raise
         except Exception as e:  # noqa: BLE001
             self._queue.put_nowait(
                 RealtimeASREvent(

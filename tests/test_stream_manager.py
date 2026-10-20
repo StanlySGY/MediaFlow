@@ -194,6 +194,40 @@ async def test_pipeline_directory_creation_failure_is_persisted(settings: Settin
     assert task.result.error
     assert (settings.output_dir / f"{task.info.task_id}.json").is_file()
 
+async def test_segment_failure_is_not_retried_outside_provider(settings: Settings, monkeypatch):
+    settings.asr_max_retries = 3
+    manager = TaskManager(settings)
+
+    class Provider:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def transcribe(self, _file_path):
+            self.calls += 1
+            # Represents a provider that has exhausted its own retry policy.
+            raise stream_manager.ASRError("transcribe failed after 4 attempts: upstream busy")
+
+    provider = Provider()
+
+    @asynccontextmanager
+    async def create_provider(_settings):
+        yield provider
+
+    monkeypatch.setattr(stream_manager, "create_provider", create_provider)
+    task = _Task("single-retry-owner", settings)
+    segment = _segment(1)
+    await manager._transcribe_all(task, [segment])
+
+    assert provider.calls == 1
+    assert segment.error == "transcribe failed after 4 attempts: upstream busy"
+    assert task.info.finished_segments == 1
+
+
 async def test_eviction_keeps_inflight_tasks(settings: Settings):
     mgr = TaskManager(settings)
     # 3 completed + 1 in-flight; max_tasks_in_memory=3 → 1 completed should be evicted.

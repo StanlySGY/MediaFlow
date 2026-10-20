@@ -173,6 +173,65 @@ async def test_chunk_size_limit_enforced(settings):
     await rm.close(sid)
 
 
+async def test_slow_realtime_subscriber_queue_is_bounded_and_closes(settings):
+    from app.models.schemas import RealtimeASREvent
+
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+    session = rm._sessions[info.session_id]
+    subscriber = rm.stream(info.session_id)
+    first = asyncio.create_task(subscriber.__anext__())
+    await asyncio.sleep(0)
+    queue = next(iter(session.subscribers))
+    assert queue.maxsize == 512
+
+    for i in range(600):
+        session.publish(RealtimeASREvent(
+            type="partial", session_id=info.session_id, text=str(i)
+        ))
+    assert queue.qsize() == queue.maxsize
+    session.complete(RealtimeSessionStatus.done)
+    assert queue.qsize() == queue.maxsize
+
+    first_event = await first
+    remaining = [event async for event in subscriber]
+    delivered = [first_event, *remaining]
+    assert len(delivered) <= 512
+    assert delivered[-1].text == "599"
+    await rm._exit_provider(session)
+    await rm.close(info.session_id)
+
+
+async def test_event_history_is_bounded_but_archive_keeps_final_transcript(settings, tmp_path):
+    from app.models.schemas import RealtimeASREvent
+
+    settings = settings.model_copy(update={"output_dir": tmp_path / "out"})
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+    session = rm._sessions[info.session_id]
+    final_text = "complete transcript from the beginning through the end"
+    session.publish(RealtimeASREvent(
+        type="final", session_id=info.session_id, text=final_text, is_final=True
+    ))
+    for i in range(600):
+        session.publish(RealtimeASREvent(
+            type="partial", session_id=info.session_id, text=f"partial-{i}"
+        ))
+
+    assert len(session.events) == 512
+    assert session.events_seen == 601
+    assert session.final_text == final_text
+    session.complete(RealtimeSessionStatus.done)
+    rm._archive(session)
+
+    record_path = settings.output_dir / f"{info.session_id}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["text"] == final_text
+    assert record["events_total"] == 601
+    await rm._exit_provider(session)
+    await rm.close(info.session_id)
+
+
 async def test_session_not_found_raises_keyerror(settings):
     rm = RealtimeManager(settings)
     with pytest.raises(KeyError):
@@ -457,6 +516,131 @@ async def test_closed_session_is_archived_as_cancelled(settings, tmp_path):
     assert record["session_status"] == "closed"
     assert record["status"] == "cancelled"
     assert record["text"] == "Mock final transcription."
+
+
+async def test_close_waits_for_async_final_frames_before_provider_exit(settings, tmp_path, monkeypatch):
+    from app.models.schemas import RealtimeASREvent
+
+    class _DelayedFinishProvider(_FailingProvider):
+        def __init__(self):
+            super().__init__("")
+            self.closed = False
+            self.emitter = None
+
+        async def finish(self):
+            async def emit_tail():
+                await asyncio.sleep(0.02)
+                if self.closed:
+                    return
+                self._events.put_nowait(RealtimeASREvent(
+                    type="final", session_id="", text="final transcript", is_final=True
+                ))
+                self._events.put_nowait(RealtimeASREvent(type="done", session_id="", is_final=True))
+                self._events.put_nowait(None)
+            self.emitter = asyncio.create_task(emit_tail())
+
+        async def __aexit__(self, *exc):
+            self.closed = True
+            if self.emitter is not None and not self.emitter.done():
+                self.emitter.cancel()
+            await super().__aexit__(*exc)
+
+    settings = settings.model_copy(update={"output_dir": tmp_path / "out"})
+    provider = _DelayedFinishProvider()
+    monkeypatch.setattr(
+        "app.services.realtime_manager.create_realtime_provider", lambda _settings: provider
+    )
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+    session = rm._sessions[info.session_id]
+    provider._events.put_nowait(RealtimeASREvent(
+        type="online", session_id=info.session_id, text="partial"
+    ))
+    session.info.chunks_received = 1
+
+    assert await rm.close(info.session_id) is True
+    record = _read_record(settings, info.session_id)
+    assert record is not None
+    assert record["text"] == "final transcript"
+    assert record["session_status"] == "closed"
+    assert provider.closed is True
+
+
+async def test_cancelled_close_still_releases_provider(settings, monkeypatch):
+    started = asyncio.Event()
+    provider = _FailingProvider("")
+
+    async def blocking_finish():
+        started.set()
+        await asyncio.Event().wait()
+
+    provider.finish = blocking_finish
+    monkeypatch.setattr(
+        "app.services.realtime_manager.create_realtime_provider", lambda _settings: provider
+    )
+    rm = RealtimeManager(settings)
+    info = await rm.create(RealtimeSessionCreate())
+    closing = asyncio.create_task(rm.close(info.session_id))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.shield(closing)
+
+    assert rm.get(info.session_id) is None
+    assert provider.exited == 1
+
+
+async def test_shutdown_flushes_active_session_before_cancelling_event_pump(settings, tmp_path, monkeypatch):
+    from app.models.schemas import RealtimeASREvent
+
+    settings = settings.model_copy(update={"output_dir": tmp_path / "out"})
+
+    class _ShutdownProvider(_FailingProvider):
+        def __init__(self):
+            super().__init__("")
+            self.session_id = ""
+            self.finish_calls = 0
+            self.exited_cleanly = False
+
+        def bind_session(self, session_id: str) -> None:
+            self.session_id = session_id
+
+        async def push_audio(self, chunk: RealtimeAudioChunk) -> None:
+            pass
+
+        async def finish(self) -> None:
+            self.finish_calls += 1
+            self._events.put_nowait(RealtimeASREvent(
+                type="final", session_id=self.session_id, text="shutdown tail transcript", is_final=True
+            ))
+            self._events.put_nowait(RealtimeASREvent(
+                type="done", session_id=self.session_id, text="shutdown tail transcript", is_final=True
+            ))
+            self._events.put_nowait(None)
+
+        async def __aexit__(self, *exc):
+            self.exited_cleanly = True
+            await super().__aexit__(*exc)
+
+    provider = _ShutdownProvider()
+    monkeypatch.setattr(
+        "app.services.realtime_manager.create_realtime_provider", lambda _settings: provider
+    )
+    rm = RealtimeManager(settings)
+    await rm.start()
+    info = await rm.create(RealtimeSessionCreate())
+    await rm.push_audio(info.session_id, RealtimeAudioChunk(seq=0, audio="AAAA"))
+
+    await rm.stop()
+
+    record_path = settings.output_dir / f"{info.session_id}.json"
+    assert record_path.is_file()
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert provider.finish_calls == 1
+    assert provider.exited_cleanly is True
+    assert record["text"] == "shutdown tail transcript"
+    assert record["session_status"] == "closed"
+    assert record["status"] == "cancelled"
 
 
 async def test_ttl_eviction_archives_the_session(settings, tmp_path):

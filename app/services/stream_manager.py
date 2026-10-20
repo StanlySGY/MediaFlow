@@ -723,51 +723,40 @@ class TaskManager:
                     return
                 async with sem:
                     t0 = time.perf_counter()
-                    last_err: Exception | None = None
-                    for attempt in range(s.asr_max_retries + 1):
-                        if task.cancel_requested:
-                            return
-                        try:
-                            async with self._asr_limiter:
-                                if task.cancel_requested:
-                                    return
-                                with asr_call_context(
-                                    source="file_task",
-                                    task_id=task.info.task_id,
-                                    segment_id=seg.segment_id,
-                                ):
-                                    res = await provider.transcribe(seg.file_path)
-                            seg.text = res.text
-                            seg.words = [
-                                Word(
-                                    word=w.word,
-                                    start=w.start + seg.start,
-                                    end=w.end + seg.start,
-                                    speaker=w.speaker,
-                                )
-                                for w in res.words
-                            ]
-                            seg.raw = res.raw
-                            seg.is_final = True
-                            last_err = None
-                            break
-                        except ASRError as e:
-                            last_err = e
-                            if attempt < s.asr_max_retries:
-                                delay = s.asr_retry_backoff ** attempt
-                                log.warning(
-                                    "segment %d attempt %d/%d failed: %s, retrying in %.1fs",
-                                    seg.segment_id, attempt + 1, s.asr_max_retries + 1, e, delay,
-                                )
-                                await asyncio.sleep(delay)
-                            else:
-                                seg.error = str(e)
-                                seg.is_final = True
-                                log.warning("segment %d failed after %d attempts: %s",
-                                            seg.segment_id, s.asr_max_retries + 1, e)
-                    if last_err is not None and not seg.error:
-                        seg.error = str(last_err)
+                    if task.cancel_requested:
+                        return
+                    try:
+                        async with self._asr_limiter:
+                            if task.cancel_requested:
+                                return
+                            with asr_call_context(
+                                source="file_task",
+                                task_id=task.info.task_id,
+                                segment_id=seg.segment_id,
+                            ):
+                                # Retry policy lives in the provider. Retrying this
+                                # call here as well multiplies requests (4 x 4 by default)
+                                # and repeats even non-retryable provider errors.
+                                res = await provider.transcribe(seg.file_path)
+                        seg.text = res.text
+                        seg.words = [
+                            Word(
+                                word=w.word,
+                                start=w.start + seg.start,
+                                end=w.end + seg.start,
+                                speaker=w.speaker,
+                            )
+                            for w in res.words
+                        ]
+                        seg.raw = res.raw
                         seg.is_final = True
+                    except ASRError as e:
+                        seg.error = str(e)
+                        seg.is_final = True
+                        log.warning(
+                            "segment %d failed under provider retry policy: %s",
+                            seg.segment_id, e,
+                        )
                     seg.elapsed_ms = (time.perf_counter() - t0) * 1000.0
                     task.info.finished_segments += 1
                     if task.info.total_segments:

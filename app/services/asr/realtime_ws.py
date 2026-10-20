@@ -147,6 +147,9 @@ class RealtimeWSProvider:
         # Sliding window: keep only recent N final segments to bound memory
         # in long sessions. Recent=128 segments covers ~5-10 min of typical speech.
         self._max_final_segments = 128
+        # Preserve the completed prefix when old per-segment entries are compacted.
+        # Otherwise long recordings silently lose their beginning from final text.
+        self._finalized_prefix = ""
 
     async def __aenter__(self) -> "RealtimeWSProvider":
         headers: list[tuple[str, str]] = []
@@ -275,8 +278,8 @@ class RealtimeWSProvider:
     async def finish(self) -> None:
         if self._finished:
             return
-        self._finished = True
         if self._ws is None or self._terminal_received:
+            self._finished = True
             return
 
         try:
@@ -284,9 +287,13 @@ class RealtimeWSProvider:
                 await self._finish_audio_pipeline()
                 await self._send_ws(json.dumps({"type": "stop"}))
         except RealtimeASRError:
+            # Keep finish retryable if pipeline draining or the stop frame fails.
             raise
         except Exception as e:  # noqa: BLE001
+            # Cancellation is a BaseException and passes through without setting
+            # _finished, so a later close attempt can retry cleanup.
             raise RealtimeASRError(f"failed to finish websocket ASR session: {e}") from e
+        self._finished = True
 
     async def events(self) -> AsyncIterator[RealtimeASREvent]:
         while True:
@@ -653,15 +660,21 @@ class RealtimeWSProvider:
             self._segment_order.append(segment_id)
 
     def _trim_old_segments(self) -> None:
-        """Remove old final segments beyond the sliding window to bound memory."""
-        if len(self._final_segments) <= self._max_final_segments:
-            return
-        excess = len(self._final_segments) - self._max_final_segments
-        for segment_id in self._segment_order[:excess]:
-            self._final_segments.pop(segment_id, None)
+        """Compact old finalized segments without discarding recognized words."""
+        while len(self._final_segments) > self._max_final_segments and self._segment_order:
+            segment_id = self._segment_order[0]
+            # Do not compact past an unfinished earlier segment: it may still
+            # receive a final result and must retain its original transcript order.
+            if segment_id not in self._final_segments:
+                break
+            text = self._final_segments.pop(segment_id)
+            self._segment_order.pop(0)
+            self._finalized_prefix = self._join_parts([self._finalized_prefix, text])
 
     def _render_text(self, active_segment: str | None = None, active_text: str = "") -> str:
         parts: list[str] = []
+        if self._finalized_prefix:
+            parts.append(self._finalized_prefix)
         for segment_id in self._segment_order:
             if segment_id in self._final_segments:
                 parts.append(self._final_segments[segment_id])

@@ -189,6 +189,58 @@ async def test_pcm_stream_maps_qwen_events_to_cumulative_text(monkeypatch):
     assert all(event.is_final is (event.type in {"final", "done"}) for event in events)
 
 
+async def test_long_recording_keeps_earlier_final_segments(monkeypatch):
+    final_texts = [f"segment-{i}" for i in range(140)]
+    frames = [
+        {"type": "final", "segment_id": i, "text": text}
+        for i, text in enumerate(final_texts)
+    ]
+    frames.append({"type": "done"})
+    socket = _FakeWebSocket(terminal_events=frames)
+    provider = await _provider_with_socket(monkeypatch, socket)
+    provider.bind_session("mediaflow-long-session")
+
+    async with provider:
+        await provider.start(RealtimeSessionCreate())
+        await provider.finish()
+        events = [event async for event in provider.events()]
+
+    expected = " ".join(final_texts)
+    assert events[-1].type == "done"
+    assert events[-1].text == expected
+    assert events[-2].type == "final"
+    assert events[-2].text == expected
+    assert provider._finalized_prefix.startswith("segment-0 segment-1")
+    assert len(provider._final_segments) == 128
+    assert len(provider._segment_order) == 128
+
+
+async def test_websocket_finish_cancellation_is_retryable(monkeypatch):
+    provider = RealtimeWSProvider(base_url="ws://asr.internal:8022/v1/asr/stream")
+    provider._ws = object()
+    started = asyncio.Event()
+    calls = 0
+
+    async def fake_send(_data):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(provider, "_send_ws", fake_send)
+    finishing = asyncio.create_task(provider.finish())
+    await asyncio.wait_for(started.wait(), timeout=2)
+    finishing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.shield(finishing)
+
+    assert provider._finished is False
+    await provider.finish()
+    assert calls == 2
+    assert provider._finished is True
+
+
 async def test_websocket_error_is_terminal_and_emitted_once(monkeypatch):
     socket = _FakeWebSocket(terminal_events=[{"type": "error", "error": "upstream failed"}])
     provider = await _provider_with_socket(monkeypatch, socket)

@@ -133,6 +133,40 @@ async def test_monitor_finishes_cancelled_asr_call(tmp_path: Path):
     assert snapshot["calls"][0]["error"] == "ASR call cancelled"
 
 
+@respx.mock
+async def test_chat_audio_monitor_finishes_cancelled_asr_call(tmp_path: Path):
+    from app.services.asr.openai_chat_audio import OpenAIChatAudioProvider
+    from app.services.asr_monitoring import asr_monitor
+
+    asr_monitor.reset()
+    started = asyncio.Event()
+
+    async def block_request(_request):
+        started.set()
+        await asyncio.Event().wait()
+
+    respx.post("https://example.test/v1/chat/completions").mock(side_effect=block_request)
+    provider = OpenAIChatAudioProvider(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        model="qwen3-asr-flash",
+        max_retries=0,
+    )
+    async with provider:
+        task = asyncio.create_task(provider.transcribe(_wav(tmp_path / "cancel-chat.wav")))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    snapshot = asr_monitor.snapshot()
+    assert snapshot["summary"]["total"] == 1
+    assert snapshot["summary"]["failed"] == 1
+    assert snapshot["calls"][0]["provider"] == "openai_chat_audio"
+    assert snapshot["calls"][0]["status"] == "error"
+    assert snapshot["calls"][0]["error"] == "ASR call cancelled"
+
+
 async def test_monitor_route_includes_runtime_config(monkeypatch):
     from app.api.routes import get_asr_monitor
     from app.services.asr_monitoring import asr_monitor
@@ -196,6 +230,62 @@ async def test_monitor_subscriber_receives_call_events():
     assert finished["call"]["status"] == "error"
     assert finished["call"]["error"] == "upstream 500"
 
+    await subscriber.aclose()
+
+
+async def test_monitor_reset_discards_stale_queued_events():
+    from app.services.asr_monitoring import ASRMonitor
+
+    monitor = ASRMonitor(max_calls=10)
+    subscriber = monitor.subscribe()
+    first_task = asyncio.create_task(subscriber.__anext__())
+    await asyncio.sleep(0)
+    monitor.start_call(
+        provider="openai_compat", model="model-a", base_url="https://example.test/v1"
+    )
+    await first_task
+    for _ in range(3):
+        monitor.start_call(
+            provider="openai_compat", model="model-b", base_url="https://example.test/v1"
+        )
+
+    monitor.reset()
+    event = await asyncio.wait_for(subscriber.__anext__(), timeout=1)
+    assert event["type"] == "reset"
+    assert event["snapshot"]["summary"]["total"] == 0
+    await subscriber.aclose()
+
+
+async def test_monitor_bounds_slow_subscriber_queue_and_keeps_latest_event():
+    from app.services.asr_monitoring import ASRMonitor
+
+    monitor = ASRMonitor(max_calls=400)
+    subscriber = monitor.subscribe()
+    first = asyncio.create_task(subscriber.__anext__())
+    await asyncio.sleep(0)
+    monitor.start_call(
+        provider="openai_compat",
+        model="test-model",
+        base_url="https://example.test/v1",
+    )
+    await first
+    queue = next(iter(monitor._subscribers))
+    assert queue.maxsize == 256
+
+    last_call_id = ""
+    for _ in range(300):
+        last_call_id = monitor.start_call(
+            provider="openai_compat",
+            model="test-model",
+            base_url="https://example.test/v1",
+        )
+
+    assert queue.qsize() == queue.maxsize
+    for _ in range(queue.qsize() - 1):
+        await subscriber.__anext__()
+    latest = await subscriber.__anext__()
+    assert latest["type"] == "call_started"
+    assert latest["call"]["call_id"] == last_call_id
     await subscriber.aclose()
 
 

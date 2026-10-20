@@ -105,6 +105,56 @@ async def test_http_finish_cancellation_is_retryable():
     assert provider._finished is True
 
 
+async def test_offline_finish_cancellation_terminates_event_stream(tmp_path, monkeypatch):
+    import asyncio
+
+    from app.config import Settings
+    from app.services.asr.base import ASRResult
+    from app.services.asr.realtime_offline import RealtimeOfflineProvider
+
+    started = asyncio.Event()
+    audio_path = tmp_path / "input.wav"
+    audio_path.write_bytes(b"audio")
+
+    class _BlockingASR:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def transcribe(self, _path, *, prompt=None):
+            started.set()
+            await asyncio.Event().wait()
+            return ASRResult(text="never returned")
+
+    settings = Settings(temp_dir=tmp_path / "temp", output_dir=tmp_path / "out")
+    provider = RealtimeOfflineProvider(
+        settings, provider_factory=lambda _settings: _BlockingASR()
+    )
+    provider.bind_session("offline-cancel")
+
+    async def materialize():
+        return audio_path
+
+    monkeypatch.setattr(provider, "_materialize_audio", materialize)
+    await provider.__aenter__()
+    await provider.start(RealtimeSessionCreate())
+    finishing = asyncio.create_task(provider.finish())
+    await asyncio.wait_for(started.wait(), timeout=2)
+    finishing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.shield(finishing)
+
+    events_task = asyncio.create_task(_collect_offline_events(provider))
+    assert await asyncio.wait_for(events_task, timeout=1) == []
+    await provider.__aexit__(None, None, None)
+
+
+async def _collect_offline_events(provider):
+    return [event async for event in provider.events()]
+
+
 def test_realtime_registry_resolves_builtin_providers():
     from app.config import Settings
     from app.services.asr import (

@@ -6,8 +6,9 @@ import json
 import logging
 import time
 import uuid
+from collections import deque
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Iterable
 
 from app.config import Settings
 from app.models.schemas import (
@@ -63,6 +64,10 @@ _TERMINAL_STATUSES = frozenset({
 # DELETE, process shutdown) is recorded as `cancelled` because the recording
 # stopped on its own terms instead of failing upstream.
 _KIND_REALTIME = "realtime"
+_REALTIME_SUBSCRIBER_QUEUE_SIZE = 512
+_REALTIME_EVENT_HISTORY_SIZE = 512
+_REALTIME_CLOSE_DRAIN_TIMEOUT_SECONDS = 15.0
+_REALTIME_PROVIDER_EXIT_TIMEOUT_SECONDS = 2.0
 _RECORD_STATUS = {
     RealtimeSessionStatus.done: "done",
     RealtimeSessionStatus.failed: "failed",
@@ -70,14 +75,14 @@ _RECORD_STATUS = {
 }
 
 
-def _final_text(events: list[RealtimeASREvent]) -> str:
+def _final_text(events: Iterable[RealtimeASREvent]) -> str:
     """The fullest transcript the provider ever published for this session.
 
     Every provider emits cumulative text on `final`/`done`, so the last final is
     the best view available. Two caveats that keep the record approximate:
     realtime_offline and realtime_mock emit `done` with an empty text, and
-    realtime_ws renders only its last 128 upstream segments, so a long
-    recording has already lost its head by the time the session ends.
+    realtime_ws compacts older finalized segments into a prefix so long-session
+    transcripts keep their beginning while per-segment state remains bounded.
     """
     text = ""
     for evt in events:
@@ -101,7 +106,9 @@ def _archive_record(session: "_Session", status: RealtimeSessionStatus) -> dict 
     """Build the history record for one finished session, or None when there is
     nothing worth archiving (a session that never received audio)."""
     info = session.info
-    text = _final_text(session.events)
+    # Transcript state is maintained separately from the bounded replay window;
+    # archiving must not lose a final transcript just because old events were evicted.
+    text = session.final_text or session.latest_text or _final_text(session.events)
     if not text and not info.chunks_received:
         return None
 
@@ -139,7 +146,7 @@ def _archive_record(session: "_Session", status: RealtimeSessionStatus) -> dict 
         "updated_at": time.time(),
         "chunks_received": info.chunks_received,
         "bytes_received": info.bytes_received,
-        "events_total": len(session.events),
+        "events_total": session.events_seen,
     }
 
 
@@ -148,7 +155,7 @@ class _Session:
 
     __slots__ = (
         "info", "config", "provider", "events", "subscribers", "done",
-        "_finished", "_reader", "_lock",
+        "_finished", "_reader", "_lock", "final_text", "latest_text", "events_seen",
     )
 
     def __init__(
@@ -169,7 +176,12 @@ class _Session:
         )
         self.config = config
         self.provider = provider
-        self.events: list[RealtimeASREvent] = []
+        # Replay is intentionally bounded. Keep the last terminal transcript
+        # separately so the history window cannot truncate saved recordings.
+        self.events: deque[RealtimeASREvent] = deque(maxlen=_REALTIME_EVENT_HISTORY_SIZE)
+        self.final_text = ""
+        self.latest_text = ""
+        self.events_seen = 0
         self.subscribers: set[asyncio.Queue[RealtimeASREvent | None]] = set()
         self.done: asyncio.Event = asyncio.Event()
         self._finished = False
@@ -179,10 +191,29 @@ class _Session:
     def touch(self) -> None:
         self.info.updated_at = time.time()
 
-    def publish(self, evt: RealtimeASREvent) -> None:
-        self.events.append(evt)
-        for q in self.subscribers:
+    @staticmethod
+    def _enqueue(q: asyncio.Queue[RealtimeASREvent | None], evt: RealtimeASREvent | None) -> None:
+        # A slow SSE client must not grow memory without bound. Keep the newest
+        # events; completion is always enqueued, evicting one stale event if needed.
+        if q.full():
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
             q.put_nowait(evt)
+        except asyncio.QueueFull:
+            pass
+
+    def publish(self, evt: RealtimeASREvent) -> None:
+        self.events_seen += 1
+        self.events.append(evt)
+        if evt.text:
+            self.latest_text = evt.text
+            if evt.is_final or evt.type == "final":
+                self.final_text = evt.text
+        for q in self.subscribers:
+            self._enqueue(q, evt)
 
     def complete(self, status: RealtimeSessionStatus, error: str | None = None) -> None:
         if self.done.is_set():
@@ -192,12 +223,16 @@ class _Session:
             self.info.error = error
         self.done.set()
         for q in self.subscribers:
-            q.put_nowait(None)
+            self._enqueue(q, None)
 
     async def subscribe(self) -> AsyncIterator[RealtimeASREvent]:
-        q: asyncio.Queue[RealtimeASREvent | None] = asyncio.Queue()
-        # Atomic snapshot + register (no await between these statements).
-        for e in self.events:
+        q: asyncio.Queue[RealtimeASREvent | None] = asyncio.Queue(
+            maxsize=_REALTIME_SUBSCRIBER_QUEUE_SIZE
+        )
+        # Atomic snapshot + register (no await between these statements). Bound
+        # replay to the newest events and reserve a slot for the terminal sentinel.
+        replay_limit = _REALTIME_SUBSCRIBER_QUEUE_SIZE - int(self.done.is_set())
+        for e in list(self.events)[-replay_limit:]:
             q.put_nowait(e)
         if self.done.is_set():
             q.put_nowait(None)
@@ -245,6 +280,15 @@ class RealtimeManager:
             except asyncio.CancelledError:
                 pass
             self._cleanup_task = None
+        # Close sessions while their event pumps are still alive: finish() asks
+        # upstream to flush its final transcript, and close() waits for the pump to
+        # archive it. Cancelling workers first can lose tail frames and mislabel an
+        # interrupted recording as `done` during process shutdown.
+        for sid in list(self._sessions):
+            try:
+                await self.close(sid)
+            except Exception:  # noqa: BLE001
+                log.warning("failed to close realtime session during shutdown: %s", sid, exc_info=True)
         if self._pump_loop_task is not None:
             self._pump_loop_task.cancel()
             try:
@@ -257,11 +301,6 @@ class RealtimeManager:
             worker.cancel()
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
-        for sid in list(self._sessions):
-            try:
-                await self.close(sid)
-            except Exception:  # noqa: BLE001
-                pass
 
     async def _pump_loop(self) -> None:
         """Long-lived supervisor: spawns per-session pump tasks. Lives in app lifespan
@@ -272,6 +311,7 @@ class RealtimeManager:
             while True:
                 session = await self._spawn_queue.get()
                 task = asyncio.create_task(self._pump_events(session))
+                session._reader = task
                 self._workers.add(task)
                 task.add_done_callback(self._workers.discard)
         except asyncio.CancelledError:
@@ -371,6 +411,7 @@ class RealtimeManager:
     async def _pump_events_direct_fallback(self, session: _Session) -> None:
         """Used only when start() hasn't been called (bare scripts/tests)."""
         task = asyncio.create_task(self._pump_events(session))
+        session._reader = task
         self._workers.add(task)
         task.add_done_callback(self._workers.discard)
 
@@ -492,14 +533,67 @@ class RealtimeManager:
             session = self._sessions.pop(session_id, None)
         if session is None:
             return False
-        async with session._lock:
-            if not session.done.is_set():
+
+        reader = session._reader
+        cancelled = False
+        try:
+            async with session._lock:
+                if not session.done.is_set():
+                    try:
+                        # Ask upstream to flush its final result before closing its reader.
+                        await session.provider.finish()
+                    except asyncio.CancelledError:
+                        # A cancelled DELETE must still release the upstream resource.
+                        cancelled = True
+                    except Exception:  # noqa: BLE001
+                        log.warning(
+                            "provider finish failed while closing %s", session_id, exc_info=True
+                        )
+                    # DELETE means the session is closed to new clients, but the existing
+                    # pump still gets a bounded window to drain final upstream frames.
+                    session.complete(RealtimeSessionStatus.closed)
+
+            if not cancelled and reader is not None and reader is not asyncio.current_task() and not reader.done():
+                drain_timeout = max(
+                    1.0,
+                    min(float(self._settings.asr_timeout), _REALTIME_CLOSE_DRAIN_TIMEOUT_SECONDS),
+                )
                 try:
-                    await session.provider.finish()
-                except Exception:  # noqa: BLE001
-                    pass
+                    await asyncio.wait_for(asyncio.shield(reader), timeout=drain_timeout)
+                except TimeoutError:
+                    log.warning("timed out draining realtime events for session %s", session_id)
+                except asyncio.CancelledError:
+                    cancelled = True
+        except asyncio.CancelledError:
+            cancelled = True
+        finally:
+            if not session.done.is_set():
                 session.complete(RealtimeSessionStatus.closed)
-        await self._exit_provider(session)
+            cleanup = asyncio.create_task(self._exit_provider(session))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+                try:
+                    await cleanup
+                except Exception:  # noqa: BLE001
+                    log.warning("provider cleanup failed while closing %s", session_id, exc_info=True)
+            except Exception:  # noqa: BLE001
+                log.warning("provider cleanup failed while closing %s", session_id, exc_info=True)
+
+            if reader is not None and reader is not asyncio.current_task() and not reader.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(reader), timeout=_REALTIME_PROVIDER_EXIT_TIMEOUT_SECONDS
+                    )
+                except TimeoutError:
+                    log.warning("realtime event pump did not stop after provider exit: %s", session_id)
+                except asyncio.CancelledError:
+                    if not reader.cancelled():
+                        cancelled = True
+
+        if cancelled:
+            raise asyncio.CancelledError
         return True
 
     def get(self, session_id: str) -> RealtimeSessionInfo | None:
