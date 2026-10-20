@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { AlertTriangle, Check, CircleStop, Copy, Download, FileText, FolderDown, Hourglass, RotateCcw, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, CircleStop, Copy, Download, FileArchive, FileText, FolderDown, Hourglass, RotateCcw, Trash2, Undo2, X } from 'lucide-react';
 
 import { useAuth } from './hooks/useAuth';
 import { useFileTask } from './hooks/useFileTask';
@@ -61,6 +61,7 @@ export default function App() {
     ovHints, setOvHints, ovTimestamps, setOvTimestamps, setOvTimestampsTouched,
     activePane, setActivePane, copied,
     uploadProgress, mediaUrl, mediaIsVideo, segmentsEdited, mediaRef,
+    undoDepth, undoEdit, hasLocalMedia, downloadBundle,
     resetTask, abortTask, retryTask, handleSeek, handleEditSegment, handleFileSelect,
     loadHistoricalTask, statusLabel, downloadSubtitle, handleCopy,
     taskError, clearTaskError, taskErrorHint, taskErrorCode, canRetryTask,
@@ -487,11 +488,22 @@ export default function App() {
                         </div>
                       ) : (
                         <div id="pane-final" role="tabpanel" aria-labelledby="pane-tab-final" tabIndex={0} className="pane flex flex-col gap-4 outline-none">
-                          <p className="hint">
-                            {segmentsEdited
-                              ? '已应用分片校对，SRT/VTT 按校对后的文本导出。'
-                              : '在「分片明细」双击句子校对后，SRT/VTT 会按校对结果导出。'}
-                          </p>
+                          <div className="flex items-start gap-3 flex-wrap">
+                            <p className="hint flex-1 min-w-[200px]">
+                              {segmentsEdited
+                                ? '已应用分片校对，SRT/VTT 按校对后的文本导出。'
+                                : '在「分片明细」双击句子校对后，SRT/VTT 会按校对结果导出。'}
+                            </p>
+                            <button
+                              onClick={undoEdit}
+                              disabled={undoDepth === 0}
+                              title="撤销上一次分片校对"
+                              className="text-[12px] px-3 py-1.5"
+                            >
+                              <Undo2 className="w-3.5 h-3.5" />
+                              <span>撤销校对{undoDepth > 0 ? `（${undoDepth}）` : ''}</span>
+                            </button>
+                          </div>
                           <textarea
                             value={fullText}
                             onChange={(e) => setFullText(e.target.value)}
@@ -529,6 +541,18 @@ export default function App() {
                                 <FileText className="w-3.5 h-3.5" />
                                 <span>JSON</span>
                               </button>
+                              {/* The audio only lives in this tab, so the bundle
+                                  is offered exactly while it is still here. */}
+                              {hasLocalMedia && (
+                                <button
+                                  onClick={() => void downloadBundle()}
+                                  title="音频 + 字幕 + 文本，打包成一个 zip"
+                                  className="text-[12px] px-3 py-1.5"
+                                >
+                                  <FileArchive className="w-3.5 h-3.5" />
+                                  <span>完整包</span>
+                                </button>
+                              )}
                             </div>
                           </div>
                         </div>

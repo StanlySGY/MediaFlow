@@ -300,7 +300,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                 >
                   <button
                     type="button"
-                    className="!block min-w-0 !rounded-none !border-0 !bg-transparent !px-0 !py-0 !pr-4 !text-left !font-normal !select-text hover:!border-transparent hover:!bg-transparent"
+                    className="!block min-w-0 col-span-full sm:col-span-1 !rounded-none !border-0 !bg-transparent !px-0 !py-0 !text-left !font-normal !select-text hover:!border-transparent hover:!bg-transparent sm:!pr-4"
                     aria-label={isRealtime ? `查看录音：${title}` : `打开任务：${title}`}
                     onClick={() => { if (isRealtime) setReading(t); else onLoadTask(t.task_id); }}
                   >
@@ -350,7 +350,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   </div>
 
                   <button
-                    className="danger p-1.5"
+                    className="danger p-1.5 shrink-0"
                     aria-label={`删除任务：${title}`}
                     onClick={() => void removeTask(t)}
                   >

@@ -58,6 +58,50 @@ export const textDeltaEvent = (sessionId: string, start: number, text: string, r
   source_event: start > 0 ? 'final' : 'online',
 });
 
+/**
+ * AudioContext double. jsdom has none, so a component that attaches an
+ * analyser to the microphone stream would otherwise throw on every mount.
+ * `level` is what every reported frequency bin reads, so a test can say
+ * "there is sound" or "the room is silent" and the component must agree.
+ */
+export class MockAudioContext {
+  static instances: MockAudioContext[] = [];
+  level = 0;
+  state = 'running';
+  fftSize = 2048;
+  smoothingTimeConstant = 0;
+  closed = false;
+  readonly frequencyBinCount = 128;
+
+  constructor() {
+    MockAudioContext.instances.push(this);
+  }
+
+  createMediaStreamSource() {
+    return { connect: vi.fn(), disconnect: vi.fn() };
+  }
+
+  createAnalyser() {
+    return {
+      fftSize: 2048,
+      smoothingTimeConstant: 0,
+      frequencyBinCount: 128,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      getByteFrequencyData: (bins: Uint8Array) => bins.fill(this.level),
+    };
+  }
+
+  resume() {
+    return Promise.resolve();
+  }
+
+  close() {
+    this.closed = true;
+    return Promise.resolve();
+  }
+}
+
 export class MockMediaRecorder {
   static instances: MockMediaRecorder[] = [];
   static isTypeSupported = vi.fn((mime: string) => mime.startsWith('audio/webm'));
@@ -87,7 +131,9 @@ export class MockMediaRecorder {
 export const installRealtimeMocks = (opts: { media?: boolean } = {}) => {
   MockEventSource.instances = [];
   MockMediaRecorder.instances = [];
+  MockAudioContext.instances = [];
   vi.stubGlobal('EventSource', MockEventSource);
+  vi.stubGlobal('AudioContext', MockAudioContext);
   if (opts.media !== false) {
     vi.stubGlobal('MediaRecorder', MockMediaRecorder);
     Object.defineProperty(navigator, 'mediaDevices', {

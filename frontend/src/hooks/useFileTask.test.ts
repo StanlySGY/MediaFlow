@@ -1,6 +1,12 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { downloadBlob } from '../lib/download';
 import { useFileTask } from './useFileTask';
+
+vi.mock('../lib/download', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/download')>()),
+  downloadBlob: vi.fn(),
+}));
 
 const STORAGE_KEY = 'asr_file_task_id';
 
@@ -180,6 +186,58 @@ describe('useFileTask recovery', () => {
     unmount();
   });
 
+  it('undoes a segment edit and hands the export back to the server once fully undone', async () => {
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/file/history-done') return response(terminalInfo);
+      if (url === '/asr/file/history-done/result') return response(finalResult);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
+
+    await act(async () => { await result.current.loadHistoricalTask('history-done'); });
+    expect(result.current.undoDepth).toBe(0);
+
+    act(() => result.current.handleEditSegment(1, 'edited first'));
+    act(() => result.current.handleEditSegment(2, 'edited second'));
+    expect(result.current.segments.map(s => s.text)).toEqual(['edited first', 'edited second']);
+    expect(result.current.undoDepth).toBe(2);
+    expect(result.current.segmentsEdited).toBe(true);
+
+    act(() => result.current.undoEdit());
+    expect(result.current.segments.map(s => s.text)).toEqual(['edited first', 'transcript']);
+    expect(result.current.undoDepth).toBe(1);
+    // Still proofread, so the local SRT builder stays in charge.
+    expect(result.current.segmentsEdited).toBe(true);
+
+    act(() => result.current.undoEdit());
+    expect(result.current.segments.map(s => s.text)).toEqual(['final', 'transcript']);
+    expect(result.current.undoDepth).toBe(0);
+    // Back to pristine: the server's subtitle (word grouping, de-duplication)
+    // is the better export again.
+    expect(result.current.segmentsEdited).toBe(false);
+
+    // Nothing left to undo must be a no-op, not an error.
+    act(() => result.current.undoEdit());
+    expect(result.current.segments.map(s => s.text)).toEqual(['final', 'transcript']);
+    unmount();
+  });
+
+  it('does not record an undo step for a commit that changes nothing', async () => {
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/file/history-done') return response(terminalInfo);
+      if (url === '/asr/file/history-done/result') return response(finalResult);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
+
+    await act(async () => { await result.current.loadHistoricalTask('history-done'); });
+    act(() => result.current.handleEditSegment(1, 'final'));
+
+    expect(result.current.undoDepth).toBe(0);
+    expect(result.current.segmentsEdited).toBe(false);
+    unmount();
+  });
+
   it('clears a persisted ID when the server confirms that task has expired', async () => {
     localStorage.setItem(STORAGE_KEY, 'expired-task');
     const authedFetch = vi.fn(async () => response({}, 404));
@@ -269,6 +327,44 @@ describe('useFileTask recovery', () => {
       await upload;
     });
     expect(localStorage.getItem(STORAGE_KEY)).toBe('uploaded-task');
+    unmount();
+  });
+});
+
+describe('useFileTask bundle export', () => {
+  it('archives the local audio with the subtitle and the text', async () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:local-media');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    vi.stubGlobal('XMLHttpRequest', MockXHR);
+    // MockXHR always reports task_id "preflight-task".
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/file/preflight-task') return response(activeInfo);
+      if (url === '/asr/file/preflight-task/subtitle?format=srt') {
+        return { ok: true, status: 200, text: async () => '1\n00:00:00,000 --> 00:00:06,000\n你好\n' } as Response;
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
+
+    // No upload has happened yet, so there is no audio to archive.
+    expect(result.current.hasLocalMedia).toBe(false);
+    expect(await result.current.downloadBundle()).toBe(false);
+
+    let upload!: Promise<void>;
+    act(() => { upload = result.current.handleFileSelect(new File(['audio'], 'meeting.wav', { type: 'audio/wav' })); });
+    await waitFor(() => expect(MockXHR.instances).toHaveLength(1));
+    await act(async () => { await upload; });
+    expect(result.current.hasLocalMedia).toBe(true);
+
+    expect(await result.current.downloadBundle()).toBe(true);
+    const [name, blob] = vi.mocked(downloadBlob).mock.calls.at(-1)!;
+    expect(name).toBe('meeting-prefligh.zip');
+    const bytes = new TextDecoder('latin1').decode(new Uint8Array(await blob.arrayBuffer()));
+    // Stored entries keep their names in the central directory.
+    expect(bytes).toContain('meeting.wav');
+    expect(bytes).toContain('meeting.srt');
+    expect(bytes).toContain('meeting.txt');
+    expect(bytes).toContain('00:00:00,000 --> 00:00:06,000');
     unmount();
   });
 });

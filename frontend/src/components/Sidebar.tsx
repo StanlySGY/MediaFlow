@@ -1,14 +1,23 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { UploadCloud, Mic, Settings, FolderArchive, BookOpen, AudioLines, Combine, Activity, Microscope } from 'lucide-react';
 import { SystemConfig } from '../types';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 
 interface SidebarProps {
   currentView: string;
   onViewChange: (view: string) => void;
   config: SystemConfig | null;
   footStatus: { text: string; status: 'ok' | 'err' | 'warn' | '' };
+  /** Mobile drawer state. Ignored at md and up, where the rail is permanent. */
   open?: boolean;
+  /** Close request from a gesture (swipe left) inside the drawer. */
+  onRequestClose?: () => void;
 }
+
+// Keep in sync with the `md:` breakpoint used below. Below it the rail is a
+// drawer that is off-canvas when closed; at and above it, a static column.
+const DESKTOP_QUERY = '(min-width: 768px)';
+const SWIPE_CLOSE_PX = 56;
 
 export const Sidebar: React.FC<SidebarProps> = ({
   currentView,
@@ -16,7 +25,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
   config,
   footStatus,
   open = false,
+  onRequestClose,
 }) => {
+  const isDesktop = useMediaQuery(DESKTOP_QUERY);
+  const touchStartX = useRef<number | null>(null);
+  // The drawer is only translated off-canvas: it stays in the tab order and in
+  // the accessibility tree unless it is actually gone. That made the first
+  // Tab press on a phone land on 文件转写 inside a menu nobody could see.
+  const hiddenFromAssistiveTech = !isDesktop && !open;
+
+  useEffect(() => {
+    if (isDesktop) touchStartX.current = null;
+  }, [isDesktop]);
+
+  const onTouchStart = (event: React.TouchEvent) => {
+    if (isDesktop || !open) return;
+    touchStartX.current = event.touches[0]?.clientX ?? null;
+  };
+  const onTouchEnd = (event: React.TouchEvent) => {
+    const startX = touchStartX.current;
+    touchStartX.current = null;
+    if (startX === null) return;
+    const endX = event.changedTouches[0]?.clientX;
+    if (typeof endX === 'number' && startX - endX > SWIPE_CLOSE_PX) onRequestClose?.();
+  };
+
   const workspaceItems = [
     { id: 'tasks', label: '文件转写', icon: UploadCloud },
     { id: 'realtime', label: '实时识别', icon: Mic },
@@ -50,6 +83,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
+      id="app-sidebar"
+      inert={hiddenFromAssistiveTech}
+      aria-hidden={hiddenFromAssistiveTech || undefined}
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
       className={`w-[220px] shrink-0 bg-sidebar border-r border-border flex flex-col h-screen z-50
         fixed md:sticky top-0 transition-transform duration-200
         ${open ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}

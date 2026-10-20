@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { downloadFile } from '../lib/download';
 import { RealtimeView } from './RealtimeView';
 import {
+  MockAudioContext,
   MockEventSource,
   MockMediaRecorder,
   installRealtimeMocks,
@@ -68,8 +69,9 @@ describe('<RealtimeView /> browser recorder', () => {
     expect(screen.getByText('你😃正在识别。')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: '下载 TXT' }));
+    // Dated, so two recordings do not overwrite each other in Downloads.
     expect(downloadFile).toHaveBeenCalledWith(
-      'realtime-recording.txt',
+      expect.stringMatching(/^realtime-\d{4}-\d{2}-\d{2}-\d{4}\.txt$/),
       '你😃正在识别。',
       'text/plain;charset=utf-8',
     );
@@ -163,6 +165,74 @@ describe('<RealtimeView /> browser recorder', () => {
     expect(screen.getByText('录音中')).toBeInTheDocument();
     const audioCallsAfterStaleStop = authedFetch.mock.calls.filter(([url]) => String(url).includes('/audio'));
     expect(audioCallsAfterStaleStop).toHaveLength(0);
+  });
+
+  it('says so when the microphone has been silent for a few seconds', async () => {
+    // A muted microphone encodes a perfectly good recording of nothing. The
+    // only moment that is still fixable is while it is happening.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const authedFetch = vi.fn(async (url: string) => {
+        if (url === '/asr/realtime/session') return json({ session_id: 'sess-silent' });
+        return json({ ok: true });
+      });
+      render(<RealtimeView authedFetch={authedFetch} sseUrl={(path) => path} />);
+      await userEvent.click(screen.getByRole('button', { name: '开始录音' }));
+      expect(screen.getByText('录音中')).toBeInTheDocument();
+      // Nothing ever raises a bin above the noise floor.
+      MockAudioContext.instances.forEach((ctx) => { ctx.level = 0; });
+
+      act(() => { vi.advanceTimersByTime(5000); });
+
+      expect(await screen.findByText(/没有收到声音/)).toBeInTheDocument();
+      expect(screen.getByText('等待声音')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops the recording on Escape, but not from inside a text field', async () => {
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/realtime/session') return json({ session_id: 'sess-esc' });
+      return json({ ok: true });
+    });
+    render(<RealtimeView authedFetch={authedFetch} sseUrl={(path) => path} />);
+    await userEvent.click(screen.getByRole('button', { name: '开始录音' }));
+    expect(screen.getByText('录音中')).toBeInTheDocument();
+
+    // Escape aimed at a field is that field's business, not the recorder's.
+    const field = document.createElement('input');
+    document.body.appendChild(field);
+    field.focus();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.getByText('录音中')).toBeInTheDocument();
+    field.remove();
+
+    // Escape on the page stops the recording and moves it to the final pass.
+    await userEvent.keyboard('{Escape}');
+    expect(await screen.findByText('识别中')).toBeInTheDocument();
+  });
+
+  it('explains a denied microphone permission instead of echoing the DOMException', async () => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => {
+          throw Object.assign(new Error('Permission denied'), { name: 'NotAllowedError' });
+        }),
+      },
+    });
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/realtime/session') return json({ session_id: 'sess-denied' });
+      return json({ ok: true });
+    });
+
+    render(<RealtimeView authedFetch={authedFetch} sseUrl={(path) => path} />);
+    await userEvent.click(screen.getByRole('button', { name: '开始录音' }));
+
+    // "Permission denied" alone does not tell anyone where to click.
+    expect(await screen.findByText(/麦克风权限被拒绝/)).toBeInTheDocument();
+    expect(screen.getByText('发生错误')).toBeInTheDocument();
   });
 
   it('does not start a recorder after the session already ended while requesting the microphone', async () => {

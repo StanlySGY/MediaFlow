@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import type { ASRSegment, StandardASRStreamEvent } from '../types';
 import { buildSrt, buildVtt } from '../lib/subtitle';
-import { downloadFile, formatDur } from '../lib/download';
+import { downloadBlob, downloadFile, formatDur } from '../lib/download';
+import { textEntry, zipEntries } from '../lib/zip';
 import { errorMessage } from '../lib/errors';
 import { rejectUploadFile, type UploadLimits } from '../lib/uploadPreflight';
 
@@ -91,6 +92,10 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
   // A retry is only offered when the failed file is still in this tab — after
   // a page reload the persisted task id is there but the File object is not.
   const [hasSubmittableFile, setHasSubmittableFile] = useState(false);
+  // A bundle needs the source audio, which only exists in this tab (the
+  // pipeline deletes its copy on completion). Tracked as state so the export
+  // bar knows whether to offer it at all.
+  const [hasLocalMedia, setHasLocalMedia] = useState(false);
   const [taskErrorHint, setTaskErrorHint] = useState<string | null>(null);
   const [taskErrorCode, setTaskErrorCode] = useState<string | null>(null);
 
@@ -100,6 +105,11 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
   const [mediaUrl, setMediaUrl] = useState<string | null>(null);
   const [mediaIsVideo, setMediaIsVideo] = useState(false);
   const [segmentsEdited, setSegmentsEdited] = useState(false);
+  // Proofreading used to be one-way: the only way back from a bad edit was to
+  // retype the original. The undo stack is a plain list of prior segment
+  // arrays, capped so a long proofreading session cannot grow without bound.
+  const [undoDepth, setUndoDepth] = useState(0);
+  const editHistoryRef = useRef<ASRSegment[][]>([]);
 
   const esRef = useRef<EventSource | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -135,9 +145,12 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     }
     setMediaUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
     setMediaIsVideo(false);
+    setHasLocalMedia(false);
     setUploadProgress(-1);
     setSegments([]);
     setSegmentsEdited(false);
+    editHistoryRef.current = [];
+    setUndoDepth(0);
     setTaskId(null);
     setTaskStatus('—');
     setTaskTotalSegs('—');
@@ -212,8 +225,25 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
 
   // Inline proofreading: update a segment's text so SRT/VTT exports reflect the edit.
   const handleEditSegment = (segId: number, text: string) => {
-    setSegments((prev) => prev.map((s) => (s.segment_id === segId ? { ...s, text } : s)));
+    const current = segments.find((s) => s.segment_id === segId);
+    // Committing the same text (an Enter on an untouched row) is not an edit:
+    // no undo step, and the export stays on the server's subtitle.
+    if (!current || current.text === text) return;
+    editHistoryRef.current = [...editHistoryRef.current.slice(-49), segments];
+    setUndoDepth(editHistoryRef.current.length);
+    setSegments(segments.map((s) => (s.segment_id === segId ? { ...s, text } : s)));
     setSegmentsEdited(true);
+  };
+
+  const undoEdit = () => {
+    const previous = editHistoryRef.current.pop();
+    if (!previous) return;
+    setUndoDepth(editHistoryRef.current.length);
+    setSegments(previous);
+    // Depth 0 means every edit has been undone, so the export goes back to the
+    // server's own subtitle (word grouping, overlap de-duplication) rather than
+    // the locally rebuilt one.
+    setSegmentsEdited(editHistoryRef.current.length > 0);
   };
 
   const handleFileSelect = async (file: File) => {
@@ -232,6 +262,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     if (generation !== taskGenerationRef.current) return;
     lastFileRef.current = file;
     setHasSubmittableFile(true);
+    setHasLocalMedia(true);
     setTaskStatus('uploading');
     setUploadProgress(0);
 
@@ -342,6 +373,8 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     const status = result.status || 'done';
     setSegments(finalSegments);
     setSegmentsEdited(false);
+    editHistoryRef.current = [];
+    setUndoDepth(0);
     setTaskTotalSegs(finalSegments.length);
     setTaskFinSegs(finalSegments.length);
     setFullText(result.text || '');
@@ -510,6 +543,8 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
       setMediaUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });
       setMediaIsVideo(false);
       setSegmentsEdited(false);
+      editHistoryRef.current = [];
+      setUndoDepth(0);
 
       if (!info.status || !TERMINAL_STATUSES.has(info.status)) {
         setTaskId(tid);
@@ -594,6 +629,9 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
       downloadFile(`${taskId}.${fmt}`, fmt === 'srt' ? buildSrt(segments) : buildVtt(segments), mime);
       return;
     }
+    // A task opened from history has no local file and no unedited copy of the
+    // segments on screen (the proofread pane starts from the merged text), so
+    // the only place its subtitle exists is the server.
     try {
       const r = await authedFetch(`/asr/file/${taskId}/subtitle?format=${fmt}`);
       if (!r.ok) {
@@ -607,6 +645,33 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
   };
 
   /**
+   * One archive with everything a transcription is worth keeping as: the
+   * original audio, the subtitles and the plain text. Downloading three files
+   * separately and then re-finding them in the Downloads folder is the part
+   * users actually complain about.
+   *
+   * Only offered while the source file is in this tab: the server deletes its
+   * copy when the task ends, and a history task has no audio to give.
+   */
+  const downloadBundle = async (): Promise<boolean> => {
+    const file = lastFileRef.current;
+    if (!taskId || !file) return false;
+    const base = file.name.replace(/\.[^.]+$/, '') || taskId;
+    const subtitle = segmentsEdited
+      ? buildSrt(segments)
+      : await authedFetch(`/asr/file/${taskId}/subtitle?format=srt`)
+        .then((r) => (r.ok ? r.text() : ''))
+        .catch(() => '');
+    const entries = [
+      { name: file.name, data: new Uint8Array(await file.arrayBuffer()) },
+      textEntry(`${base}.txt`, fullText),
+    ];
+    if (subtitle.trim()) entries.push(textEntry(`${base}.srt`, subtitle));
+    downloadBlob(`${base}-${taskId.slice(0, 8)}.zip`, zipEntries(entries));
+    return true;
+  };
+
+  /**
    * Resend the last submitted file after a failure the server labelled
    * retryable. Cancelled and permanent failures (bad audio, rejected by the
    * upstream) are not resent — the server already decided which is which.
@@ -614,6 +679,9 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
   const retryTask = async () => {
     const file = lastFileRef.current;
     if (!file) return false;
+    // The pipeline deletes the uploaded source once it finishes, and the
+    // retryable failures it reports (an upstream blip, an interrupted run) are
+    // exactly the ones that get here — so the retry carries the file again.
     await handleFileSelect(file);
     return true;
   };
@@ -639,7 +707,9 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     ovHints, setOvHints, ovTimestamps, setOvTimestamps, ovTimestampsTouched, setOvTimestampsTouched,
     activePane, setActivePane, copied, taskError, clearTaskError,
     taskErrorHint, taskErrorCode, taskRetryable, canRetryTask: taskRetryable && hasSubmittableFile,
-    uploadProgress, mediaUrl, mediaIsVideo, segmentsEdited, mediaRef,
+    uploadProgress, mediaUrl, mediaIsVideo, segmentsEdited, mediaRef, hasLocalMedia,
+    downloadBundle,
+    undoDepth, undoEdit,
     resetTask, abortTask, retryTask, handleSeek, handleEditSegment, handleFileSelect,
     loadHistoricalTask, statusLabel, downloadSubtitle, handleCopy,
   };

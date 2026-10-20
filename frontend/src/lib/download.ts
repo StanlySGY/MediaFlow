@@ -15,3 +15,12 @@ export const formatDur = (s: number): string => {
   const sec = Math.floor(s % 60);
   return h ? `${h}h${m}m` : `${m}m${sec}s`;
 };
+
+// Trigger a client-side download of an already-built Blob (e.g. a zip).
+export const downloadBlob = (name: string, blob: Blob): void => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};

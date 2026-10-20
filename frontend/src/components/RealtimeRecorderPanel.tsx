@@ -1,10 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ClipboardCopy, Download, Mic, Square, Trash2 } from 'lucide-react';
+import { ClipboardCopy, Download, Mic, MicOff, Square, Trash2 } from 'lucide-react';
 import { StandardASRStreamEvent } from '../types';
 import { errorMessage, responseError } from '../lib/errors';
 import { applySplice } from '../lib/splice';
 import { downloadFile } from '../lib/download';
 import { Accordion } from './Accordion';
+import { AudioLevelMeter } from './AudioLevelMeter';
+
+/** "realtime-2026-10-20-1530.txt" — a constant filename meant every recording
+ *  downloaded over the last one, and the browser's "keep both" fallback leaves
+ *  files nobody can tell apart. */
+const transcriptFileName = (now = new Date()) => {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `realtime-${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}.txt`;
+};
 
 interface RealtimeRecorderPanelProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
@@ -47,6 +56,30 @@ const formatFromMime = (mimeType: string) => {
   return 'webm';
 };
 
+/**
+ * getUserMedia rejections are the most likely failure a first-time user hits,
+ * and the DOMException messages are short English strings ("Permission denied")
+ * that do not say what to do. Each branch below names the one action that fixes
+ * it on the machine the console is actually running on.
+ */
+const microphoneErrorMessage = (error: unknown): string => {
+  const name = (error as { name?: string })?.name || '';
+  switch (name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return '麦克风权限被拒绝。请点地址栏左侧的锁形图标，把「麦克风」改成允许，然后重新开始录音。';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return '没有找到可用的麦克风。请插好麦克风，或在系统声音设置里确认输入设备已启用。';
+    case 'NotReadableError':
+      return '麦克风被其他程序占用（会议软件、录音工具），或系统未授予浏览器麦克风权限。关掉占用它的程序后再试。';
+    case 'AbortError':
+      return '麦克风初始化被中断，请重新开始录音。';
+    default:
+      return errorMessage(error);
+  }
+};
+
 const blobToBase64 = async (blob: Blob) => {
   const bytes = new Uint8Array(await blob.arrayBuffer());
   let binary = '';
@@ -76,6 +109,14 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   // null = not fetched yet. Advisory only: the server re-checks the cap when
   // the session is created, so a stale count can never start a 5th recording.
   const [liveSessions, setLiveSessions] = useState<number | null>(null);
+  // Live microphone stream, kept in state (not only in a ref) so the level
+  // meter can attach to it the moment the recorder starts.
+  const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  // Whether the recorder has ever seen a non-silent frame. A muted or wrong
+  // input device produces a perfectly normal-looking recording that ends with
+  // an empty transcript; this is the only point where that is still fixable.
+  const [heardSound, setHeardSound] = useState(false);
+  const [silentFor, setSilentFor] = useState(0);
   const mountedRef = useRef(true);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -108,10 +149,42 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     }
   }, [authedFetch, maxSessions]);
 
+  // Silence watchdog. MediaRecorder happily encodes a muted track, so the
+  // first evidence of a dead microphone used to be an empty transcript after
+  // the recording ended. Levels arrive ~4Hz from the meter; the threshold sits
+  // above room tone so a quiet-but-live room does not trip it.
+  const lastSoundAtRef = useRef(0);
+  const handleInputLevel = useCallback((level: number) => {
+    if (level > 0.08) {
+      lastSoundAtRef.current = Date.now();
+      setHeardSound(true);
+    }
+  }, []);
+
   const appendLog = (event: string, data: Record<string, unknown> = {}) => {
     const line = JSON.stringify({ ts: new Date().toISOString(), event, ...data });
     setLogs((prev) => [...prev.slice(-199), line]);
   };
+
+  useEffect(() => {
+    if (!isRecording) return;
+
+    const started = Date.now();
+    lastSoundAtRef.current = started;
+    let warned = false;
+    const timer = window.setInterval(() => {
+      const since = Date.now() - lastSoundAtRef.current;
+      // Grace period: the first frames are quiet while the device ramps up.
+      setSilentFor(since > 3000 ? Math.floor(since / 1000) : 0);
+      // One line per recording is enough to diagnose a dead input; repeating
+      // it every second would bury the rest of the log.
+      if (!warned && since > 3000) {
+        warned = true;
+        appendLog('input_silent', { seconds: Math.floor(since / 1000) });
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isRecording]);
 
   const releaseSession = useCallback((sessionId: string) => {
     if (!sessionId) return Promise.resolve();
@@ -142,6 +215,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     recorderRef.current = null;
+    setMicStream(null);
     releaseSession(sessionId);
   }, [releaseSession]);
 
@@ -326,6 +400,10 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     setLogs([]);
     setChunks(0);
     setBytes(0);
+    setMicStream(null);
+    setSilentFor(0);
+    setHeardSound(false);
+    lastSoundAtRef.current = Date.now();
     seqRef.current = 0;
     pushChainRef.current = Promise.resolve();
 
@@ -374,6 +452,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         return;
       }
       streamRef.current = stream;
+      setMicStream(stream);
       const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       recorderRef.current = recorder;
       recorder.ondataavailable = (event) => {
@@ -435,8 +514,11 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       if (recordingSessionId && sessionIdRef.current !== recordingSessionId) return;
       cleanup(generation);
       setState('error');
-      setNotice(errorMessage(e));
-      appendLog('recording_error', { message: errorMessage(e) });
+      setNotice(microphoneErrorMessage(e));
+      appendLog('recording_error', {
+        name: (e as { name?: string })?.name || null,
+        message: errorMessage(e),
+      });
     }
   };
 
@@ -448,6 +530,21 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       void refreshCapacity();
     }
   };
+
+  // Escape stops the recording: reaching for the mouse mid-sentence loses the
+  // thread of what is being said.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !isRecording) return;
+      const target = event.target as HTMLElement | null;
+      // Escape in a text field or dialog means "cancel that", not "stop".
+      if (target?.closest('input, textarea, select, [role="dialog"]')) return;
+      event.preventDefault();
+      stopRecording();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   const copyLogs = async () => {
     await navigator.clipboard?.writeText(logs.join('\n'));
@@ -514,7 +611,40 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
           已发送 <b className="text-fg font-medium">{chunks}</b> 包 ·
           累计 <b className="text-fg font-medium">{bytes.toLocaleString()}</b> 字节
         </span>
+        {isRecording && (
+          // Keyboard-only hint: on a touch device there is no Escape key, so
+          // it would just be a line of noise under the buttons.
+          <span className="text-meta text-muted-2 self-center hidden [@media(hover:hover)]:inline">
+            Esc 停止录音
+          </span>
+        )}
       </div>
+
+      {/* Input level. Shown from the moment the microphone opens, because
+          "is this thing hearing me" is the question the button row cannot
+          answer. */}
+      {(isRecording || state === 'connecting') && (
+        <div className="mb-4 flex items-center gap-3">
+          <span className="text-meta text-muted shrink-0">
+            {heardSound ? '输入电平' : '等待声音'}
+          </span>
+          <AudioLevelMeter stream={micStream} active={isRecording} onLevel={handleInputLevel} className="flex-1 min-w-0" />
+        </div>
+      )}
+
+      {isRecording && silentFor >= 3 && (
+        <div
+          className="flex items-start gap-2 p-3 mb-4 rounded-lg border border-warn/25 bg-warn-soft text-warn text-[13px]"
+          role="status"
+          aria-live="polite"
+        >
+          <MicOff className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>
+            已连续 {silentFor} 秒没有收到声音。请检查麦克风是否被静音、系统输入设备选得对不对，
+            以及浏览器地址栏的麦克风权限；否则这次录音不会出字。
+          </span>
+        </div>
+      )}
 
       {notice && (
         <div className="p-3 mb-4 rounded-lg border border-err/20 bg-err-soft text-err text-[13px]">
@@ -542,7 +672,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
               <span>复制文稿</span>
             </button>
             <button
-              onClick={() => downloadFile('realtime-recording.txt', transcript, 'text/plain;charset=utf-8')}
+              onClick={() => downloadFile(transcriptFileName(), transcript, 'text/plain;charset=utf-8')}
               disabled={!transcript}
               className="text-[12px] py-1.5 px-3"
             >

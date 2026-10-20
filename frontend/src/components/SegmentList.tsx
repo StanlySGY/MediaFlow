@@ -145,7 +145,7 @@ export const SegmentList: React.FC<SegmentListProps> = ({
                     void toggleExpand(seg.segment_id);
                   }
                 }}
-                className="flex items-start gap-3 px-4 py-3 cursor-pointer select-none outline-none focus-visible:bg-surface-2 hover:bg-surface-2 transition-colors"
+                className="flex items-start gap-3 px-4 py-3 cursor-pointer select-none outline-none focus-visible:bg-surface-2 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 hover:bg-surface-2 transition-colors"
               >
                 <span className="font-mono text-meta text-muted-2 w-6 shrink-0 pt-1 tabular-nums text-right">
                   {seg.segment_id}
@@ -217,7 +217,7 @@ export const SegmentList: React.FC<SegmentListProps> = ({
                       onClick={(e) => { e.stopPropagation(); startEdit(seg); }}
                       title="校对这段文本"
                       aria-label={`校对第 ${seg.segment_id} 段`}
-                      className="segment-action w-7 h-7 p-0 border-0 bg-transparent text-muted opacity-0 group-hover/seg:opacity-100 focus-visible:opacity-100 hover:text-accent transition-opacity"
+                      className="segment-action w-7 h-7 p-0 border-0 bg-transparent text-muted opacity-0 group-hover/seg:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:text-accent transition-opacity"
                     >
                       <PenLine className="w-3.5 h-3.5" />
                     </button>
@@ -227,7 +227,7 @@ export const SegmentList: React.FC<SegmentListProps> = ({
                       onClick={(e) => { e.stopPropagation(); onSeek(seg.start); }}
                       title="跳到此处播放"
                       aria-label={`播放第 ${seg.segment_id} 段`}
-                      className="segment-action w-7 h-7 p-0 border-0 bg-transparent text-muted opacity-0 group-hover/seg:opacity-100 focus-visible:opacity-100 hover:text-accent transition-opacity"
+                      className="segment-action w-7 h-7 p-0 border-0 bg-transparent text-muted opacity-0 group-hover/seg:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:text-accent transition-opacity"
                     >
                       <Play className="w-3.5 h-3.5" />
                     </button>
