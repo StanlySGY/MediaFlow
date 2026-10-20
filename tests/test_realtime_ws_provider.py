@@ -169,7 +169,7 @@ async def test_pcm_stream_maps_qwen_events_to_cumulative_text(monkeypatch):
         "format": "pcm_s16le",
         "channels": 1,
         "enable_partial": True,
-        "enable_vad": True,
+        "enable_vad": False,
         "language": "Chinese",
     }
     binary_frames = [item for item in socket.sent if isinstance(item, bytes)]

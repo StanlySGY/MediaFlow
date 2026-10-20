@@ -309,7 +309,10 @@ class RealtimeWSProvider:
             "format": "pcm_s16le",
             "channels": _TARGET_CHANNELS,
             "enable_partial": True,
-            "enable_vad": True,
+            # Qwen3-ASR WebSocket VAD can finalize short pauses too early and
+            # lose/rewrite words in the final transcript. Keep partial results
+            # enabled, but let the explicit stop frame finalize the full audio.
+            "enable_vad": False,
         }
         # Per-session partial-throttle overrides; upstream ignores absent/invalid
         # fields and falls back to its global config. Lets latency sweeps run
