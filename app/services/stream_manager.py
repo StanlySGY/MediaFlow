@@ -23,7 +23,7 @@ from app.services.asr import ASRError, create_provider
 from app.services.asr.realtime_base import classify_message
 from app.services.asr_monitoring import asr_call_context
 from app.services.ffmpeg_service import FFmpegError, normalize_to_wav, probe_duration
-from app.services.history_index import HistoryIndex
+from app.services.history_index import SEARCH_TEXT_LIMIT, HistoryIndex
 from app.services.merger import merge_segments
 
 log = logging.getLogger(__name__)
@@ -126,6 +126,9 @@ def _record_from_task(task: "_Task") -> dict:
         "created_at": task.created_at,
         "updated_at": time.time(),
         "in_memory": True,
+        # Private: the search haystack needs the whole transcript, while `text`
+        # stays the 200-char preview the list renders.
+        "_full_text": (task.result.text or "")[:SEARCH_TEXT_LIMIT],
     }
 
 

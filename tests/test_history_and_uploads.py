@@ -71,6 +71,41 @@ def test_index_searches_the_whole_transcript_not_the_preview(tmp_path):
     assert manager.list_history(q="结尾的关键词")["total"] == 1
 
 
+def test_live_task_is_searchable_past_the_preview(tmp_path):
+    """An in-memory task must search on its whole transcript, not the preview.
+
+    The record list shows 200 chars, and `upsert` used to rebuild the haystack
+    from that same field — so a just-finished task could not be found by a
+    phrase from the middle of it, while the identical task on disk could.
+    """
+    from app.models.schemas import Segment, TaskResult, TaskStatus
+    from app.services.stream_manager import _Task
+
+    out = tmp_path / "out"
+    out.mkdir()
+    settings = Settings(temp_dir=tmp_path / "tmp", output_dir=out, history_refresh_seconds=0)
+    manager = TaskManager(settings)
+
+    long_text = "开头" + "填充" * 200 + "结尾的关键词"
+    task = _Task("live1", settings)
+    task.original_name = "live.wav"
+    task.info.status = TaskStatus.done
+    task.result = TaskResult(
+        task_id="live1",
+        status=TaskStatus.done,
+        text=long_text,
+        segments=[Segment(segment_id=1, start=0, end=1, file_path=tmp_path / "s.wav", text=long_text)],
+    )
+    manager._tasks["live1"] = task
+
+    tasks = manager.list_history(q="结尾的关键词")["tasks"]
+    assert [t["task_id"] for t in tasks] == ["live1"]
+    # The row still carries only the preview.
+    assert len(manager.list_history()["tasks"][0]["text"]) == 200
+    # And the private full text does not leak into the API response.
+    assert "_full_text" not in manager.list_history()["tasks"][0]
+
+
 def test_index_drops_rows_when_the_files_are_deleted(tmp_path):
     out = tmp_path / "out"
     out.mkdir()

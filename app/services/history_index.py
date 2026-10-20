@@ -126,13 +126,20 @@ class HistoryIndex:
     # ---- mutation from live tasks ----
 
     def upsert(self, record: dict) -> None:
-        """Insert or replace a record for an in-memory task."""
+        """Insert or replace a record for an in-memory task.
+
+        `record` may carry the task's full transcript under `_full_text`; the
+        row's own `text` is the 200-char preview, and building the search
+        haystack from that alone would make a live task unsearchable past its
+        first 200 characters — exactly the gap this index exists to close.
+        """
         task_id = str(record.get("task_id") or "")
         if not task_id:
             return
         existing = self._records.get(task_id) or _new_record(task_id, record.get("created_at") or time.time())
+        full_text = record.get("_full_text")
         existing.update(record)
-        existing["_search"] = _haystack(existing)
+        existing["_search"] = _haystack(existing, full_text=full_text)
         self._records[task_id] = existing
 
     def remove(self, task_id: str) -> None:
