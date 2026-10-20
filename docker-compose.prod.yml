@@ -19,8 +19,9 @@
 # below are created by the host and are normally owned by the host user, which
 # uid 10001 cannot write to. One-time fix on the site host, before `up -d`:
 #   mkdir -p temp outputs config && sudo chown -R 10001:10001 temp outputs config
-# If they are not writable, startup logs which path failed and prints this
-# exact command — it does not fail silently.
+# If they are not writable, the container refuses to start: startup names each
+# path it cannot write, prints this exact command, and exits non-zero. A
+# container that answers /health but dies on the first upload is worse off.
 services:
   mediaflow:
     image: mediaflow:1.8.0

@@ -15,7 +15,7 @@
 |------|------|------|
 | `vllm-part-aa` + `vllm-part-ab` + `vllm-checksum.txt` | ~6.5G | ASR 推理镜像（两片分卷，刻在两张 4G 盘上） |
 | `streaming.tar.gz` | ~? | 流式服务镜像（本地预构建，现场无需联网构建） |
-| `mediaflow-1.7.3-arm64.tar.gz` | ~? | MediaFlow 应用镜像（`./build.sh --save` 生成） |
+| `mediaflow-1.8.0-arm64.tar.gz` | ~? | MediaFlow 应用镜像（`./build.sh --save` 生成） |
 | `Qwen3-ASR-1.7B.tar.gz` | ~3.4G | 模型文件（现场已有模型则不用带） |
 | `deploy/qwen3-asr-npu/` 目录 | 52K | ASR 服务的 docker-compose.yml + streaming_server |
 | MediaFlow 项目代码 | — | `docker-compose.prod.yml`、`.env.example` 等 |
@@ -68,17 +68,17 @@ docker images | grep vllm-ascend
 ### 2.1 如果 MediaFlow 镜像是整包
 
 ```bash
-docker load -i mediaflow-1.7.3-arm64.tar.gz
+docker load -i mediaflow-1.8.0-arm64.tar.gz
 docker images | grep mediaflow
-# 应看到 mediaflow    1.7.3
+# 应看到 mediaflow    1.8.0
 ```
 
 ### 2.2 如果 MediaFlow 镜像也分片了
 
 ```bash
 sha256sum -c mediaflow-checksum.txt        # 校验
-cat mediaflow-part-* > mediaflow-1.7.3-arm64.tar.gz
-docker load -i mediaflow-1.7.3-arm64.tar.gz
+cat mediaflow-part-* > mediaflow-1.8.0-arm64.tar.gz
+docker load -i mediaflow-1.8.0-arm64.tar.gz
 ```
 
 ---
@@ -250,8 +250,12 @@ REALTIME_ASR_MODEL=qwen3-asr
 
 ```bash
 cd /home/deploy/MediaFlow
+mkdir -p temp outputs config                   # 数据卷属主,只需一次
+sudo chown -R 10001:10001 temp outputs config
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+> 镜像以非 root（uid `10001`）运行，这两条 `chown` 是必需的：属主不对时容器会直接拒绝启动，日志会重复提示同一条命令。
 
 ### 6.4 确认运行
 
@@ -403,7 +407,7 @@ cat vllm-part-* > vllm-ascend-v0.22.1rc1.tar.gz
 gunzip -c vllm-ascend-v0.22.1rc1.tar.gz | docker load
 
 # 2. 导入 MediaFlow 镜像
-docker load -i mediaflow-1.7.3-arm64.tar.gz
+docker load -i mediaflow-1.8.0-arm64.tar.gz
 
 # 3. 放模型
 mkdir -p /home/models && tar xzf Qwen3-ASR-1.7B.tar.gz -C /home/models/
@@ -424,6 +428,7 @@ curl http://localhost:8023/health
 # 7. 起 MediaFlow
 cd /home/deploy/MediaFlow
 cp .env.example .env && vi .env      # 填 ASR / REALTIME 地址
+mkdir -p temp outputs config && sudo chown -R 10001:10001 temp outputs config
 docker compose -f docker-compose.prod.yml up -d
 curl http://localhost:8999/health
 
@@ -439,5 +444,5 @@ curl http://localhost:8999/health
 | vllm-ascend | v0.22.1rc1 |
 | CANN | 9.0.1 |
 | Qwen3-ASR | 1.7B |
-| MediaFlow | 1.7.3 |
+| MediaFlow | 1.8.0 |
 ```

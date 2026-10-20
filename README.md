@@ -133,7 +133,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 > ⚠️ **数据卷属主（1.8.0 起）**：镜像以非 root（uid `10001`）运行，`./temp`、`./outputs`、`./config` 是宿主机的 bind mount。首次部署或从旧版本升级前执行一次：
 > `mkdir -p temp outputs config && sudo chown -R 10001:10001 temp outputs config`
-> 否则容器能启动、`/health` 正常，但第一次上传或保存配置就会失败。启动日志会指名哪个路径不可写并打印这条命令。
+> 否则容器**会在启动时直接退出**（非 0 退出码，`docker logs` 可见）：启动日志逐条指名哪个路径不可写并打印这条命令。
 
 ## 对接自部署 ASR
 

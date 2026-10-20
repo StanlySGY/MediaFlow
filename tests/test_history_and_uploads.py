@@ -207,13 +207,16 @@ def test_upload_gate_allows_when_the_disk_check_cannot_run(tmp_path, monkeypatch
 # ---- volume permissions ----
 
 
-def test_volume_check_names_the_fix_when_a_mount_is_not_writable(tmp_path, caplog):
-    """An unprivileged container on a root-owned bind mount must say what to do.
+def test_volume_check_refuses_to_start_when_a_mount_is_not_writable(tmp_path, caplog):
+    """An unprivileged container on a root-owned bind mount must stop and say what to do.
 
     The alternative is the failure this was written for: the service starts,
-    /health answers, and the first upload gets a bare 500.
+    /health answers, the UI loads, and the first upload or config save gets a
+    bare 500 — on site, after delivery.
     """
     import logging
+
+    import pytest
 
     from app.main import _check_volume_access
 
@@ -226,11 +229,24 @@ def test_volume_check_names_the_fix_when_a_mount_is_not_writable(tmp_path, caplo
         runtime_config_path=tmp_path / "cfg" / "rc.json",
     )
     try:
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError) as excinfo:
             _check_volume_access(settings)
         messages = [r.getMessage() for r in caplog.records]
         assert any("outputs" in m and "not writable" in m for m in messages)
         # The fix has to be in the message, otherwise it is just a stack trace.
         assert any("chown -R" in m for m in messages)
+        assert "chown -R" in str(excinfo.value)
     finally:
         blocked.chmod(0o700)
+
+
+def test_volume_check_accepts_writable_mounts(tmp_path):
+    from app.main import _check_volume_access
+
+    settings = Settings(
+        temp_dir=tmp_path / "tmp",
+        output_dir=tmp_path / "out",
+        runtime_config_path=tmp_path / "cfg" / "rc.json",
+    )
+    _check_volume_access(settings)  # must not raise
+    assert not list((tmp_path / "out").glob(".write-probe-*"))

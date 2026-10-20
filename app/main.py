@@ -376,17 +376,23 @@ def _sweep_temp_dir(settings) -> int:
 
 
 def _check_volume_access(settings) -> None:
-    """Fail fast, with a fix, when the data volumes are not writable.
+    """Refuse to start when a data volume is not writable, and print the fix.
 
     The image runs as an unprivileged uid (10001). A bind mount created by an
     earlier root-run container, or a directory the host user owns, is root- or
-    host-owned and not writable by that uid — the service then starts, answers
-    /health, and only fails when someone uploads or saves a config. Naming the
-    chown command here turns a confusing 500 into a one-line fix.
+    host-owned and not writable by that uid. Such a container used to come up
+    healthy — /health answered 200, the UI loaded — and then fail on the first
+    upload or config save, which for an onsite deployment means the fault only
+    shows up after it has been delivered. Now the probe raises, uvicorn aborts
+    the startup, and the log's last line is the chown command that fixes it.
+
+    Reads of the runtime config also persist (the profile list is written back
+    on first read), so a read-only config mount breaks GET /asr/profiles too.
     """
     if not hasattr(os, "geteuid"):
         return
     uid = os.geteuid()
+    unwritable = []
     for label, path in (
         ("outputs", settings.output_dir),
         ("temp", settings.temp_dir),
@@ -397,6 +403,7 @@ def _check_volume_access(settings) -> None:
             path.mkdir(parents=True, exist_ok=True)
             probe.write_text("", encoding="utf-8")
         except OSError as e:
+            unwritable.append(label)
             log.error(
                 "data volume %s (%s) is not writable by uid %d: %s. "
                 "If it is a bind mount, run: chown -R %d:%d <host dir>",
@@ -409,6 +416,12 @@ def _check_volume_access(settings) -> None:
             )
         finally:
             probe.unlink(missing_ok=True)
+    if unwritable:
+        raise RuntimeError(
+            "data volume(s) %s are not writable by uid %d — run on the host: "
+            "mkdir -p temp outputs config && sudo chown -R %d:%d temp outputs config"
+            % (", ".join(unwritable), uid, uid, uid)
+        )
 
 
 # On SIGTERM the managers drain: realtime sessions ask the upstream for their
