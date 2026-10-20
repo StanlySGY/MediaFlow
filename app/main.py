@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -373,6 +375,42 @@ def _sweep_temp_dir(settings) -> int:
     return removed
 
 
+def _check_volume_access(settings) -> None:
+    """Fail fast, with a fix, when the data volumes are not writable.
+
+    The image runs as an unprivileged uid (10001). A bind mount created by an
+    earlier root-run container, or a directory the host user owns, is root- or
+    host-owned and not writable by that uid — the service then starts, answers
+    /health, and only fails when someone uploads or saves a config. Naming the
+    chown command here turns a confusing 500 into a one-line fix.
+    """
+    if not hasattr(os, "geteuid"):
+        return
+    uid = os.geteuid()
+    for label, path in (
+        ("outputs", settings.output_dir),
+        ("temp", settings.temp_dir),
+        ("config", settings.runtime_config_path.parent),
+    ):
+        probe = path / f".write-probe-{uuid.uuid4().hex}"
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe.write_text("", encoding="utf-8")
+        except OSError as e:
+            log.error(
+                "data volume %s (%s) is not writable by uid %d: %s. "
+                "If it is a bind mount, run: chown -R %d:%d <host dir>",
+                label,
+                path,
+                uid,
+                e,
+                uid,
+                uid,
+            )
+        finally:
+            probe.unlink(missing_ok=True)
+
+
 # On SIGTERM the managers drain: realtime sessions ask the upstream for their
 # final transcript, and running file tasks stop at the next stage boundary.
 # Bounded, because `docker stop` kills the process 10s after SIGTERM anyway —
@@ -398,6 +436,7 @@ async def _shutdown(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    _check_volume_access(app.state.settings)
     _sweep_temp_dir(app.state.settings)
     await app.state.manager.start()
     await app.state.realtime_manager.start()

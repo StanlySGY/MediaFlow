@@ -14,6 +14,13 @@
 # Networking: host mode — MAAS/OpenStack & firewalld hosts drop traffic to the
 # docker bridge, so host binding avoids forwarding. The sample .env binds to
 # loopback; for remote access, set ACCESS_TOKENS before setting HOST=0.0.0.0.
+#
+# Permissions: the image runs as uid 10001 (not root). The three bind mounts
+# below are created by the host and are normally owned by the host user, which
+# uid 10001 cannot write to. One-time fix on the site host, before `up -d`:
+#   mkdir -p temp outputs config && sudo chown -R 10001:10001 temp outputs config
+# If they are not writable, startup logs which path failed and prints this
+# exact command — it does not fail silently.
 services:
   mediaflow:
     image: mediaflow:1.8.0

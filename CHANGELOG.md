@@ -20,6 +20,8 @@
 - **`/docs` 与 `/openapi.json` 需要令牌**：启用 `ACCESS_TOKENS` 后，这两个地址与 API 一样需要鉴权，浏览器可用 `?token=` 或登录后签发的 HttpOnly cookie 进入。此前接口清单在公网/内网共享网段上完全公开。
 - **优雅停机**：SIGTERM 后最多等待 8 秒，让实时会话收尾、文件任务在阶段边界停下；超时的任务在下次启动时标记为 `interrupted`（此前直接中断）。
 - **容器以非 root 运行**（uid 10001），`temp` / `outputs` / `config` 在镜像内预先创建并授权。
+  ⚠️ 宿主机上的 bind mount 需要一次性调整属主：`sudo chown -R 10001:10001 temp outputs config`。
+  未调整时容器仍能启动、`/health` 正常，但第一次上传/保存配置会失败；启动日志会指名哪个路径不可写并打印该命令。
 - `/asr/transcribe-stream` 的事件历史改为与实时会话一致的 512 条上限。
 - 已缓存的历史任务不再每次请求都重新解析 JSON（`_rehydrate` 结果留在有界的内存表里）。
 - CI 增加独立的前端类型检查步骤。

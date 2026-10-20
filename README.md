@@ -131,6 +131,10 @@ docker compose -f docker-compose.prod.yml up -d
 
 > ⚠️ **单 worker 运行**：任务状态、SSE 订阅、实时会话都在单进程内存中，请勿给 uvicorn 加 `--workers`，多进程间状态不共享会导致任务与事件错乱。镜像默认即单 worker，`/metrics` 与调用监控也只反映本进程。收到 SIGTERM 时会先等待最多 8 秒让实时会话收尾、任务在阶段边界停下，超时未完成的任务在下次启动时标记为 `interrupted`。
 
+> ⚠️ **数据卷属主（1.8.0 起）**：镜像以非 root（uid `10001`）运行，`./temp`、`./outputs`、`./config` 是宿主机的 bind mount。首次部署或从旧版本升级前执行一次：
+> `mkdir -p temp outputs config && sudo chown -R 10001:10001 temp outputs config`
+> 否则容器能启动、`/health` 正常，但第一次上传或保存配置就会失败。启动日志会指名哪个路径不可写并打印这条命令。
+
 ## 对接自部署 ASR
 
 提供两种 OpenAI 兼容协议，按上游服务暴露的端点二选一：

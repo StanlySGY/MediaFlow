@@ -202,3 +202,35 @@ def test_upload_gate_allows_when_the_disk_check_cannot_run(tmp_path, monkeypatch
     monkeypatch.setattr(module.shutil, "disk_usage", boom)
     gate = UploadGate(max_concurrent=4)
     assert gate.check_disk(tmp_path, declared_bytes=1024) is None
+
+
+# ---- volume permissions ----
+
+
+def test_volume_check_names_the_fix_when_a_mount_is_not_writable(tmp_path, caplog):
+    """An unprivileged container on a root-owned bind mount must say what to do.
+
+    The alternative is the failure this was written for: the service starts,
+    /health answers, and the first upload gets a bare 500.
+    """
+    import logging
+
+    from app.main import _check_volume_access
+
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    blocked.chmod(0o500)  # read + execute, no write
+    settings = Settings(
+        temp_dir=tmp_path / "tmp",
+        output_dir=blocked,
+        runtime_config_path=tmp_path / "cfg" / "rc.json",
+    )
+    try:
+        with caplog.at_level(logging.ERROR):
+            _check_volume_access(settings)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("outputs" in m and "not writable" in m for m in messages)
+        # The fix has to be in the message, otherwise it is just a stack trace.
+        assert any("chown -R" in m for m in messages)
+    finally:
+        blocked.chmod(0o700)
