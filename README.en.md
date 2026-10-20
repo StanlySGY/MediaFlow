@@ -62,10 +62,10 @@ To actually get diarization, enable it **on the upstream side**: OpenAI `respons
 ```bash
 cp .env.example .env         # fill in ASR_API_KEY
 pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8080
+uvicorn app.main:app --host 127.0.0.1 --port 8999
 ```
 
-`ffmpeg` and `ffprobe` must be installed. UI at `http://localhost:8080/`, OpenAPI at `/docs`.
+`ffmpeg` and `ffprobe` must be installed. UI at `http://localhost:8999/`, OpenAPI at `/docs`.
 
 Runtime configuration can be edited from the UI's service-config panel (provider, base URL, API key, model, hotwords, split parameters, access tokens) and takes effect without a restart. Changes persist to `config/runtime_config.json`, which may contain API keys and tokens — the service tightens it to `0600` after writing; do not commit it or expose it to other users.
 
@@ -76,7 +76,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Only loopback is published by default (port from `.env`'s `PORT`, default 8080). To reach the service from another machine, set a strong random `ACCESS_TOKENS` (`openssl rand -hex 32`) **first**, then publish `"8080:8080"` or switch `HOST` to `0.0.0.0`, plus firewall/security-group rules. Never expose the service without tokens.
+Only loopback is published by default (port from `.env`'s `PORT`, default 8999). To reach the service from another machine, set a strong random `ACCESS_TOKENS` (`openssl rand -hex 32`) **first**, then publish `"8999:8999"` or switch `HOST` to `0.0.0.0`, plus firewall/security-group rules. Never expose the service without tokens.
 
 ### Air-gapped delivery
 
@@ -162,10 +162,10 @@ ASR_TIMESTAMPS=false
 ### 30-second acceptance check
 
 ```bash
-curl -sX POST http://localhost:8080/asr/ping
-curl -sX POST http://localhost:8080/asr/file -F "file=@any.wav"
-curl -N http://localhost:8080/asr/file/<task_id>/events
-curl -s  http://localhost:8080/asr/file/<task_id>/result | head -c 600
+curl -sX POST http://localhost:8999/asr/ping
+curl -sX POST http://localhost:8999/asr/file -F "file=@any.wav"
+curl -N http://localhost:8999/asr/file/<task_id>/events
+curl -s  http://localhost:8999/asr/file/<task_id>/result | head -c 600
 ```
 
 Non-empty `result.segments[].words` → timeline-aware stitching + fine-grained subtitles. Empty → LCS dedup + one subtitle per segment. **That is intended behaviour, not a bug** — unless your upstream was supposed to return word timestamps.
@@ -184,14 +184,14 @@ POST   /asr/realtime/{id}/end           end session
 `REALTIME_ASR_PROVIDER` ∈ `realtime_mock` / `realtime_http` / `realtime_ws` / `realtime_offline`. Browsers should emit continuous WebM/Opus chunks with a single `MediaRecorder` and upload them serially by `seq`; MediaFlow keeps one FFmpeg per session converting WebM to 16 kHz 16-bit mono PCM. Non-standard WebSocket protocols need their own provider, or a shim into the HTTP+SSE shape above.
 
 ```bash
-SID=$(curl -sX POST http://localhost:8080/asr/realtime/session \
+SID=$(curl -sX POST http://localhost:8999/asr/realtime/session \
   -H "Content-Type: application/json" \
   -d '{"sample_rate":16000,"format":"pcm_s16le","channels":1,"language":"zh"}' \
   | python -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
-curl -N http://localhost:8080/asr/realtime/$SID/events          # another terminal
-curl -X POST http://localhost:8080/asr/realtime/$SID/audio \
+curl -N http://localhost:8999/asr/realtime/$SID/events          # another terminal
+curl -X POST http://localhost:8999/asr/realtime/$SID/audio \
   -H "Content-Type: application/json" -d '{"seq":1,"audio":"AAAAAAAA","is_final":false}'
-curl -X POST http://localhost:8080/asr/realtime/$SID/end
+curl -X POST http://localhost:8999/asr/realtime/$SID/end
 ```
 
 ## API

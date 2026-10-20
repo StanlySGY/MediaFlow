@@ -68,10 +68,10 @@
 cp .env.example .env
 # 编辑 .env，填入 ASR_API_KEY
 pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8080
+uvicorn app.main:app --host 127.0.0.1 --port 8999
 ```
 
-需要本机已安装 `ffmpeg` 与 `ffprobe`。访问 `http://localhost:8080/` 打开 Web UI，`/docs` 查看 API。
+需要本机已安装 `ffmpeg` 与 `ffprobe`。访问 `http://localhost:8999/` 打开 Web UI，`/docs` 查看 API。
 
 > **运行时配置编辑**：UI 顶部「服务配置」面板可直接修改 provider、base URL、API key、模型、热词、切分参数、鉴权令牌等，点保存即时生效，不需重启服务。改动持久化到 `config/runtime_config.json`（容器里挂载为 `/app/config`），重建容器后仍在，下次启动自动恢复。点击「重置为 .env 默认」可一键清除运行时改动。该文件可能包含 API key / 访问令牌，服务会在写入后将其权限收紧为仅文件所有者可读写（`0600`）；部署时仍不要把该文件提交到 Git 或暴露给其他用户。
 
@@ -82,15 +82,15 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-默认只发布到宿主机 loopback，部署后在本机访问 `http://localhost:8080/`（端口由 `.env` 的 `PORT` 决定，默认 8080）。
+默认只发布到宿主机 loopback，部署后在本机访问 `http://localhost:8999/`（端口由 `.env` 的 `PORT` 决定，默认 8999）。
 
 已有部署的 `.env` 不会因升级而自动覆盖；从旧版样例升级时，请检查 `HOST` 是否仍为 `0.0.0.0`。仅本机使用时改为 `127.0.0.1`；确需远程访问时，先配置令牌再按下文显式开放。
 
-需要从其他机器访问时，先在 `.env` 设置强随机 `ACCESS_TOKENS`（可用 `openssl rand -hex 32` 生成），再按部署方式显式开放网络：普通 Compose 将端口发布改为 `"8080:8080"`；host-network 部署将 `HOST` 改为 `0.0.0.0`。同时配置宿主机防火墙/安全组。不要在未启用令牌时对外开放服务。
+需要从其他机器访问时，先在 `.env` 设置强随机 `ACCESS_TOKENS`（可用 `openssl rand -hex 32` 生成），再按部署方式显式开放网络：普通 Compose 将端口发布改为 `"8999:8999"`；host-network 部署将 `HOST` 改为 `0.0.0.0`。同时配置宿主机防火墙/安全组。不要在未启用令牌时对外开放服务。
 
 #### 浏览器打不开 / 端口连不上？
 
-如果容器日志显示 `Uvicorn running` 且 `docker compose ps` 是 `healthy`，但浏览器超时、本机 `curl localhost:8080` 也 reset/refused，多半是 **Docker 的端口转发（iptables/FORWARD）被宿主机防火墙冲掉了**（RHEL/Rocky 的 firewalld、OpenStack/MAAS 节点常见）。
+如果容器日志显示 `Uvicorn running` 且 `docker compose ps` 是 `healthy`，但浏览器超时、本机 `curl localhost:8999` 也 reset/refused，多半是 **Docker 的端口转发（iptables/FORWARD）被宿主机防火墙冲掉了**（RHEL/Rocky 的 firewalld、OpenStack/MAAS 节点常见）。
 
 - 有 root：`sudo systemctl restart docker` 重新注入规则即可。
 - **没有 root**：改用 host 网络部署，让服务直接绑宿主机端口，绕开 docker 转发：
@@ -211,10 +211,10 @@ ASR_TIMESTAMPS=false
 **接通后的 30 秒验收**
 
 ```bash
-curl -sX POST http://localhost:8080/asr/ping                 # 上游是否可达
-curl -sX POST http://localhost:8080/asr/file -F "file=@any.wav"
-curl -N http://localhost:8080/asr/file/<task_id>/events
-curl -s  http://localhost:8080/asr/file/<task_id>/result | head -c 600
+curl -sX POST http://localhost:8999/asr/ping                 # 上游是否可达
+curl -sX POST http://localhost:8999/asr/file -F "file=@any.wav"
+curl -N http://localhost:8999/asr/file/<task_id>/events
+curl -s  http://localhost:8999/asr/file/<task_id>/result | head -c 600
 ```
 
 判据：`result.segments[].words` 非空 → 时间轴感知拼接 + 细粒度字幕；为空 → 最长公共子串去重 + 分片粒度字幕。**这是预期行为，不是 bug**，除非你的上游本来就该返回 word 时间戳。
@@ -321,25 +321,25 @@ MediaFlow 会为每个会话启动常驻 FFmpeg，将 WebM 转为服务所需的
 
 ```bash
 # 1. 创建会话
-SID=$(curl -sX POST http://localhost:8080/asr/realtime/session \
+SID=$(curl -sX POST http://localhost:8999/asr/realtime/session \
   -H "Content-Type: application/json" \
   -d '{"sample_rate":16000,"format":"pcm_s16le","channels":1,"language":"zh"}' \
   | python -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
 echo "session: $SID"
 
 # 2. 订阅 SSE（另起终端）
-curl -N http://localhost:8080/asr/realtime/$SID/events
+curl -N http://localhost:8999/asr/realtime/$SID/events
 
 # 3. 推 chunk（base64 编码的 PCM 数据）
-curl -X POST http://localhost:8080/asr/realtime/$SID/audio \
+curl -X POST http://localhost:8999/asr/realtime/$SID/audio \
   -H "Content-Type: application/json" \
   -d '{"seq":1,"audio":"AAAAAAAAAAAAAAAA","is_final":false}'
 
 # 4. 结束
-curl -X POST http://localhost:8080/asr/realtime/$SID/end
+curl -X POST http://localhost:8999/asr/realtime/$SID/end
 
 # 5. 或直接发空 chunk + is_final=true 也行
-curl -X POST http://localhost:8080/asr/realtime/$SID/audio \
+curl -X POST http://localhost:8999/asr/realtime/$SID/audio \
   -H "Content-Type: application/json" \
   -d '{"seq":99,"audio":"","is_final":true}'
 ```
@@ -386,12 +386,12 @@ async function pushChunk(b64, isFinal=false) {
 
 ```bash
 # 音频：多段录音拼成一条
-curl -X POST http://localhost:8080/media/concat \
+curl -X POST http://localhost:8999/media/concat \
   -F "files=@part1.mp3" -F "files=@part2.mp3" -F "files=@part3.mp3" \
   -o merged.mp3
 
 # 视频：同编码的多段 mp4 无损拼接（秒级）
-curl -X POST http://localhost:8080/media/concat \
+curl -X POST http://localhost:8999/media/concat \
   -F "files=@clip1.mp4" -F "files=@clip2.mp4" \
   -o merged.mp4
 ```
@@ -440,7 +440,7 @@ curl -X POST http://localhost:8080/media/concat \
 ### 标准文件转写
 
 ```bash
-curl -X POST http://localhost:8080/asr/file \
+curl -X POST http://localhost:8999/asr/file \
   -F "file=@long_meeting.wav"
 # => {"task_id":"ab12...","events_url":"/asr/file/ab12.../events","result_url":"/asr/file/ab12.../result"}
 ```
@@ -448,7 +448,7 @@ curl -X POST http://localhost:8080/asr/file \
 ### 订阅流式结果
 
 ```bash
-curl -N http://localhost:8080/asr/file/ab12.../events
+curl -N http://localhost:8999/asr/file/ab12.../events
 # event: segment
 # data: {"task_id":"ab12...","segment_id":1,"start":0.0,"end":30.0,"text":"……","is_final":true}
 ```
@@ -456,7 +456,7 @@ curl -N http://localhost:8080/asr/file/ab12.../events
 ### 取最终结果
 
 ```bash
-curl http://localhost:8080/asr/file/ab12.../result
+curl http://localhost:8999/asr/file/ab12.../result
 ```
 
 ```json

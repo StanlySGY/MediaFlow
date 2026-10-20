@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     runtime_config_path: Path = Path("./config/runtime_config.json")
 
     host: str = "127.0.0.1"
-    port: int = 8080
+    port: int = 8999
     log_level: str = "info"
 
     @model_validator(mode="after")

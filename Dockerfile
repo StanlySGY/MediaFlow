@@ -46,8 +46,8 @@ RUN useradd --create-home --uid 10001 mediaflow \
     && chown -R mediaflow:mediaflow /app/temp /app/outputs /app/config
 USER mediaflow
 
-ENV HOST=0.0.0.0 PORT=8080
-EXPOSE 8080
+ENV HOST=0.0.0.0 PORT=8999
+EXPOSE 8999
 
 # Signals reach uvicorn directly (no shell wrapper), so SIGTERM starts the
 # graceful shutdown path in app.main — in-flight tasks are awaited briefly and

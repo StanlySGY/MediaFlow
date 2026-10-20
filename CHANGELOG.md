@@ -26,6 +26,7 @@
 - 已缓存的历史任务不再每次请求都重新解析 JSON（`_rehydrate` 结果留在有界的内存表里）。
 - CI 增加独立的前端类型检查步骤。
 - 版本号 1.8.0（`app/main.py`、`frontend/package.json`、`build.sh`、`docker-compose.prod.yml` 四处一致）。
+- **默认端口改为 `8999`**（原 `8080`）：`app/config.py`、`Dockerfile`、三份 compose、`.env.example`、前端 dev proxy 与全部文档同步。已在旧端口上运行的实例需要 `PORT=8999` 或直接重建容器。
 
 ### 修复
 - **历史搜索只能命中前 200 字**：搜索用的文本此前是列表预览的截断版本，长录音中间的一句话搜不到。现在索引保留全文（单条上限 8000 字）用于搜索。

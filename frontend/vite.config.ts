@@ -11,10 +11,10 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/asr': 'http://localhost:8080',
-      '/media': 'http://localhost:8080',
-      '/auth': 'http://localhost:8080',
-      '/health': 'http://localhost:8080',
+      '/asr': 'http://localhost:8999',
+      '/media': 'http://localhost:8999',
+      '/auth': 'http://localhost:8999',
+      '/health': 'http://localhost:8999',
     }
   },
   test: {
