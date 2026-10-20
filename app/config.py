@@ -54,8 +54,19 @@ class Settings(BaseSettings):
     ffmpeg_concurrency: int = 4  # max concurrent ffmpeg slice processes
 
     max_upload_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GiB
+    # How many uploads may be in flight at once. ASR_CONCURRENCY only caps the
+    # upstream calls; without this, several clients can each push a 2 GiB file
+    # to disk simultaneously and fill the volume mid-write.
+    max_concurrent_uploads: int = Field(2, ge=1, le=32)
+    # Uploads are refused while the temp/output volume has less free space than
+    # this (plus the declared upload size). 0 disables the check.
+    min_free_disk_bytes: int = Field(512 * 1024 * 1024, ge=0)
     max_tasks_in_memory: int = 100
     task_ttl_seconds: int = 3600
+    # How stale the cached history listing may be. Every refresh stats one file
+    # per archived task, so this trades freshness for not blocking the loop on
+    # large archives; a finished task forces its own refresh regardless.
+    history_refresh_seconds: float = Field(1.0, ge=0.0, le=60.0)
     output_ttl_seconds: int = 7 * 24 * 3600
 
     # --- Realtime ---

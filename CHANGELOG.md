@@ -3,26 +3,31 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 版本号的落点：`app/main.py` 的 FastAPI `version`、`frontend/package.json`、`build.sh` 的 `DEFAULT_TAG` 与 `docker-compose.prod.yml` 引用的 `mediaflow:<版本>` 四处保持一致。
 
-仓库里真实出现过的版本落点只有 `0.1.0 → 1.2.0 → 1.3.0 → 1.4.0 → 1.4.1 → 1.7.0 → 1.7.1 → 1.7.2 → 1.7.3`：`1.5.x` / `1.6.x` 从未使用；`1.3.1` 只在 2026-07-28 一次提交的 `frontend/package.json` 里出现，随即被 `1.4.1` 覆盖，`build.sh` / `app/main.py` / `docker-compose.prod.yml` 三处从未跟进，因此不单独列为一个发布。首个 git tag 是 `v1.7.3`（2026-10-19 切出，版本号本身落点在 2026-09-23 的 `a34b62d`）。
+仓库里真实出现过的版本落点只有 `0.1.0 → 1.2.0 → 1.3.0 → 1.4.0 → 1.4.1 → 1.7.0 → 1.7.1 → 1.7.2 → 1.7.3 → 1.8.0`：`1.5.x` / `1.6.x` 从未使用；`1.3.1` 只在 2026-07-28 一次提交的 `frontend/package.json` 里出现，随即被 `1.4.1` 覆盖，`build.sh` / `app/main.py` / `docker-compose.prod.yml` 三处从未跟进，因此不单独列为一个发布。首个 git tag 是 `v1.7.3`（2026-10-19 切出，版本号本身落点在 2026-09-23 的 `a34b62d`）。
 
-## [未发布]
+## [1.8.0] - 2026-10-20
 
 ### 新增
-- **实时输入电平**：录音时显示麦克风实时波形（同一路 MediaStream 的 AnalyserNode），连续 3 秒无声音时提示检查静音/输入设备/浏览器权限，并在调试日志记一条 `input_silent`。此前静音麦克风只会表现为"录完没有文字"。
-- **麦克风错误可读化**：`getUserMedia` 的 `NotAllowedError` / `NotFoundError` / `NotReadableError` 分别给出可执行的中文说明，而不是 `Permission denied` 原文。
-- **Esc 停止录音**：焦点在输入框或对话框内时不触发。
-- **撤销校对**：分片校对支持多级撤销（上限 50 步），撤销到底后 SRT/VTT 导出自动回到服务端字幕（保留词级分组与重叠去重）。
-- **完整包导出**：任务完成后可下载「音频 + SRT + 全文」的 zip（浏览器内 STORE 方式打包，无新增依赖）。仅在源文件仍在本页内存中时提供——服务端在任务结束时会删除上传的源文件。
-- 实时录音 TXT 文件名带时间戳（`realtime-YYYY-MM-DD-HHMM.txt`），不再互相覆盖。
+- **上传准入**：`MAX_CONCURRENT_UPLOADS`（默认 2）限制同时进行的上传，超出返回 429 `upload_limit`；`MIN_FREE_DISK_BYTES`（默认 512 MiB）在剩余空间不足时拒绝上传，返回 507 `insufficient_storage`。两项都在读取请求体之前判定，因此被拒的上传不落盘。此前 `ASR_CONCURRENCY` 只约束上游调用，几个客户端同时上传大文件即可把磁盘写满。
+- **启动清理 `temp/`**：进程被 `kill -9` 或容器 OOM 时，上传的源文件（任务结束才删除）会一直留在 `temp/`，此前没有任何代码会回收它们。现在启动时在服务接收请求前清空。
+- **历史索引**：历史列表改由 `app/services/history_index.py` 缓存，每个归档文件只在 mtime/size 变化时重新解析；`HISTORY_REFRESH_SECONDS`（默认 1.0）限制扫描频率，刚结束的任务会强制刷新。20k 条归档下，一次历史请求从 ~600ms 的全量扫描降到个位数毫秒。
+- **安全响应头**：`nosniff` / `X-Frame-Options: DENY` / `Referrer-Policy: same-origin` / `COOP`。
+- **gzip 与静态资源缓存**：`/assets/*` 带 `Cache-Control: immutable`（配合文件内容哈希），`index.html` 每次校验；构建产物 gzip 后从 460 KB 降到 143 KB。
+- **前端错误边界**：渲染异常不再白屏，保留外壳、展示错误信息并提供刷新/回到文件转写。
+- **校对同步到全文**：分片校对以前只影响 SRT/VTT，TXT、复制全文与完整包仍导出未校对的原文。现在校对（及撤销）会同步更新「完整文本」，用户手工编辑过的全文不会被覆盖。
 
 ### 变更
-- `index.css` 中卡片、表单、徽章、历史行、进度条等规则全部移入 `@layer components`：此前它们是未分层规则，按级联层级压过所有 Tailwind utility，导致 `.hist-item` 的栅格模板无法被响应式工具类覆盖。
-- 历史记录行在 390px 下改为两行（标题整行 + 状态/片数/时长/删除一行），此前五列栅格把标题挤成单个字符。
-- 分片行的触屏常显改用 `pointer-coarse:opacity-100` 工具类，替换原先未分层的 `@media (hover: none)` 规则。
+- **`/docs` 与 `/openapi.json` 需要令牌**：启用 `ACCESS_TOKENS` 后，这两个地址与 API 一样需要鉴权，浏览器可用 `?token=` 或登录后签发的 HttpOnly cookie 进入。此前接口清单在公网/内网共享网段上完全公开。
+- **优雅停机**：SIGTERM 后最多等待 8 秒，让实时会话收尾、文件任务在阶段边界停下；超时的任务在下次启动时标记为 `interrupted`（此前直接中断）。
+- **容器以非 root 运行**（uid 10001），`temp` / `outputs` / `config` 在镜像内预先创建并授权。
+- `/asr/transcribe-stream` 的事件历史改为与实时会话一致的 512 条上限。
+- 已缓存的历史任务不再每次请求都重新解析 JSON（`_rehydrate` 结果留在有界的内存表里）。
+- CI 增加独立的前端类型检查步骤。
+- 版本号 1.8.0（`app/main.py`、`frontend/package.json`、`build.sh`、`docker-compose.prod.yml` 四处一致）。
 
 ### 修复
-- 移动端侧栏关闭时 `inert` + `aria-hidden`，不再让 Tab 焦点落进看不见的抽屉；抽屉支持左滑关闭。
-- 键盘焦点环统一为 2px 强调色描边（`:where()` 零特异性，局部自定义的 ring 仍然优先）。
+- **历史搜索只能命中前 200 字**：搜索用的文本此前是列表预览的截断版本，长录音中间的一句话搜不到。现在索引保留全文（单条上限 8000 字）用于搜索。
+- `stream_transcribe_manager` 的事件列表无上限，长会话会持续占用内存。
 
 ## [1.7.3] - 2026-10-19
 

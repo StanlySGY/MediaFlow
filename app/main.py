@@ -1,22 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from app.api.routes import media_router, meta_router, router as asr_router
 from app.config import get_settings
+from app.security import require_token
 from app.services.metrics import request_metrics
 from app.services.realtime_manager import RealtimeManager
 from app.services.stream_manager import TaskManager
 from app.services.stream_transcribe_manager import StreamTranscribeManager
+from app.services.upload_gate import UploadAdmissionMiddleware, UploadGate
+
+log = logging.getLogger(__name__)
 
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -33,6 +40,63 @@ MULTIPART_OVERHEAD_BYTES = 64 * 1024
 
 class _RequestBodyTooLarge(Exception):
     pass
+
+
+class SecurityHeadersMiddleware:
+    """Baseline response headers for a service that is reachable on a LAN.
+
+    The console has no inline scripts beyond the Vite bundle, but a strict CSP
+    would need a nonce for the first-paint <style> in index.html; these four
+    headers close the cheap holes (sniffing, framing, referrer leakage) without
+    risking a blank page.
+    """
+
+    def __init__(self, app, *, frame_options: str = "DENY") -> None:
+        self.app = app
+        self.frame_options = frame_options
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = message.setdefault("headers", [])
+                headers.append((b"x-content-type-options", b"nosniff"))
+                headers.append((b"x-frame-options", self.frame_options.encode("ascii")))
+                headers.append((b"referrer-policy", b"same-origin"))
+                headers.append((b"cross-origin-opener-policy", b"same-origin"))
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+class StaticCacheMiddleware:
+    """Cache-Control for the built SPA: immutable assets, revalidated shell."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path.startswith("/assets/"):
+            cache = b"public, max-age=31536000, immutable"
+        elif path == "/" or path.endswith(".html") or path in {"/favicon.svg", "/icons.svg"}:
+            cache = b"no-cache"
+        else:
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_cache(message):
+            if message["type"] == "http.response.start":
+                message.setdefault("headers", []).append((b"cache-control", cache))
+            await send(message)
+
+        await self.app(scope, receive, send_with_cache)
 
 
 class MultipartRequestSizeLimitMiddleware:
@@ -280,17 +344,68 @@ a{color:#2f6bff;text-decoration:none}</style></head><body><div class="box">
 </div></body></html>"""
 
 
+def _sweep_temp_dir(settings) -> int:
+    """Delete upload scratch files left behind by a process that was killed.
+
+    Every handler removes its own temp file in a `finally`, but `kill -9`, a
+    power loss or a container OOM leaves them: the source file is only unlinked
+    when the pipeline finishes. Nothing else ever revisits `temp/`, so on a box
+    that has been up for months those add up to the largest files on the disk.
+
+    Runs once at startup, before any request is served, so every file present
+    belongs to a dead process.
+    """
+    temp_dir = settings.temp_dir
+    if not temp_dir.is_dir():
+        return 0
+    removed = 0
+    for entry in temp_dir.iterdir():
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            log.warning("could not remove leftover temp entry %s", entry, exc_info=True)
+    if removed:
+        log.info("cleared %d leftover temp entr(ies) at startup", removed)
+    return removed
+
+
+# On SIGTERM the managers drain: realtime sessions ask the upstream for their
+# final transcript, and running file tasks stop at the next stage boundary.
+# Bounded, because `docker stop` kills the process 10s after SIGTERM anyway —
+# waiting longer only trades a clean shutdown for a SIGKILL.
+SHUTDOWN_GRACE_SECONDS = 8.0
+
+
+async def _shutdown(app: FastAPI) -> None:
+    async def drain() -> None:
+        await app.state.stream_transcribe_manager.stop()
+        await app.state.realtime_manager.stop()
+        await app.state.manager.stop()
+
+    try:
+        await asyncio.wait_for(drain(), timeout=SHUTDOWN_GRACE_SECONDS)
+    except asyncio.TimeoutError:
+        log.warning(
+            "shutdown did not finish within %.0fs; remaining work is checkpointed "
+            "as interrupted on the next start",
+            SHUTDOWN_GRACE_SECONDS,
+        )
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    _sweep_temp_dir(app.state.settings)
     await app.state.manager.start()
     await app.state.realtime_manager.start()
     await app.state.stream_transcribe_manager.start()
     try:
         yield
     finally:
-        await app.state.stream_transcribe_manager.stop()
-        await app.state.realtime_manager.stop()
-        await app.state.manager.stop()
+        await _shutdown(app)
 
 
 def create_app() -> FastAPI:
@@ -303,13 +418,22 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MediaFlow",
         description=API_DESCRIPTION,
-        version="1.7.3",
+        version="1.8.0",
         lifespan=_lifespan,
         docs_url=None,  # replaced by the local-asset /docs route below
+        # The schema enumerates every endpoint and payload. FastAPI would serve
+        # it unauthenticated at /openapi.json, which defeats ACCESS_TOKENS on a
+        # shared network; the gated route below replaces it.
+        openapi_url=None,
     )
+    app.state.settings = settings
     app.state.manager = TaskManager(settings)
     app.state.realtime_manager = RealtimeManager(settings)
     app.state.stream_transcribe_manager = StreamTranscribeManager(settings)
+    app.state.upload_gate = UploadGate(
+        max_concurrent=settings.max_concurrent_uploads,
+        min_free_bytes=settings.min_free_disk_bytes,
+    )
     app.include_router(asr_router)
     app.include_router(media_router)
     app.include_router(meta_router)
@@ -329,7 +453,17 @@ def create_app() -> FastAPI:
                 request.method, path, status, time.perf_counter() - started
             )
 
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    app.add_middleware(SecurityHeadersMiddleware, frame_options="DENY")
     app.add_middleware(MultipartRequestSizeLimitMiddleware)
+    # Added after the size limiter so it runs before it (Starlette applies
+    # middleware in reverse order): a refused upload must not have its body
+    # read at all.
+    app.add_middleware(
+        UploadAdmissionMiddleware,
+        gate=app.state.upload_gate,
+        temp_dir=settings.temp_dir,
+    )
 
     if not settings.asr_api_key:
         logging.getLogger(__name__).warning(
@@ -347,7 +481,15 @@ def create_app() -> FastAPI:
 
     # Registered before the StaticFiles mount below, which owns "/" and would
     # otherwise swallow this path.
-    @app.get("/docs", include_in_schema=False)
+    # The schema and the Swagger page describe every endpoint and its payloads.
+    # Serving them unauthenticated defeats ACCESS_TOKENS on a shared network, so
+    # they sit behind the same token as the API (an empty ACCESS_TOKENS still
+    # means "auth disabled", as everywhere else).
+    @app.get("/openapi.json", include_in_schema=False, dependencies=[Depends(require_token)])
+    async def openapi_schema() -> JSONResponse:
+        return JSONResponse(app.openapi())
+
+    @app.get("/docs", include_in_schema=False, dependencies=[Depends(require_token)])
     async def docs() -> HTMLResponse:
         return get_swagger_ui_html(
             openapi_url="/openapi.json",
@@ -361,6 +503,9 @@ def create_app() -> FastAPI:
             ),
         )
 
+    # Hashed assets never change under the same name; index.html must always be
+    # revalidated or a deploy keeps serving the previous bundle from cache.
+    app.add_middleware(StaticCacheMiddleware)
     if (WEB_DIR / "index.html").is_file():
         app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
     else:

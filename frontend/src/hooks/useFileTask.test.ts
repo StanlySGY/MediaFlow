@@ -222,6 +222,45 @@ describe('useFileTask recovery', () => {
     unmount();
   });
 
+  it('carries a segment edit into the full text used by TXT and the zip bundle', async () => {
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/file/history-done') return response(terminalInfo);
+      if (url === '/asr/file/history-done/result') return response(finalResult);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
+
+    await act(async () => { await result.current.loadHistoricalTask('history-done'); });
+    expect(result.current.fullText).toBe('final transcript');
+
+    act(() => result.current.handleEditSegment(1, '校对后的'));
+    // Same rule as the backend's _join_words: a space is inserted only when the
+    // character before the boundary is not CJK, so "的" + "transcript" stays
+    // glued. Agreeing with the server matters — this text is what TXT and the
+    // zip bundle carry.
+    expect(result.current.fullText).toBe('校对后的transcript');
+
+    act(() => result.current.undoEdit());
+    expect(result.current.fullText).toBe('final transcript');
+    unmount();
+  });
+
+  it('does not overwrite a full text the user typed themselves', async () => {
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/file/history-done') return response(terminalInfo);
+      if (url === '/asr/file/history-done/result') return response(finalResult);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
+
+    await act(async () => { await result.current.loadHistoricalTask('history-done'); });
+    act(() => result.current.setFullText('我自己改过的全文'));
+    act(() => result.current.handleEditSegment(1, '校对后的'));
+
+    expect(result.current.fullText).toBe('我自己改过的全文');
+    unmount();
+  });
+
   it('does not record an undo step for a commit that changes nothing', async () => {
     const authedFetch = vi.fn(async (url: string) => {
       if (url === '/asr/file/history-done') return response(terminalInfo);

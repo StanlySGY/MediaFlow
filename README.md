@@ -110,13 +110,13 @@ docker compose up -d --build
 ```bash
 # 1. 构建机（有网）：构建并导出镜像（默认跟随本机架构；构建机与现场均为 arm64）
 ./build.sh --save
-#    产物：mediaflow-1.7.3-arm64.tar.gz
+#    产物：mediaflow-1.8.0-arm64.tar.gz
 #    需为别的架构构建（如现场是 x86）：./build.sh --platform linux/amd64 --save（须 buildx + qemu）
 
 # 2. 把 .tar.gz、docker-compose.prod.yml、.env.example 拷到现场（U 盘 / 内网盘）
 
 # 3. 现场服务器（离线）：加载镜像
-docker load -i mediaflow-1.7.3-arm64.tar.gz
+docker load -i mediaflow-1.8.0-arm64.tar.gz
 
 # 4. 准备配置：ASR_BASE_URL 指向内网已部署的 ASR（无鉴权可留空 ASR_API_KEY）
 cp .env.example .env
@@ -125,11 +125,11 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.7.3`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
+`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.8.0`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
 
 > `docker-compose.prod.yml` 默认用 `network_mode: host` 以绕开部分主机的 Docker bridge 转发问题，但 `.env.example` 将 `HOST` 设为 `127.0.0.1`。远程访问必须先设置 `ACCESS_TOKENS`，再将 `HOST` 改为 `0.0.0.0` 并放行宿主防火墙/安全组。普通 Docker 主机可改用 bridge 网络；默认端口映射应保留 loopback，远程发布也必须先启用令牌。
 
-> ⚠️ **单 worker 运行**：任务状态、SSE 订阅、实时会话都在单进程内存中，请勿给 uvicorn 加 `--workers`，多进程间状态不共享会导致任务与事件错乱。镜像默认即单 worker。
+> ⚠️ **单 worker 运行**：任务状态、SSE 订阅、实时会话都在单进程内存中，请勿给 uvicorn 加 `--workers`，多进程间状态不共享会导致任务与事件错乱。镜像默认即单 worker，`/metrics` 与调用监控也只反映本进程。收到 SIGTERM 时会先等待最多 8 秒让实时会话收尾、任务在阶段边界停下，超时未完成的任务在下次启动时标记为 `interrupted`。
 
 ## 对接自部署 ASR
 
@@ -429,7 +429,9 @@ curl -X POST http://localhost:8080/media/concat \
 | POST | `/media/concat` | `multipart/form-data` 上传 ≥2 个**同格式**音/视频文件，按上传顺序无损拼接（`-c copy`），返回合并文件；混格式 / 单文件 → 400 |
 | GET  | `/health` | 健康检查 |
 
-> 启用鉴权时（`ACCESS_TOKENS=...`），普通 `/asr/*`、`/media/*`、`/metrics` 请求需附带 `Authorization: Bearer <token>`。成功请求会签发短期 HttpOnly cookie，浏览器 `EventSource` 直接连接 SSE 地址即可，不要把长期 token 放入 URL。命令行客户端仍兼容 `?token=<token>`，但查询串可能进入访问日志。`/`、`/auth/info`、`/health` 不受影响。
+> 启用鉴权时（`ACCESS_TOKENS=...`），普通 `/asr/*`、`/media/*`、`/metrics`、`/docs`、`/openapi.json` 请求需附带 `Authorization: Bearer <token>`。成功请求会签发短期 HttpOnly cookie，浏览器 `EventSource` 直接连接 SSE 地址即可，不要把长期 token 放入 URL。命令行客户端仍兼容 `?token=<token>`，但查询串可能进入访问日志。`/`、`/auth/info`、`/health` 不受影响。
+>
+> `/docs` 与 `/openapi.json` 也接受 `?token=` 与上述 cookie：浏览器顶层导航无法附加 `Authorization`，而 Swagger UI 随后取 schema 用的是同源 cookie。
 
 ### 标准文件转写
 
@@ -485,8 +487,11 @@ curl http://localhost:8080/asr/file/ab12.../result
 | `ASR_CONCURRENCY` | 并发分片数 | `4` |
 | `ASR_MAX_RETRIES` | 单分片最大重试次数 | `3` |
 | `MAX_UPLOAD_BYTES` | 单次上传上限 | 2 GiB |
+| `MAX_CONCURRENT_UPLOADS` | 同时进行的上传数上限（超出返回 429 `upload_limit`）；`ASR_CONCURRENCY` 只约束上游调用，不约束落盘 | 2 |
+| `MIN_FREE_DISK_BYTES` | 剩余磁盘低于该值（加上本次声明的上传大小）时拒绝上传，返回 507 `insufficient_storage`；`0` 关闭检查 | 512 MiB |
 | `TASK_TTL_SECONDS` | 内存中任务状态的保留时长 | 3600 |
 | `OUTPUT_TTL_SECONDS` | 已结束任务的产物（音频/结果/字幕）保留时长，历史记录页按此说明展示 | 7 天 |
+| `HISTORY_REFRESH_SECONDS` | 历史列表缓存索引的最长陈旧时间；每轮刷新按归档条数各 stat 一次，刚结束的任务会强制刷新 | 1.0 |
 | `REALTIME_ASR_PROVIDER` | 实时后端：`realtime_mock` / `realtime_http` / `realtime_ws` / `realtime_offline` | `realtime_mock` |
 | `REALTIME_MAX_SESSIONS` | 同时进行的实时会话上限（按所有客户端合计计数，超了返回 429） | 4 |
 | `REALTIME_MAX_CHUNK_BYTES` | 单个实时音频块上限 | 1 MiB |

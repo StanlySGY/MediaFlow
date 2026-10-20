@@ -5,6 +5,7 @@ import logging
 import shutil
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -19,6 +20,10 @@ from app.services.asr.realtime_base import classify_message
 from app.services.ffmpeg_service import normalize_to_wav
 
 log = logging.getLogger(__name__)
+
+# Matches RealtimeManager's replay window. Only events a reconnecting subscriber
+# can still be sent are worth keeping; the transcript itself is archived.
+_EVENT_HISTORY_SIZE = 512
 
 
 class StreamTranscribeManager:
@@ -239,7 +244,10 @@ class _TranscribeSession:
         self.file_path = file_path
         self.config = config
         self.settings = settings
-        self.events: list[RealtimeASREvent] = []
+        # Bounded like the realtime manager's replay window: a long stream
+        # would otherwise keep every event for the life of the session purely
+        # so a late subscriber can replay them.
+        self.events: deque[RealtimeASREvent] = deque(maxlen=_EVENT_HISTORY_SIZE)
         self.subscribers: set[asyncio.Queue[RealtimeASREvent | None]] = set()
         self.done = asyncio.Event()
         self.created_at = time.time()

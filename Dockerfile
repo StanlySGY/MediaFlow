@@ -38,7 +38,19 @@ COPY app ./app
 # Copy built static assets from the node build stage
 COPY --from=frontend-builder /app/web ./app/web
 
+# Run as an unprivileged user: the output/config/temp volumes are writable by it
+# (created below), and a compromised request handler cannot replace files
+# outside them. Ownership is set before the switch so no runtime chown is needed.
+RUN useradd --create-home --uid 10001 mediaflow \
+    && mkdir -p /app/temp /app/outputs /app/config \
+    && chown -R mediaflow:mediaflow /app/temp /app/outputs /app/config
+USER mediaflow
+
 ENV HOST=0.0.0.0 PORT=8080
 EXPOSE 8080
 
+# Signals reach uvicorn directly (no shell wrapper), so SIGTERM starts the
+# graceful shutdown path in app.main — in-flight tasks are awaited briefly and
+# their state is checkpointed as interrupted instead of dying mid-write.
+STOPSIGNAL SIGTERM
 CMD ["python", "-m", "app.main"]

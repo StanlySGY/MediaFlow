@@ -12,6 +12,18 @@ def _is_sse_path(path: str) -> bool:
     return path.endswith("/events") or path.endswith("/stream")
 
 
+# Pages a browser opens by navigation: it cannot attach an Authorization header
+# to a top-level navigation, and Swagger UI then fetches the schema with
+# `credentials: same-origin`. So these two accept the query token (to get in
+# once) and the HttpOnly cookie (for the schema fetch that follows). The query
+# token caveat is the same as for SSE: it can land in access logs and history.
+_BROWSER_DOC_PATHS = frozenset({"/docs", "/openapi.json"})
+
+
+def _accepts_browser_credentials(path: str) -> bool:
+    return _is_sse_path(path) or path in _BROWSER_DOC_PATHS
+
+
 async def require_token(
     request: Request,
     response: Response,
@@ -38,9 +50,10 @@ async def require_token(
         scheme, _, value = authorization.partition(" ")
         if scheme.lower() == "bearer" and value:
             provided = value.strip()
-    if provided is None and token and _is_sse_path(request.url.path):
+    accepts_browser_credentials = _accepts_browser_credentials(request.url.path)
+    if provided is None and token and accepts_browser_credentials:
         provided = token.strip()
-    if provided is None and sse_cookie and _is_sse_path(request.url.path):
+    if provided is None and sse_cookie and accepts_browser_credentials:
         provided = sse_cookie.strip()
 
     if provided is None or provided not in allowed:

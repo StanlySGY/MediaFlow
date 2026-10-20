@@ -31,3 +31,43 @@ export const buildVtt = (segs: ASRSegment[]): string => {
   });
   return body.join('\n');
 };
+
+/**
+ * Join proofread segments into the full-text pane's content.
+ *
+ * Mirrors what the backend does with a plain `_dedupe_join` (no word timestamps
+ * once the text has been edited): concatenate in segment order, inserting a
+ * space only between two non-CJK boundaries so Chinese does not gain gaps.
+ * Segments that failed or produced nothing are skipped, as in buildSrt.
+ */
+export const mergeSegments = (segs: ASRSegment[]): string => {
+  const parts = [...segs]
+    .sort((a, b) => a.segment_id - b.segment_id)
+    .filter((s) => s.text && s.text.trim() && !s.error)
+    .map((s) => s.text.trim());
+  let out = '';
+  for (const part of parts) {
+    if (!out) {
+      out = part;
+      continue;
+    }
+    // The backend's rule looks only at the *left* boundary: it inserts a space
+    // when the previous character is not CJK, so "校对后的" + "transcript"
+    // stays glued exactly as the server would render it.
+    out += isCjkBoundary(out[out.length - 1]) ? part : ` ${part}`;
+  }
+  return out;
+};
+
+const isCjkBoundary = (ch: string): boolean => {
+  const cp = ch.codePointAt(0) ?? 0;
+  return (
+    (0x3000 <= cp && cp <= 0x303f) ||
+    (0x3040 <= cp && cp <= 0x30ff) ||
+    (0x3400 <= cp && cp <= 0x4dbf) ||
+    (0x4e00 <= cp && cp <= 0x9fff) ||
+    (0xf900 <= cp && cp <= 0xfaff) ||
+    (0xff00 <= cp && cp <= 0xffef) ||
+    (0x20000 <= cp && cp <= 0x2a6df)
+  );
+};

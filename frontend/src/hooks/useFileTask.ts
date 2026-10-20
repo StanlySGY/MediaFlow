@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import type { ASRSegment, StandardASRStreamEvent } from '../types';
-import { buildSrt, buildVtt } from '../lib/subtitle';
+import { buildSrt, buildVtt, mergeSegments } from '../lib/subtitle';
 import { downloadBlob, downloadFile, formatDur } from '../lib/download';
 import { textEntry, zipEntries } from '../lib/zip';
 import { errorMessage } from '../lib/errors';
@@ -66,7 +66,15 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
   const [taskFinSegs, setTaskFinSegs] = useState<number>(0);
   const [taskDuration, setTaskDuration] = useState<string>('—');
   const [taskProgress, setTaskProgress] = useState<number>(0);
-  const [fullText, setFullText] = useState<string>('');
+  const [fullText, setFullTextRaw] = useState<string>('');
+  // Whether the user typed in the full-text pane themselves. Segment
+  // proofreading must not clobber that, and vice versa it stops being the
+  // server's text the moment it is edited.
+  const fullTextTouchedRef = useRef(false);
+  const setFullText = (value: string) => {
+    fullTextTouchedRef.current = true;
+    setFullTextRaw(value);
+  };
 
   // Per-task parameter overrides (Accordion form).
   const [ovModel, setOvModel] = useState('');
@@ -157,7 +165,8 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     setTaskFinSegs(0);
     setTaskDuration('—');
     setTaskProgress(0);
-    setFullText('');
+    setFullTextRaw('');
+    fullTextTouchedRef.current = false;
     setActivePane('live');
     taskIdRef.current = null;
     terminalHandlingRef.current = null;
@@ -224,6 +233,21 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
   };
 
   // Inline proofreading: update a segment's text so SRT/VTT exports reflect the edit.
+  // Keeps the "完整文本" pane (and every export that uses it: TXT, copy, the
+  // zip bundle) in step with a proofread segment. Before this, editing a
+  // segment changed SRT/VTT only — the full text kept showing the unedited
+  // transcript, and the export bar gave no sign of it.
+  const applySegmentEdit = (next: ASRSegment[], edited: boolean) => {
+    setSegments(next);
+    setSegmentsEdited(edited);
+    // A hand-edited full text is the user's own wording; do not overwrite it.
+    // Written through the raw setter on purpose: this is a derived value, not
+    // the user typing, and going through setFullText would mark it as such and
+    // make the next edit a no-op.
+    if (fullTextTouchedRef.current) return;
+    setFullTextRaw(mergeSegments(next));
+  };
+
   const handleEditSegment = (segId: number, text: string) => {
     const current = segments.find((s) => s.segment_id === segId);
     // Committing the same text (an Enter on an untouched row) is not an edit:
@@ -231,19 +255,17 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     if (!current || current.text === text) return;
     editHistoryRef.current = [...editHistoryRef.current.slice(-49), segments];
     setUndoDepth(editHistoryRef.current.length);
-    setSegments(segments.map((s) => (s.segment_id === segId ? { ...s, text } : s)));
-    setSegmentsEdited(true);
+    applySegmentEdit(segments.map((s) => (s.segment_id === segId ? { ...s, text } : s)), true);
   };
 
   const undoEdit = () => {
     const previous = editHistoryRef.current.pop();
     if (!previous) return;
     setUndoDepth(editHistoryRef.current.length);
-    setSegments(previous);
     // Depth 0 means every edit has been undone, so the export goes back to the
     // server's own subtitle (word grouping, overlap de-duplication) rather than
     // the locally rebuilt one.
-    setSegmentsEdited(editHistoryRef.current.length > 0);
+    applySegmentEdit(previous, editHistoryRef.current.length > 0);
   };
 
   const handleFileSelect = async (file: File) => {
@@ -377,7 +399,8 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     setUndoDepth(0);
     setTaskTotalSegs(finalSegments.length);
     setTaskFinSegs(finalSegments.length);
-    setFullText(result.text || '');
+    setFullTextRaw(result.text || '');
+    fullTextTouchedRef.current = false;
     setTaskDuration(result.duration ? formatDur(result.duration) : '—');
     setTaskStatus(status);
     setTaskProgress(status === 'done' ? 1 : fallbackProgress);
@@ -412,7 +435,8 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     setTaskDuration('—');
     setTaskProgress(0);
     setSegments([]);
-    setFullText('');
+    setFullTextRaw('');
+    fullTextTouchedRef.current = false;
   };
 
   const finishTerminalTask = async (id: string, generation: number, fallbackProgress = 0) => {

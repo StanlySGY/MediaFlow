@@ -23,6 +23,7 @@ from app.services.asr import ASRError, create_provider
 from app.services.asr.realtime_base import classify_message
 from app.services.asr_monitoring import asr_call_context
 from app.services.ffmpeg_service import FFmpegError, normalize_to_wav, probe_duration
+from app.services.history_index import HistoryIndex
 from app.services.merger import merge_segments
 
 log = logging.getLogger(__name__)
@@ -97,49 +98,6 @@ def _atomic_write_text(path: Path, content: str) -> None:
 
 _KIND_FILE = "file"
 _KIND_REALTIME = "realtime"
-
-
-def _empty_record(task_id: str, created_at: float) -> dict:
-    return {
-        "task_id": task_id,
-        "phase": TaskStatus.pending.value,
-        "progress": 0.0,
-        "total_segments": 0,
-        "finished_segments": 0,
-        "duration": 0.0,
-        "text": "",
-        "error": None,
-        "error_code": None,
-        "hint": None,
-        "retryable": False,
-        "original_name": "",
-        "created_at": created_at,
-        "updated_at": created_at,
-        "in_memory": False,
-        # What produced this row. File tasks are the default; realtime recordings
-        # are archived into the same list (see realtime_manager._archive) and carry
-        # "realtime". /tasks returns this dict unchanged, so the client can tell a
-        # recording without a media file apart from an upload.
-        "kind": _KIND_FILE,
-    }
-
-
-def _record_from_state(data: dict, *, mtime: float) -> dict:
-    created = float(data.get("created_at") or mtime)
-    item = _empty_record(str(data.get("task_id") or ""), created)
-    item["phase"] = str(data.get("status") or item["phase"])
-    item["progress"] = float(data.get("progress") or 0.0)
-    item["total_segments"] = int(data.get("total_segments") or 0)
-    item["finished_segments"] = int(data.get("finished_segments") or 0)
-    item["duration"] = float(data.get("duration") or 0.0)
-    item["text"] = str(data.get("text_preview") or "")
-    item["error"] = data.get("error")
-    item["error_code"] = data.get("error_code")
-    item["hint"] = data.get("hint")
-    item["retryable"] = bool(data.get("retryable"))
-    item["original_name"] = str(data.get("original_name") or "")
-    item["updated_at"] = float(data.get("updated_at") or mtime)
-    return item
 
 
 def _failure_protocol(exc: BaseException) -> tuple[str, str | None, bool]:
@@ -246,8 +204,14 @@ class TaskManager:
         self._lock = asyncio.Lock()
         self._bg: set[asyncio.Task] = set()
         self._cleanup_task: asyncio.Task | None = None
+        # Cached archive index. The first build is the one expensive scan; every
+        # later request only stats files and re-reads the ones that changed.
+        self._history = HistoryIndex(
+            settings.output_dir, refresh_seconds=settings.history_refresh_seconds
+        )
         self.recover_interrupted()
         self._cleanup_expired_outputs()
+        self._history.refresh()
 
     # ---- lifecycle ----
 
@@ -352,6 +316,7 @@ class TaskManager:
             if path.is_file():
                 path.unlink()
                 removed = True
+        self._history.remove(task_id)
         return had_memory or removed
 
     def list_history(
@@ -364,49 +329,18 @@ class TaskManager:
         offset: int = 0,
         limit: int = 50,
     ) -> dict:
-        records: dict[str, dict] = {}
-        state_dir = self._settings.output_dir / "state"
-        if state_dir.is_dir():
-            for path in state_dir.glob("*.json"):
-                data = _read_json(path)
-                if not data:
-                    continue
-                tid = str(data.get("task_id") or path.stem)
-                records[tid] = _record_from_state(data, mtime=path.stat().st_mtime)
+        """Page through the archive. Cheap: the scan happens in HistoryIndex.refresh.
 
-        out_dir = self._settings.output_dir
-        if out_dir.is_dir():
-            for path in out_dir.glob("*.json"):
-                data = _read_json(path)
-                if not data or "task_id" not in data and "status" not in data:
-                    continue
-                tid = str(data.get("task_id") or path.stem)
-                item = records.get(tid) or _empty_record(tid, path.stat().st_mtime)
-                text = data.get("text") or ""
-                item["phase"] = data.get("status") or item["phase"]
-                item["duration"] = data.get("duration") or item["duration"]
-                item["text"] = text[:200]
-                item["error"] = data.get("error") if data.get("error") is not None else item["error"]
-                item["error_code"] = data.get("error_code") or item["error_code"]
-                item["hint"] = data.get("hint") if data.get("hint") is not None else item["hint"]
-                if data.get("retryable") is not None:
-                    item["retryable"] = bool(data["retryable"])
-                if data.get("kind"):
-                    item["kind"] = str(data["kind"])
-                item["total_segments"] = len(data.get("segments") or []) or item["total_segments"]
-                item["finished_segments"] = item["total_segments"]
-                if not item["created_at"]:
-                    item["created_at"] = path.stat().st_mtime
-                records[tid] = item
-
+        Still synchronous, and callers in request handlers must run it in a
+        threadpool (see app/api/routes.py) — the refresh itself does file I/O.
+        """
+        self._history.refresh()
         for tid, task in self._tasks.items():
-            item = records.get(tid) or _empty_record(tid, task.created_at)
-            item.update(_record_from_task(task))
-            records[tid] = item
+            self._history.upsert(_record_from_task(task))
 
         needle = q.strip().lower()
         items = []
-        for item in records.values():
+        for item in self._history.records():
             item["status"] = public_status(item["phase"])
             created = item["created_at"] or item["updated_at"]
             if status and item["status"] != status:
@@ -416,10 +350,7 @@ class TaskManager:
             if until is not None and created > until:
                 continue
             if needle:
-                haystack = " ".join(
-                    str(item.get(key) or "")
-                    for key in ("task_id", "original_name", "text", "error")
-                ).lower()
+                haystack = self._history.search_text(item["task_id"])
                 if needle not in haystack:
                     continue
             items.append(item)
@@ -540,6 +471,10 @@ class TaskManager:
         except Exception:  # noqa: BLE001
             log.warning("failed to persist task %s", task.info.task_id, exc_info=True)
         self._checkpoint(task)
+        # Make the finished task visible in history on the next request instead
+        # of after the index's refresh throttle. Invalidate rather than refresh:
+        # this runs in a coroutine, and the scan belongs on the request thread.
+        self._history.invalidate()
 
     def _raise_if_cancelled(self, task: _Task) -> None:
         if task.cancel_requested:
@@ -600,10 +535,19 @@ class TaskManager:
                 log.warning("failed to remove expired output %s", path, exc_info=True)
         if removed:
             log.info("removed %d expired task output(s)", removed)
+            self._history.invalidate()
         return removed
 
     def _rehydrate(self, task_id: str) -> _Task | None:
-        """Reload a finished task from disk when it's no longer in memory."""
+        """Reload a finished task from disk when it's no longer in memory.
+
+        Results are immutable once terminal, so a successfully rehydrated task
+        stays in the (bounded) in-memory map — otherwise a client polling an old
+        task id re-read and re-parsed the same JSON on every request.
+        """
+        cached = self._tasks.get(task_id)
+        if cached is not None:
+            return cached
         path = self._settings.output_dir / f"{task_id}.json"
         if not path.is_file():
             return None
