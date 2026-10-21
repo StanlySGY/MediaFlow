@@ -251,9 +251,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         </div>
 
         {error && (
-          <div className="flex items-start gap-2 rounded-[10px] border border-err/30 bg-err-soft px-4 py-3 text-err text-sm mb-4">
+          <div className="flex items-start gap-2 rounded-[10px] border border-err/30 bg-err-soft px-4 py-3 text-err text-sm mb-4" role="alert">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-            <span className="break-words">{error}</span>
+            <span className="min-w-0 flex-1 break-words">{error}</span>
+            <button type="button" onClick={() => void loadHistory(draft())} disabled={loading} className="shrink-0">重试</button>
           </div>
         )}
 

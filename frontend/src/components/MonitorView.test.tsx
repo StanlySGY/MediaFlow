@@ -1,4 +1,5 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MonitorView } from './MonitorView';
 
@@ -125,5 +126,23 @@ describe('<MonitorView />', () => {
     expect(await screen.findByText('sess-9')).toBeInTheDocument();
     expect(screen.getByText('upstream 500')).toBeInTheDocument();
     expect(screen.getByText('2 / 200')).toBeInTheDocument();
+  });
+
+  it('explains unavailable monitoring data and retries the snapshot request', async () => {
+    const user = userEvent.setup();
+    const unavailable = { ok: false, status: 503, text: async () => 'monitor offline' } as Response;
+    const authedFetch = vi.fn()
+      .mockResolvedValueOnce(unavailable)
+      .mockResolvedValueOnce(json({ ...baseSnapshot, calls: [] }));
+
+    render(<MonitorView authedFetch={authedFetch} sseUrl={(path) => path} />);
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(screen.getByText('监控数据暂时不可用。请检查服务连接后重试。')).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: '重试' }));
+
+    expect(await screen.findByText(/开始一次文件转写或实时识别后/)).toBeInTheDocument();
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    expect(authedFetch).toHaveBeenCalledTimes(2);
   });
 });

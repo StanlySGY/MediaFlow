@@ -62,6 +62,29 @@ function renderConfig(secondProfile = false) {
 }
 
 describe('<ConfigView /> profile API keys', () => {
+  it('offers a retry instead of leaving the configuration page loading forever', async () => {
+    const user = userEvent.setup();
+    const failed = { ok: false, status: 503, text: async () => 'temporarily unavailable' } as Response;
+    const profiles = profilesFixture();
+    let configCalls = 0;
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/config') {
+        configCalls += 1;
+        return configCalls === 1 ? failed : jsonResponse({ available_providers: ['openai_compat'] });
+      }
+      if (url === '/asr/realtime/sessions') return jsonResponse({ providers: ['realtime_http', 'realtime_mock'] });
+      if (url === '/asr/profiles') return jsonResponse(profiles);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    render(<ConfigView authedFetch={authedFetch} refreshTopbar={vi.fn(async () => {})} />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('读取服务配置失败');
+    await user.click(screen.getByRole('button', { name: '重试加载' }));
+    expect(await screen.findByRole('button', { name: '保存这份配置' })).toBeInTheDocument();
+    expect(authedFetch).toHaveBeenCalledTimes(5);
+  });
+
   it('associates configuration field captions with their controls', async () => {
     renderConfig();
 

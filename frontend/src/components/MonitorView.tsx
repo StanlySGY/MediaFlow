@@ -33,6 +33,7 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
   const [error, setError] = useState<string | null>(null);
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('connecting');
   const [lastEventAt, setLastEventAt] = useState<number | null>(null);
+  const [connectionRetry, setConnectionRetry] = useState(0);
 
   const loadSnapshot = useCallback(async (): Promise<boolean> => {
     setLoading(true);
@@ -44,6 +45,7 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
       return true;
     } catch (e) {
       setError(errorMessage(e));
+      setLiveStatus('stale');
       return false;
     } finally {
       setLoading(false);
@@ -79,15 +81,26 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
       };
       const handleSnapshot = (event: MessageEvent) => {
         if (!alive) return;
-        setSnapshot(JSON.parse(event.data) as ASRMonitorSnapshot);
-        markLive();
+        try {
+          setSnapshot(JSON.parse(event.data) as ASRMonitorSnapshot);
+          markLive();
+        } catch {
+          setError('监控事件格式异常，已忽略这条推送；可以点击“刷新”重新同步。');
+          setLiveStatus('stale');
+        }
       };
       const handleCallEvent = (event: MessageEvent) => {
         if (!alive) return;
-        const payload = JSON.parse(event.data) as MonitorSSEPayload;
-        if (payload.snapshot) setSnapshot(payload.snapshot);
-        else if (payload.call) setSnapshot((prev) => upsertCall(prev, payload.call as ASRMonitorCall));
-        markLive();
+        try {
+          const payload = JSON.parse(event.data) as MonitorSSEPayload;
+          if (payload.snapshot) setSnapshot(payload.snapshot);
+          else if (payload.call) setSnapshot((prev) => upsertCall(prev, payload.call as ASRMonitorCall));
+          else return;
+          markLive();
+        } catch {
+          setError('监控事件格式异常，已忽略这条推送；可以点击“刷新”重新同步。');
+          setLiveStatus('stale');
+        }
       };
 
       es.addEventListener('snapshot', handleSnapshot);
@@ -101,7 +114,7 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
       alive = false;
       es?.close();
     };
-  }, [loadSnapshot, sseUrl]);
+  }, [loadSnapshot, sseUrl, connectionRetry]);
 
   const data = snapshot || emptySnapshot();
   const calls = data.calls;
@@ -116,7 +129,7 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
             <span>上游调用监控</span>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <span className={`badge ${badge.cls}`}>
+            <span className={`badge ${badge.cls}`} role="status" aria-live="polite">
               <span className={`dot ${liveStatus === 'live' ? 'pulse' : ''}`} />
               <span>{badge.text}</span>
             </span>
@@ -134,9 +147,10 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
         </p>
 
         {error && (
-          <div className="toast err mb-4">
+          <div className="toast err mb-4" role="alert">
             <AlertTriangle className="w-4 h-4" />
-            <span>{error}</span>
+            <span className="min-w-0 flex-1 break-words">{error}</span>
+            <button type="button" onClick={() => setConnectionRetry((attempt) => attempt + 1)} disabled={loading} className="shrink-0">重试</button>
           </div>
         )}
 
@@ -163,8 +177,12 @@ export const MonitorView: React.FC<MonitorViewProps> = ({ authedFetch, sseUrl })
           </h3>
 
           {calls.length === 0 ? (
-            <div className="panel p-10 text-center text-muted text-sm">
-              {loading ? '正在读取监控数据…' : '还没有上游 ASR 调用记录'}
+            <div className="panel p-6 sm:p-10 text-center text-muted text-sm" role="status" aria-live="polite">
+              {loading
+                ? '正在读取监控数据…'
+                : error
+                  ? '监控数据暂时不可用。请检查服务连接后重试。'
+                  : '还没有上游 ASR 调用记录。开始一次文件转写或实时识别后，调用明细会显示在这里。'}
             </div>
           ) : (
             <div className="flex flex-col gap-3">

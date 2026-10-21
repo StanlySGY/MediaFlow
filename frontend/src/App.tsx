@@ -259,9 +259,9 @@ export default function App() {
                 )}
 
                 {/* Upload drag drop panel */}
-                <div className="card p-6">
+                <div className="card p-4 sm:p-6">
                   {footStatus.status === 'err' && (
-                    <div className="flex items-center gap-2.5 rounded-[10px] border border-err/30 bg-err-soft px-4 py-3 mb-4 text-sm text-err">
+                    <div role="alert" className="flex items-start gap-2.5 rounded-[10px] border border-err/30 bg-err-soft px-4 py-3 mb-4 text-sm text-err">
                       <AlertTriangle className="w-4 h-4 shrink-0" />
                       <span className="font-medium">上游 ASR 未连通 · {footStatus.text}</span>
                       <span className="flex-1" />
@@ -377,7 +377,7 @@ export default function App() {
                   <motion.div
                     initial={{ opacity: 0, scale: 0.98 }}
                     animate={{ opacity: 1, scale: 1 }}
-                    className="card p-6"
+                    className="card p-4 sm:p-6"
                   >
                     <h3 className="section-title justify-between mb-4">
                       <div className="flex items-center gap-2">

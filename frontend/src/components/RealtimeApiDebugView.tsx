@@ -631,7 +631,7 @@ const closeEventSource = (source: EventSource | null) => {
           <motion.div
             initial={{ opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="card p-6"
+            className="card p-4 sm:p-6"
           >
             <h3 className="section-title justify-between mb-4">
               <div className="flex items-center gap-2 min-w-0">

@@ -81,7 +81,7 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="card p-6">
+      <div className="card p-4 sm:p-6">
         <p className="hint mb-5">
           选两个以上同一格式的文件（都为 .mp3 或都为 .mp4），按列表顺序无损拼接：stream copy，
           不重新编码。不同格式无法合并。
@@ -136,7 +136,7 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
         )}
 
         {mixedFormat && (
-          <p className="toast err mt-3">所选文件格式不一致（{[...exts].join(' / ')}）—— 只能合并同一种格式。</p>
+          <p className="toast err mt-3" role="alert">所选文件格式不一致（{[...exts].join(' / ')}）—— 只能合并同一种格式。</p>
         )}
 
         {/* actions */}
@@ -150,13 +150,13 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
               <X className="w-4 h-4" /><span>清空</span>
             </button>
           )}
-          {error && <span className="toast err">{error}</span>}
+          {error && <span className="toast err min-w-0 break-words" role="alert">{error}</span>}
         </div>
       </div>
 
       {/* result */}
       {result && (
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="card p-6">
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="card p-4 sm:p-6">
           <h3 className="section-title mb-4"><span>合并完成</span></h3>
           {/\.(mp4|webm|mkv|mov|avi)$/i.test(result.name) ? (
             <video controls src={result.url} className="w-full max-h-80 rounded-[10px] bg-black mb-4" />

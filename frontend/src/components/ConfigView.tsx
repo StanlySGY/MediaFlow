@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Save, RotateCcw, Activity, Eye, EyeOff, Server, Scissors, Radio, ShieldCheck, RefreshCw, ChevronDown, Plus, Trash2, Check } from 'lucide-react';
 import { SystemConfig } from '../types';
-import { errorMessage } from '../lib/errors';
+import { errorMessage, responseError } from '../lib/errors';
 import { useConfirmDialog } from './ConfirmDialog';
 
 interface ConfigViewProps {
@@ -125,6 +125,7 @@ interface ProfileState { profiles: Profile[]; file: string; realtime: string | n
 
 export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopbar }) => {
   const [config, setConfig] = useState<SystemConfig | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [realtimeProviders, setRealtimeProviders] = useState<string[]>(['realtime_mock', 'realtime_http', 'realtime_offline', 'realtime_ws']);
   const [formState, setFormState] = useState<Record<string, string | number | boolean>>({});
   const [dirtyFields, setDirtyFields] = useState<{ [key: string]: boolean }>({});
@@ -152,6 +153,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const loadConfig = async () => {
     try {
       const r = await authedFetch('/asr/config');
+      if (!r.ok) throw await responseError(r);
       if (r.ok) {
         const cfg = await r.json();
         setConfig(cfg);
@@ -171,21 +173,29 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         const rt = await rtRes.json();
         if (rt.providers) setRealtimeProviders(rt.providers);
       }
-    } catch {}
+    } catch (e) {
+      setLoadError(`读取服务配置失败：${errorMessage(e)}`);
+    }
   };
 
   const loadProfiles = async (preferId?: string) => {
-    const r = await authedFetch('/asr/profiles');
-    if (!r.ok) return;
-    const data: ProfileState = await r.json();
-    setProfiles(data);
-    const keep = preferId && data.profiles.some(p => p.id === preferId) ? preferId : null;
-    setSelectedId(prev => keep ?? (prev && data.profiles.some(p => p.id === prev) ? prev : data.file));
+    try {
+      const r = await authedFetch('/asr/profiles');
+      if (!r.ok) throw await responseError(r);
+      const data: ProfileState = await r.json();
+      if (!Array.isArray(data.profiles)) throw new Error('服务端返回的配置列表格式无效');
+      setProfiles(data);
+      const keep = preferId && data.profiles.some(p => p.id === preferId) ? preferId : null;
+      setSelectedId(prev => keep ?? (prev && data.profiles.some(p => p.id === prev) ? prev : data.file));
+    } catch (e) {
+      setLoadError(`读取配置列表失败：${errorMessage(e)}`);
+      throw e;
+    }
   };
 
   // Load once on mount; both loaders are stable for this view's lifetime.
   // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
-  useEffect(() => { loadConfig(); loadProfiles(); }, []);
+  useEffect(() => { loadConfig(); void loadProfiles().catch(() => {}); }, []);
 
   // Editing follows whichever profile is selected, so switching one discards the
   // unsaved draft of the previous one.
@@ -637,14 +647,26 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   const nameDirty = !!selected && profileName.trim() !== selected.name;
 
   if (!config || !profiles) {
-    return <div className="text-muted text-sm text-center py-20">正在读取服务配置…</div>;
+    return (
+      <div className="card p-6 sm:p-8 text-center flex flex-col items-center gap-3" role={loadError ? 'alert' : 'status'} aria-live="polite">
+        {loadError ? (
+          <>
+            <p className="text-sm text-err">{loadError}</p>
+            <p className="text-sm text-muted">配置尚未加载，当前不会覆盖或重置已保存的设置。</p>
+            <button type="button" className="primary" onClick={() => { setLoadError(null); void loadConfig(); void loadProfiles().catch(() => {}); }}>
+              <RotateCcw className="w-4 h-4" /><span>重试加载</span>
+            </button>
+          </>
+        ) : '正在读取服务配置…'}
+      </div>
+    );
   }
 
   return (
     <div className="flex flex-col gap-6 pb-24">
       {confirmElement}
 
-      <div className="card p-6">
+      <div className="card p-4 sm:p-6">
         <div className="flex items-center gap-2">
           <Server className="w-4 h-4 text-muted" />
           <h3 className="section-title flex-1">接入配置</h3>
@@ -763,7 +785,7 @@ const GroupCard: React.FC<{
     </div>
   );
   return (
-    <div className="card p-6">
+    <div className="card p-4 sm:p-6">
       <button type="button" onClick={() => setOpen(v => !v)}
         aria-expanded={open}
         className="w-full flex items-center gap-2 text-left bg-transparent border-none p-0 hover:bg-transparent">

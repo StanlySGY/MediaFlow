@@ -170,6 +170,22 @@ describe('<HistoryView /> item actions', () => {
     expect(screen.getByRole('button', { name: '打开任务：latest-result.wav' })).toBeInTheDocument();
   });
 
+  it('shows a recoverable error when history fails and retries on request', async () => {
+    const user = userEvent.setup();
+    const failed = { ok: false, status: 503, text: async () => 'temporarily unavailable' } as Response;
+    const authedFetch = vi.fn()
+      .mockResolvedValueOnce(failed)
+      .mockResolvedValueOnce(json({ tasks: [task], total: 1 }));
+
+    render(<HistoryView authedFetch={authedFetch} onLoadTask={vi.fn()} />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('拉取历史归档失败');
+    await user.click(screen.getByRole('button', { name: '重试' }));
+    expect(await screen.findByRole('button', { name: '打开任务：lecture.wav' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(authedFetch).toHaveBeenCalledTimes(2);
+  });
+
   it('gives open and delete buttons task-specific accessible names as siblings', async () => {
     renderHistory();
 
