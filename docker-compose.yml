@@ -6,6 +6,10 @@ services:
     build: .
     image: mediaflow:latest
     container_name: mediaflow
+    # Match bind-mounted data directories without changing their ownership.
+    # Set MEDIAFLOW_UID / MEDIAFLOW_GID in .env when existing local volumes
+    # are owned by a host UID/GID different from the image default (10001).
+    user: "${MEDIAFLOW_UID:-10001}:${MEDIAFLOW_GID:-10001}"
     # 自动重启策略：除非手动停止，否则容器退出后自动重启
     restart: unless-stopped
     ports:
