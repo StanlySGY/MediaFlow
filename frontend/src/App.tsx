@@ -312,7 +312,7 @@ export default function App() {
                         <span className="text-fg-dim font-semibold">正在上传…</span>
                         <span className="font-mono text-accent">{uploadProgress}%</span>
                       </div>
-                      <div className="progress"><div style={{ width: `${uploadProgress}%` }} /></div>
+                      <div className="progress" role="progressbar" aria-label="文件上传进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={uploadProgress}><div style={{ width: `${uploadProgress}%` }} /></div>
                       <p className="hint mt-1.5">大文件上传可能需要一些时间，请不要关闭页面。</p>
                     </div>
                   )}
@@ -402,7 +402,7 @@ export default function App() {
                         <b className="text-fg font-medium">{taskDuration}</b> 时长
                       </span>
 
-                      <div className="progress flex-1 min-w-[200px]">
+                      <div className="progress flex-1 min-w-[200px]" role="progressbar" aria-label="音频转写进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(taskProgress * 100)}>
                         <div style={{ width: `${taskProgress * 100}%` }} />
                       </div>
 
@@ -447,7 +447,7 @@ export default function App() {
                       onKeyDown={(e) => {
                         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
                         e.preventDefault();
-                        setActivePane(e.key === 'ArrowLeft' ? 'final' : 'live');
+                        setActivePane(activePane === 'live' ? 'final' : 'live');
                       }}>
                       {([['live', `分片明细 (${segments.length})`], ['final', '完整文本']] as const).map(([pane, label]) => (
                         <div
@@ -505,6 +505,7 @@ export default function App() {
                             </button>
                           </div>
                           <textarea
+                            aria-label="完整转写文本"
                             value={fullText}
                             onChange={(e) => setFullText(e.target.value)}
                             placeholder="识别完成后，这里会显示拼接好的完整文本，可在此校对修改…"
@@ -533,8 +534,13 @@ export default function App() {
                               </button>
                               <button
                                 onClick={async () => {
-                                  const r = await authedFetch(`/asr/file/${taskId}/result`);
-                                  if (r.ok) downloadFile(`${taskId}.json`, await r.text(), 'application/json');
+                                  try {
+                                    const r = await authedFetch(`/asr/file/${taskId}/result`);
+                                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                                    downloadFile(`${taskId}.json`, await r.text(), 'application/json');
+                                  } catch (error) {
+                                    window.alert(`JSON 导出失败：${error instanceof Error ? error.message : '请检查连接后重试'}`);
+                                  }
                                 }}
                                 className="text-[12px] px-3 py-1.5"
                               >

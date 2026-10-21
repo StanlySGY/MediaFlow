@@ -523,6 +523,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
 
   const renderField = (f: FieldDef) => {
     const isDirty = !!dirtyFields[f.key];
+    const fieldId = `config-field-${f.key}`;
     const val = formState[f.key];
     const sval = (val ?? '') as string | number;
     const knownModels = f.key === 'asr_model' ? modelOptions
@@ -537,7 +538,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
       <div key={f.key} className={`flex flex-col gap-1.5 p-3.5 rounded-lg border transition-colors ${f.wide ? 'md:col-span-2 lg:col-span-3' : ''} ${isDirty ? 'border-accent/40 bg-accent-soft/50' : 'border-border bg-white'}`}>
         {f.type !== 'bool' && (
           <div className="flex justify-between items-center text-xs font-semibold text-fg-dim">
-            <span>{f.label}{isDirty && <span className="text-accent ml-1">·已改</span>}</span>
+            <label htmlFor={fieldId}>{f.label}{isDirty && <span className="text-accent ml-1">·已改</span>}</label>
             {f.type === 'secret' && (
               <span className={`font-normal ${secretBadge(f.key) === '未配置' ? 'text-muted-2' : 'text-muted'}`}>
                 {secretBadge(f.key)}
@@ -547,17 +548,17 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         )}
 
         {f.type === 'select' && (
-          <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
+          <select id={fieldId} value={sval} onChange={e => handleChange(f.key, e.target.value)}>
             {(config?.available_providers || []).map(p => <option key={p} value={p}>{PROVIDER_LABELS[p] ?? p}</option>)}
           </select>
         )}
         {f.type === 'select-split' && (
-          <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
+          <select id={fieldId} value={sval} onChange={e => handleChange(f.key, e.target.value)}>
             {labeledOptions(['fixed', 'silence', 'overlap'], SPLIT_LABELS)}
           </select>
         )}
         {f.type === 'select-realtime' && (
-          <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
+          <select id={fieldId} value={sval} onChange={e => handleChange(f.key, e.target.value)}>
             {labeledOptions(realtimeProviders, REALTIME_LABELS)}
           </select>
         )}
@@ -570,7 +571,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
         )}
         {f.type === 'secret' && (
           <div className="relative flex items-center">
-            <input type={showSecrets[f.key] ? 'text' : 'password'} value={sval}
+            <input id={fieldId} type={showSecrets[f.key] ? 'text' : 'password'} value={sval}
               onChange={e => handleChange(f.key, e.target.value)}
               placeholder={clearSecretDraft[f.key] ? '保存时将清除此配置中的密钥' : '输入新值以覆盖，留空表示不修改'}
               className="pr-20" />
@@ -590,12 +591,12 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
           </div>
         )}
         {(f.type === 'int' || f.type === 'float') && (
-          <input type="number" step={f.type === 'float' ? 'any' : '1'} value={sval}
+          <input id={fieldId} type="number" step={f.type === 'float' ? 'any' : '1'} value={sval}
             onChange={e => handleChange(f.key, e.target.value)} />
         )}
         {f.type === 'bytes' && (
           <div className="flex items-center gap-2">
-            <input type="number" step="0.1" min="0"
+            <input id={fieldId} type="number" step="0.1" min="0"
               value={formatBytes(Number(sval) || 0)}
               onChange={e => {
                 const [div] = byteUnit(Number(sval) || 0);
@@ -605,13 +606,13 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
           </div>
         )}
         {f.type === 'text' && modelChoices.length > 0 && (
-          <select value={sval} onChange={e => handleChange(f.key, e.target.value)}>
+          <select id={fieldId} value={sval} onChange={e => handleChange(f.key, e.target.value)}>
             {modelChoices.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         )}
         {f.type === 'text' && modelChoices.length === 0 && (
           <div className="flex items-center gap-2">
-            <input type="text" value={sval} onChange={e => handleChange(f.key, e.target.value)} />
+            <input id={fieldId} type="text" value={sval} onChange={e => handleChange(f.key, e.target.value)} />
             {(f.key === 'asr_model' || f.key === 'realtime_asr_model') && (
               <button type="button" onClick={() => fetchModels(f.key as 'asr_model' | 'realtime_asr_model')}
                 disabled={fetchingModelsFor !== null} className="shrink-0">

@@ -62,6 +62,15 @@ function renderConfig(secondProfile = false) {
 }
 
 describe('<ConfigView /> profile API keys', () => {
+  it('associates configuration field captions with their controls', async () => {
+    renderConfig();
+
+    await screen.findByRole('button', { name: '保存这份配置' });
+    expect(screen.getByLabelText('接口类型')).toBeInTheDocument();
+    expect(screen.getByLabelText('接口地址')).toBeInTheDocument();
+    expect(screen.getByLabelText('API 密钥')).toBeInTheDocument();
+    expect(screen.getByLabelText('模型名称')).toBeInTheDocument();
+  });
   it('omits untouched empty API key fields from the profile save body', async () => {
     const user = userEvent.setup();
     const { profileBodies } = renderConfig();
