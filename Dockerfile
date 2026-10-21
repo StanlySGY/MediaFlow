@@ -4,7 +4,9 @@
 FROM node:20-slim AS frontend-builder
 WORKDIR /frontend
 COPY frontend/package*.json ./
-RUN npm ci
+# The build needs TypeScript/Vite from devDependencies even when the Docker
+# build environment inherits production-only npm settings.
+RUN npm ci --include=dev
 COPY frontend/ ./
 RUN npm run build
 
