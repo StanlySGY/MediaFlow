@@ -20,7 +20,9 @@ RUN mkdir -p /app/web/swagger \
 # ==========================================
 # Stage 2: Create the Python Runner
 # ==========================================
-FROM python:3.12-slim
+# Pin the Debian release so a floating-tag transition cannot silently change
+# the system package set used for FFmpeg; this matches the current Trixie runtime.
+FROM python:3.12-slim-trixie
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

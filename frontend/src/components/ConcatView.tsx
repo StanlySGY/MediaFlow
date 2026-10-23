@@ -1,33 +1,34 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Combine, UploadCloud, X, ArrowUp, ArrowDown, Download, Loader2 } from 'lucide-react';
-import { errorMessage } from '../lib/errors';
+import { formatSize } from '../lib/uploadPreflight';
 
-interface ConcatViewProps {
-  authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
-}
-
+// Concat has no fetch path left: a whole-file POST that reports progress is an
+// XHR, and the authedFetch wrapper cannot report progress, so this view reads
+// the token itself and takes no props.
 const ext = (name: string): string => {
   const i = name.lastIndexOf('.');
   return i >= 0 ? name.slice(i).toLowerCase() : '';
 };
 
-const formatBytes = (n: number): string => {
-  if (n < 1024) return `${n} B`;
-  const u = ['KB', 'MB', 'GB'];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(1)} ${u[i]}`;
-};
-
-export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
+export const ConcatView: React.FC = () => {
   const [files, setFiles] = useState<File[]>([]);
   const [merging, setMerging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ name: string; size: number; url: string } | null>(null);
   const [isDragActive, setIsDragActive] = useState(false);
+  // Merge runs in two stages the user cannot tell apart from a spinner: the
+  // browser is still pushing bytes, then the server is inside FFmpeg. Upload
+  // percentage covers the first; after it hits 100 the label has to say which
+  // side is working, because a multi-GB concat sits in stage two for minutes.
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [serverWorking, setServerWorking] = useState(false);
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // An in-flight XHR outliving the view keeps pushing bytes for a request
+  // nobody is watching, and it holds the session's bandwidth.
+  useEffect(() => () => xhrRef.current?.abort(), []);
 
   const exts = new Set(files.map(f => ext(f.name)));
   const mixedFormat = exts.size > 1;
@@ -50,34 +51,93 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
   });
 
   const clearAll = () => {
+    xhrRef.current?.abort();
     if (result) URL.revokeObjectURL(result.url);
     setFiles([]);
     setError(null);
     setResult(null);
+    setMerging(false);
+    setUploadProgress(0);
+    setServerWorking(false);
   };
 
-  const handleMerge = async () => {
+  const cancelMerge = () => xhrRef.current?.abort();
+
+  /** Concat is a whole-file POST, so it gets the same treatment as an upload:
+   *  XHR for real progress events, and the token read the way authedFetch
+   *  reads it (authedFetch itself cannot report progress). */
+  const handleMerge = () => {
     if (!canMerge) return;
     setMerging(true);
+    setServerWorking(false);
+    setUploadProgress(0);
     setError(null);
     if (result) URL.revokeObjectURL(result.url);
     setResult(null);
-    try {
-      const fd = new FormData();
-      files.forEach(f => fd.append('files', f));
-      const r = await authedFetch('/media/concat', { method: 'POST', body: fd });
-      if (!r.ok) {
-        const e = await r.json().catch(() => ({}));
-        throw new Error(e.detail || `合并失败（HTTP ${r.status}）`);
+
+    const fd = new FormData();
+    files.forEach(f => fd.append('files', f));
+
+    let tok = '';
+    try { tok = localStorage.getItem('asr_token') || ''; }
+    catch { /* Continue without a token if browser storage is unavailable. */ }
+
+    const xhr = new XMLHttpRequest();
+    xhrRef.current = xhr;
+    xhr.open('POST', '/media/concat');
+    if (tok) xhr.setRequestHeader('Authorization', `Bearer ${tok}`);
+    // Merged output can be several GB; a blob download is fine, a timeout is not.
+    xhr.responseType = 'blob';
+
+    xhr.upload.onprogress = (e) => {
+      if (xhrRef.current !== xhr) return;
+      if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.upload.onload = () => {
+      if (xhrRef.current !== xhr) return;
+      setUploadProgress(100);
+      // Bytes are gone from this machine; the remaining wait is FFmpeg's.
+      setServerWorking(true);
+    };
+    const finish = () => { if (xhrRef.current === xhr) xhrRef.current = null; };
+
+    xhr.onload = () => {
+      finish();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setResult({ name: `merged${ext(files[0].name)}`, size: xhr.response?.size ?? 0, url: URL.createObjectURL(xhr.response as Blob) });
+      } else {
+        // The failure body is text; the response type is blob, so read it back.
+        void Promise.resolve(xhr.response instanceof Blob ? xhr.response.text() : String(xhr.responseText || ''))
+          .then((body) => {
+            let detail: string;
+            try { detail = String(JSON.parse(body).detail || ''); } catch { detail = body.slice(0, 300); }
+            setError(detail || `合并失败（HTTP ${xhr.status}）`);
+          })
+          .catch(() => setError(`合并失败（HTTP ${xhr.status}）`));
       }
-      const blob = await r.blob();
-      setResult({ name: `merged${ext(files[0].name)}`, size: blob.size, url: URL.createObjectURL(blob) });
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
       setMerging(false);
-    }
+      setServerWorking(false);
+    };
+    xhr.onerror = () => {
+      finish();
+      setError('网络错误，合并未完成');
+      setMerging(false);
+      setServerWorking(false);
+    };
+    xhr.onabort = () => {
+      finish();
+      setError('已取消合并');
+      setMerging(false);
+      setServerWorking(false);
+    };
+    xhr.send(fd);
   };
+
+  const mergeStageText = serverWorking
+    ? '服务端正在拼接（不重新编码）…'
+    : uploadProgress >= 100
+      ? '上传完成，等待服务端开始…'
+      : `上传中 ${uploadProgress}%`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -124,7 +184,7 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
               <div key={`${f.name}-${f.size}-${i}`} className="flex items-center gap-3 p-2.5 rounded-lg border border-border bg-surface-2">
                 <span className="font-mono text-meta text-muted-2 w-4 shrink-0 text-right tabular-nums">{i + 1}</span>
                 <span className="flex-1 min-w-0 truncate text-base text-fg" title={f.name}>{f.name}</span>
-                <span className="text-meta text-muted shrink-0 tabular-nums">{formatBytes(f.size)}</span>
+                <span className="text-meta text-muted shrink-0 tabular-nums">{formatSize(f.size)}</span>
                 <div className="flex items-center gap-1 shrink-0">
                   <button onClick={() => move(i, -1)} disabled={i === 0} className="p-1.5" aria-label="上移"><ArrowUp className="w-3.5 h-3.5" /></button>
                   <button onClick={() => move(i, 1)} disabled={i === files.length - 1} className="p-1.5" aria-label="下移"><ArrowDown className="w-3.5 h-3.5" /></button>
@@ -145,13 +205,36 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
             {merging ? <Loader2 className="w-4 h-4 animate-spin" /> : <Combine className="w-4 h-4" />}
             <span>{merging ? '合并中…' : `开始合并${files.length >= 2 ? `（${files.length} 个）` : ''}`}</span>
           </button>
+          {merging && (
+            <button onClick={cancelMerge}>
+              <X className="w-4 h-4" /><span>取消</span>
+            </button>
+          )}
           {files.length > 0 && (
             <button onClick={clearAll} disabled={merging}>
               <X className="w-4 h-4" /><span>清空</span>
             </button>
           )}
+          <span className="text-meta text-muted tabular-nums">
+            合计 {files.map(f => f.size).reduce((a, b) => a + b, 0) ? formatSize(files.map(f => f.size).reduce((a, b) => a + b, 0)) : '0 B'} · {mergeStageText}
+          </span>
           {error && <span className="toast err min-w-0 break-words" role="alert">{error}</span>}
         </div>
+
+        {merging && (
+          <div className="mt-3">
+            <div className="progress" role="progressbar" aria-label="文件上传进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={uploadProgress}>
+              <div style={{ width: `${uploadProgress}%` }} />
+            </div>
+            {/* FFmpeg's own progress is not reportable over this endpoint, so
+                say plainly that the remaining wait is on the server. */}
+            {serverWorking && (
+              <p className="text-meta text-muted mt-2" role="status">
+                文件已全部送达服务端，正在按顺序拼接。大文件需要几分钟，不要关闭页面。
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* result */}
@@ -165,7 +248,7 @@ export const ConcatView: React.FC<ConcatViewProps> = ({ authedFetch }) => {
           )}
           <div className="flex items-center gap-3 flex-wrap">
             <span className="text-sm text-fg font-medium truncate">{result.name}</span>
-            <span className="text-sm text-muted tabular-nums">{formatBytes(result.size)}</span>
+            <span className="text-sm text-muted tabular-nums">{formatSize(result.size)}</span>
             <button
               onClick={() => { const a = document.createElement('a'); a.href = result.url; a.download = result.name; a.click(); }}
               className="primary ml-auto"

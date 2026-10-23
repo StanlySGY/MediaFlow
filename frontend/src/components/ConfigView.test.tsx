@@ -85,6 +85,96 @@ describe('<ConfigView /> profile API keys', () => {
     expect(authedFetch).toHaveBeenCalledTimes(5);
   });
 
+  it('keeps the profile\'s saved values when /asr/config arrives after the profile list', async () => {
+    const user = userEvent.setup();
+    // Mount fires loadConfig() and loadProfiles() together, but they are not
+    // equally fast: /asr/realtime/sessions waits on a live ASR probe, so in the
+    // browser the profile fills the form first and config lands on top of it.
+    // /asr/config only knows the global keys under different names (provider,
+    // base_url, …), so filling it *over* the form blanked every saved address,
+    // model and provider — the user saw empty inputs, and the next save wrote
+    // those blanks back into the profile. The gate below is that arrival order.
+    const profileBodies: Record<string, unknown>[] = [];
+    // Deferred until the macrotask after the profile list has been applied, so
+    // config demonstrably lands on top of a form the profile already filled.
+    let releaseConfig: () => void = () => {};
+    const configArrivesLast = new Promise<void>((resolve) => { releaseConfig = resolve; });
+    const authedFetch = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === '/asr/config') {
+        await configArrivesLast;
+        return jsonResponse({
+          available_providers: ['openai_compat', 'openai_chat_audio'],
+          provider: 'openai_chat_audio',
+          base_url: '',
+          model: '',
+          language: 'zh',
+          timestamps: false,
+          hotwords: '',
+          prompt_hints: '',
+          concurrency: 4,
+          max_retries: 2,
+          retry_backoff: 1.5,
+          timeout: 120,
+          split_strategy: 'silence',
+          chunk_seconds: 300,
+          overlap_seconds: 3,
+          silence_noise_db: -30,
+          silence_min_duration: 0.6,
+          max_upload_bytes: 2048 * 1024 * 1024,
+          realtime_asr_provider: 'realtime_mock',
+          realtime_asr_base_url: '',
+          realtime_asr_model: '',
+          realtime_max_chunk_bytes: 1024 * 1024,
+          realtime_session_ttl_seconds: 300,
+          access_tokens_count: 0,
+        });
+      }
+      if (url === '/asr/realtime/sessions') {
+        return jsonResponse({ providers: ['realtime_http', 'realtime_mock'] });
+      }
+      if (url === '/asr/profiles') {
+        // A real macrotask gap, so React has committed the profile and applied
+        // it to the form before /asr/config is allowed to answer.
+        setTimeout(releaseConfig, 50);
+        return jsonResponse(profilesFixture());
+      }
+      if (url === '/asr/profiles/profile-1' && options?.method === 'PUT') {
+        profileBodies.push(JSON.parse(String(options.body)) as Record<string, unknown>);
+        return jsonResponse({ profile: { id: 'profile-1' } });
+      }
+      throw new Error(`Unexpected request: ${options?.method ?? 'GET'} ${url}`);
+    });
+
+    render(<ConfigView authedFetch={authedFetch} refreshTopbar={vi.fn(async () => {})} />);
+
+    await screen.findByRole('button', { name: '保存这份配置' });
+    expect(await screen.findByDisplayValue('https://file.example/v1')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('file-model')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('https://realtime.example')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('realtime-model')).toBeInTheDocument();
+    expect(screen.getByLabelText('接口类型')).toHaveValue('openai_compat');
+    expect(screen.getByLabelText('实时接口类型')).toHaveValue('realtime_http');
+    // Global fields still come from /asr/config — the other half of the merge.
+    // They live behind the collapsed 音频切分 group, so open it first.
+    await user.click(screen.getByRole('button', { name: /音频切分/ }));
+    expect(await screen.findByLabelText('每片时长（秒）')).toHaveValue(300);
+    expect(screen.getByLabelText('单次上传上限（GB）')).toHaveValue(2);
+
+    // Saving an untouched profile must not be a way to erase it.
+    await user.clear(screen.getByLabelText('配置名称'));
+    await user.type(screen.getByLabelText('配置名称'), 'Renamed');
+    await user.click(screen.getByRole('button', { name: '保存这份配置' }));
+    await waitFor(() => expect(profileBodies).toHaveLength(1));
+    expect(profileBodies[0]).toMatchObject({
+      asr_provider: 'openai_compat',
+      asr_base_url: 'https://file.example/v1',
+      asr_model: 'file-model',
+      realtime_asr_provider: 'realtime_http',
+      realtime_asr_base_url: 'https://realtime.example',
+      realtime_asr_model: 'realtime-model',
+    });
+  });
+
   it('associates configuration field captions with their controls', async () => {
     renderConfig();
 

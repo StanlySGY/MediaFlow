@@ -81,6 +81,24 @@ afterEach(() => {
 });
 
 describe('useFileTask recovery', () => {
+  it('only confirms copying the transcript after clipboard success and explains permission failures', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const { result, unmount } = renderHook(() => useFileTask(vi.fn(), sseUrl));
+    act(() => result.current.setFullText('A verified transcript'));
+
+    await act(async () => { await result.current.handleCopy(); });
+    expect(writeText).toHaveBeenCalledWith('A verified transcript');
+    expect(result.current.copied).toBe(true);
+    expect(result.current.copyError).toBeNull();
+
+    writeText.mockRejectedValueOnce(new Error('permission denied'));
+    await act(async () => { await result.current.handleCopy(); });
+    expect(result.current.copied).toBe(false);
+    expect(result.current.copyError).toContain('无法访问剪贴板');
+    unmount();
+  });
+
   it('restores a persisted active task and reconnects to its replayable event stream', async () => {
     localStorage.setItem(STORAGE_KEY, 'resume-task');
     const authedFetch = vi.fn(async (url: string) => {
@@ -258,6 +276,48 @@ describe('useFileTask recovery', () => {
     act(() => result.current.handleEditSegment(1, '校对后的'));
 
     expect(result.current.fullText).toBe('我自己改过的全文');
+    unmount();
+  });
+
+  it('reports a conflict when a typed full text and a segment edit disagree, and syncing resolves it', async () => {
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/file/history-done') return response(terminalInfo);
+      if (url === '/asr/file/history-done/result') return response(finalResult);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
+
+    await act(async () => { await result.current.loadHistoricalTask('history-done'); });
+    expect(result.current.textConflict).toBe(false);
+
+    // Two proofreading surfaces, two exports following them: TXT follows the
+    // full text, SRT/VTT follow the segments. Typing over the full text and
+    // then correcting a segment pulls them apart, and the UI has to know.
+    act(() => result.current.setFullText('整体改写过的文稿'));
+    act(() => result.current.handleEditSegment(1, '校对后的'));
+    expect(result.current.fullText).toBe('整体改写过的文稿');
+    expect(result.current.textConflict).toBe(true);
+
+    // Syncing moves the full text to the side that can carry timestamps.
+    act(() => result.current.syncFullTextFromSegments());
+    expect(result.current.fullText).toBe('校对后的transcript');
+    expect(result.current.textConflict).toBe(false);
+    unmount();
+  });
+
+  it('keeps an untouched full text out of the conflict report', async () => {
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/file/history-done') return response(terminalInfo);
+      if (url === '/asr/file/history-done/result') return response(finalResult);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const { result, unmount } = renderHook(() => useFileTask(authedFetch, sseUrl));
+
+    await act(async () => { await result.current.loadHistoricalTask('history-done'); });
+    // A segment edit alone moves both surfaces together — no disagreement to show.
+    act(() => result.current.handleEditSegment(1, '校对后的'));
+    expect(result.current.fullText).toBe('校对后的transcript');
+    expect(result.current.textConflict).toBe(false);
     unmount();
   });
 

@@ -110,13 +110,13 @@ docker compose up -d --build
 ```bash
 # 1. 构建机（有网）：构建并导出镜像（默认跟随本机架构；构建机与现场均为 arm64）
 ./build.sh --save
-#    产物：mediaflow-1.8.0-arm64.tar.gz
+#    产物：mediaflow-1.8.1-arm64.tar.gz
 #    需为别的架构构建（如现场是 x86）：./build.sh --platform linux/amd64 --save（须 buildx + qemu）
 
 # 2. 把 .tar.gz、docker-compose.prod.yml、.env.example 拷到现场（U 盘 / 内网盘）
 
 # 3. 现场服务器（离线）：加载镜像
-docker load -i mediaflow-1.8.0-arm64.tar.gz
+docker load -i mediaflow-1.8.1-arm64.tar.gz
 
 # 4. 准备配置：ASR_BASE_URL 指向内网已部署的 ASR（无鉴权可留空 ASR_API_KEY）
 cp .env.example .env
@@ -125,7 +125,7 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.8.0`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
+`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.8.1`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
 
 > `docker-compose.prod.yml` 默认用 `network_mode: host` 以绕开部分主机的 Docker bridge 转发问题，但 `.env.example` 将 `HOST` 设为 `127.0.0.1`。远程访问必须先设置 `ACCESS_TOKENS`，再将 `HOST` 改为 `0.0.0.0` 并放行宿主防火墙/安全组。普通 Docker 主机可改用 bridge 网络；默认端口映射应保留 loopback，远程发布也必须先启用令牌。
 

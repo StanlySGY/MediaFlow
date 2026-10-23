@@ -22,6 +22,7 @@ describe('<App /> smoke', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', mockFetch());
     localStorage.clear();
+    window.history.replaceState(null, '', '/#/tasks');
     user = userEvent.setup();
   });
   afterEach(() => vi.unstubAllGlobals());
@@ -55,5 +56,18 @@ describe('<App /> smoke', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/auth/info');
+  });
+
+  it('keeps the destination view visible when navigating from history back to file transcription', async () => {
+    window.history.replaceState(null, '', '/#/history');
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: /历史转写记录/ })).toBeInTheDocument();
+    // JSDOM uses a narrow viewport, so open the responsive navigation drawer first.
+    await user.click(screen.getByRole('button', { name: '打开菜单' }));
+    await user.click(screen.getByRole('button', { name: '文件转写' }));
+
+    expect(await screen.findByRole('button', { name: '点击选择文件，或把音频/视频拖到这里' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /历史转写记录/ })).not.toBeInTheDocument();
   });
 });

@@ -128,6 +128,9 @@ def test_push_empty_chunk_without_final_returns_400(client):
         json={"seq": 0, "audio": "", "is_final": False},
     )
     assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "invalid_request"
+    assert detail["retryable"] is False
 
 
 def test_push_to_missing_session_404(client):

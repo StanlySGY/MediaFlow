@@ -135,4 +135,52 @@ describe('<SegmentList />', () => {
     );
     expect(await screen.findByText('上游原始返回')).toBeInTheDocument();
   });
+  it('searches the list instead of making the operator scroll it', async () => {
+    const segments = [
+      seg(),
+      seg({ segment_id: 2, start: 30, end: 44, text: '会议纪要第二部分' }),
+      seg({ segment_id: 3, start: 44, end: 60, text: '第三段识别文本' }),
+      seg({ segment_id: 4, start: 60, end: 75, text: '', error: '分片 4 识别失败' }),
+    ];
+    render(<SegmentList segments={segments} taskId="t1" authedFetch={noop} />);
+
+    // A list this long is where search earns its place.
+    await userEvent.type(screen.getByRole('searchbox'), '会议');
+    expect(screen.getByText('会议纪要第二部分')).toBeInTheDocument();
+    expect(screen.queryByText('第一段识别文本')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('1 / 4 段');
+
+    // Segment numbers are what the raw error messages quote, so they search too.
+    await userEvent.clear(screen.getByRole('searchbox'));
+    await userEvent.type(screen.getByRole('searchbox'), '4');
+    expect(screen.getByText('分片 4 识别失败')).toBeInTheDocument();
+    expect(screen.queryByText('会议纪要第二部分')).not.toBeInTheDocument();
+
+    await userEvent.clear(screen.getByRole('searchbox'));
+    expect(await screen.findByText('第一段识别文本')).toBeInTheDocument();
+  });
+
+  it('filters to the failed segments and offers a way out of an empty result', async () => {
+    const segments = [
+      seg(),
+      seg({ segment_id: 2, text: '第二段识别文本' }),
+      seg({ segment_id: 3, text: '第三段识别文本' }),
+      seg({ segment_id: 4, text: '', error: '分片 4 识别失败' }),
+    ];
+    render(<SegmentList segments={segments} taskId="t1" authedFetch={noop} />);
+
+    const onlyFailed = await screen.findByRole('button', { name: /只看失败（1）/ });
+    expect(onlyFailed).toHaveAttribute('aria-pressed', 'false');
+    await userEvent.click(onlyFailed);
+    expect(onlyFailed).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('分片 4 识别失败')).toBeInTheDocument();
+    expect(screen.queryByText('第一段识别文本')).not.toBeInTheDocument();
+
+    // A query nobody can clear is a list that looks empty.
+    await userEvent.type(screen.getByRole('searchbox'), '不存在的词');
+    expect(await screen.findByText('没有分片包含「不存在的词」')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '查看全部分片' }));
+    expect(onlyFailed).toHaveAttribute('aria-pressed', 'false');
+    expect(await screen.findByText('第一段识别文本')).toBeInTheDocument();
+  });
 });

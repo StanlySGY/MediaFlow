@@ -67,7 +67,15 @@ def classify_message(message: str) -> tuple[str, str | None, bool]:
         )
     ):
         return "provider_unavailable", "上游实时识别服务不可达，可稍后重试", True
-    if any(token in low for token in ("invalid request", "missing filename", "422")):
+    if any(
+        token in low
+        for token in (
+            "invalid request",
+            "missing filename",
+            "empty audio chunk",
+            "422",
+        )
+    ):
         return "invalid_request", "检查请求参数", False
     if any(
         token in low

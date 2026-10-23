@@ -666,7 +666,7 @@ const closeEventSource = (source: EventSource | null) => {
 
             <div className="text-sm text-muted tabular-nums mb-4">
               已发送 <b className="text-fg font-medium">{fedChunks}</b> 包 ·
-              累计 <b className="text-fg font-medium">{fedBytes.toLocaleString()}</b> 字节
+              累计 <b className="text-fg font-medium">{formatSize(fedBytes)}</b>
             </div>
 
             {/* Soundwave visualizer */}

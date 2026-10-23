@@ -70,9 +70,16 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
   // Whether the user typed in the full-text pane themselves. Segment
   // proofreading must not clobber that, and vice versa it stops being the
   // server's text the moment it is edited.
+  //
+  // Kept as state as well as a ref: the ref gates the derived rewrite below,
+  // and the state lets the export bar say out loud that the two texts no
+  // longer agree. Silence here was the original defect — a hand-corrected
+  // paragraph and a subtitle export that quietly ignored it.
   const fullTextTouchedRef = useRef(false);
+  const [fullTextEdited, setFullTextEdited] = useState(false);
   const setFullText = (value: string) => {
     fullTextTouchedRef.current = true;
+    setFullTextEdited(true);
     setFullTextRaw(value);
   };
 
@@ -109,6 +116,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
 
   const [activePane, setActivePane] = useState<'live' | 'final'>('live');
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(-1);
   const [mediaUrl, setMediaUrl] = useState<string | null>(null);
   const [mediaIsVideo, setMediaIsVideo] = useState(false);
@@ -167,6 +175,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     setTaskProgress(0);
     setFullTextRaw('');
     fullTextTouchedRef.current = false;
+    setFullTextEdited(false);
     setActivePane('live');
     taskIdRef.current = null;
     terminalHandlingRef.current = null;
@@ -247,6 +256,27 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     if (fullTextTouchedRef.current) return;
     setFullTextRaw(mergeSegments(next));
   };
+
+  /**
+   * Bring the two texts back into agreement, from the side that can actually
+   * carry timestamps: the segments. Offered only when a hand edit and a
+   * segment edit have pulled them apart, because the exports are then split —
+   * TXT/copy follow the typed text, SRT/VTT follow the segments — and that has
+   * to be the user's choice rather than something the export bar decides.
+   */
+  const syncFullTextFromSegments = () => {
+    fullTextTouchedRef.current = false;
+    setFullTextEdited(false);
+    setFullTextRaw(mergeSegments(segments));
+  };
+
+  // The two proofreading surfaces cannot always agree, and the exports are
+  // divided between them: TXT/copy/JSON pane carry the full text, SRT/VTT carry
+  // the segment timeline (only segments carry start/end). Rather than pick a
+  // winner in silence, the hook reports the disagreement and the export bar
+  // names which file follows which text.
+  const textConflict =
+    fullTextEdited && segments.length > 0 && mergeSegments(segments) !== fullText;
 
   const handleEditSegment = (segId: number, text: string) => {
     const current = segments.find((s) => s.segment_id === segId);
@@ -401,6 +431,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     setTaskFinSegs(finalSegments.length);
     setFullTextRaw(result.text || '');
     fullTextTouchedRef.current = false;
+    setFullTextEdited(false);
     setTaskDuration(result.duration ? formatDur(result.duration) : '—');
     setTaskStatus(status);
     setTaskProgress(status === 'done' ? 1 : fallbackProgress);
@@ -437,6 +468,7 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     setSegments([]);
     setFullTextRaw('');
     fullTextTouchedRef.current = false;
+    setFullTextEdited(false);
   };
 
   const finishTerminalTask = async (id: string, generation: number, fallbackProgress = 0) => {
@@ -717,19 +749,26 @@ export function useFileTask(authedFetch: AuthedFetch, sseUrl: SseUrl, limits: Up
     setTaskRetryable(false);
   };
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(fullText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    setCopied(false);
+    setCopyError(null);
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(fullText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopyError('无法访问剪贴板，请检查浏览器权限，或手动选择转写文本复制');
+    }
   };
 
   return {
     segments, taskId, taskStatus, taskTotalSegs, taskFinSegs, taskDuration, taskProgress,
-    fullText, setFullText,
+    fullText, setFullText, fullTextEdited, textConflict, syncFullTextFromSegments,
     ovModel, setOvModel, ovLanguage, setOvLanguage, ovSplit, setOvSplit,
     ovChunk, setOvChunk, ovOverlap, setOvOverlap, ovHotwords, setOvHotwords,
     ovHints, setOvHints, ovTimestamps, setOvTimestamps, ovTimestampsTouched, setOvTimestampsTouched,
-    activePane, setActivePane, copied, taskError, clearTaskError,
+    activePane, setActivePane, copied, copyError, taskError, clearTaskError,
     taskErrorHint, taskErrorCode, taskRetryable, canRetryTask: taskRetryable && hasSubmittableFile,
     uploadProgress, mediaUrl, mediaIsVideo, segmentsEdited, mediaRef, hasLocalMedia,
     downloadBundle,

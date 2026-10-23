@@ -3,27 +3,13 @@ import { Save, RotateCcw, Activity, Eye, EyeOff, Server, Scissors, Radio, Shield
 import { SystemConfig } from '../types';
 import { errorMessage, responseError } from '../lib/errors';
 import { useConfirmDialog } from './ConfirmDialog';
+import { PROVIDER_LABELS, REALTIME_LABELS, SPLIT_LABELS } from '../lib/labels';
 
 interface ConfigViewProps {
   authedFetch: (url: string, opts?: RequestInit) => Promise<Response>;
   refreshTopbar: () => Promise<void>;
 }
 
-const PROVIDER_LABELS: Record<string, string> = {
-  openai_compat: '标准语音接口（兼容 Whisper / OpenAI）',
-  openai_chat_audio: '对话式语音接口（Qwen3-ASR 等）',
-};
-const SPLIT_LABELS: Record<string, string> = {
-  silence: '按静音切分（推荐）',
-  fixed: '固定时长切分',
-  overlap: '重叠切分',
-};
-const REALTIME_LABELS: Record<string, string> = {
-  realtime_ws: 'WebSocket 直连（边说边出字）',
-  realtime_http: 'HTTP 流式（边说边出字）',
-  realtime_offline: '录完再识别',
-  realtime_mock: '演示数据（不调用真实服务）',
-};
 
 // Byte counts are stored as raw numbers but shown in GB or MB, whichever
 // keeps the value readable.
@@ -165,7 +151,11 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
           else if (f.type === 'secret') initialForm[f.key] = '';
           else initialForm[f.key] = cfg[apiKey] !== undefined ? cfg[apiKey] : (cfg[f.key] !== undefined ? cfg[f.key] : '');
         }
-        setFormState(initialForm);
+        // Merge, never replace. This runs after loadProfiles() has already
+        // filled the per-profile fields, and it only knows the global keys —
+        // replacing here blanked every saved address, model and provider, and
+        // the next save would have written those blanks back to the profile.
+        setFormState((prev) => ({ ...prev, ...initialForm }));
         setDirtyFields({});
       }
       const rtRes = await authedFetch('/asr/realtime/sessions');
@@ -663,7 +653,7 @@ export const ConfigView: React.FC<ConfigViewProps> = ({ authedFetch, refreshTopb
   }
 
   return (
-    <div className="flex flex-col gap-6 pb-24">
+    <div className="flex flex-col gap-6 pb-40 sm:pb-24">
       {confirmElement}
 
       <div className="card p-4 sm:p-6">

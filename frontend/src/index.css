@@ -170,7 +170,7 @@ body {
 
 /* ---------------- Buttons ---------------- */
 @layer components {
-  button, .btn {
+  button {
     @apply bg-white hover:bg-surface-3 border border-border hover:border-border-strong text-fg-dim font-semibold text-[13px] px-4 py-2.5 rounded-lg cursor-pointer inline-flex items-center justify-center gap-2 transition-colors duration-150 select-none;
   }
   button.primary {
@@ -272,6 +272,7 @@ body {
 }
 
 /* ---------------- Soundwave ---------------- */
+@layer components {
 .soundwave-container {
   @apply flex items-center justify-center gap-1 h-12 my-4 bg-surface-2 border border-border rounded-lg px-6;
 }
@@ -298,7 +299,8 @@ body {
 
 /* The soundwave is a "something is moving" indicator, not the information
    itself — the byte counter and packet count carry the state. So it can stop
-   outright for users who asked for less motion, and the badge pulse with it. */
+   outright for users who asked for less motion, and the badge pulse with it.
+   The universal overrides are `!important`, so layering them costs nothing. */
 @media (prefers-reduced-motion: reduce) {
   .soundwave-container.active .bar { animation: none; height: 14px; }
   .badge .dot.pulse { animation: none; }
@@ -306,6 +308,7 @@ body {
     transition-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
 }
 
 @layer components {
@@ -317,13 +320,6 @@ body {
   @apply h-full bg-accent rounded-full;
 }
 
-/* ---------------- Step guide ---------------- */
-.step {
-  @apply flex items-start gap-3 p-4 rounded-lg border bg-white transition-colors;
-}
-.step .num {
-  @apply w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-[13px] font-bold;
-}
 }
 
 /* ---------------- File input ---------------- */

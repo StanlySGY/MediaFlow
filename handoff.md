@@ -169,7 +169,82 @@ session_id 级别的共享状态。违反此隔离会导致并发订阅者在不
 
 ---
 
+## UI/UX 打磨记录（2026-10-21）
+
+### 本轮真实浏览器观察
+- 通过 Browser 工具打开 `http://127.0.0.1:8999/`，桌面页面可加载；文件转写首页显示上游 `openai_compat`、模型 `Qwen3-ASR-1.7B`、连接状态在线。
+- 点击「实时识别」进入 `/#/realtime`，截图确认主工作区分为实时录音操作、实时文稿和可展开的调试日志；空状态下复制文稿/下载 TXT/复制日志按钮禁用，符合当前无内容时的预期。
+- 实测浏览器没有麦克风权限，启动实时录音后按预期显示「麦克风权限被拒绝」及浏览器权限设置建议；实时会话 POST/DELETE 均 HTTP 200。修复前 UI 曾保留过期的「在用 1/4 路」，修复后重新部署再次实际点击，失败清理后显示「在用 0/4 路」。
+- 在新部署版本中真实点击了「调试日志」→「复制」，页面确认显示「调试日志已复制到剪贴板」；这是浏览器真实交互验证，不只是测试断言。
+- 历史记录页可加载任务列表、搜索/状态/日期筛选和分页控件；打开既有 `acceptance-silence.wav` 记录可展示完整文本及 TXT/SRT/VTT/JSON 导出控件。没有删除历史数据。
+- 调用监控页可加载统计卡和明细；本地 `/asr/monitor` 返回 HTTP 200，且实时会话测试已出现在上游调用记录中。切页导致 SSE 请求 aborted 属于页面关闭连接的表现，不直接判为服务错误。
+- 配置页的「测试连接」按钮被实际点击，`POST /asr/ping` 返回 HTTP 200。配置页的桌面固定操作栏占据视口底部；额外用 Headless Chrome 生成了 390×844 的配置页截图并查看了底部区域，确认操作栏在窄屏仍可见。增加了移动端底部留白以便继续滚动到最后的表单内容；仍需在更长页面滚动到末尾实际确认最后控件可完整移出操作栏上方。
+- 文件转写 API 端到端：生成 2 秒 440Hz 测试音频后上传 `/asr/file` 返回 200，任务到达 `done`，状态和结果均 200；SRT/VTT 导出均 200。返回文本「嗯。」来自纯音测试文件，只证明任务/导出链路，不代表语音准确率。
+- 输入校验与合并 API：`.exe` 上传返回 400；不存在任务返回 404；同一 WAV 合并两份后输出 WAV、时长为 4 秒、HTTP 200；混合 `.wav`/`.mp3` 文件合并返回 400。浏览器历史页的搜索 `mediaflow-ux-tone.wav`、状态筛选「已完成」和重置均可正常使用；未删除现有历史记录。
+- 模型发现：在配置页点击文件 ASR 的「获取模型」后 `POST /asr/models` 返回 200；文件与实时端点的模型探测请求均返回 `Qwen3-ASR-1.7B`。
+- 实时 API 端到端：创建会话、发送真实 PCM 数据包、发送空 final 标记，SSE 收到 final 与 done，状态转为 `done`，DELETE 后 `/asr/realtime/sessions` 为空；额外验证非法 base64 返回 400、空非 final 包返回 400。此处的合成音频只验证协议和资源生命周期，不代表人声转写准确率。
+- 发现并复现了一个真实路由切换 UI 缺陷：从历史记录返回文件转写时 URL/标题已切换，但主内容区可能保持空白（重载后可恢复）。`frontend/src/App.tsx` 去掉外围 `AnimatePresence mode="wait"` 的退出等待，改为立即挂载目标页；`frontend/src/App.test.tsx` 新增从历史记录切换回文件转写的回归测试。修复部署后，在真实浏览器中点「历史记录」可显示 1350 条历史任务，再点「文件转写」在一次交互后可见原转写工作区和已有任务，URL 同步变为 `/#/tasks`。
+- 本轮真实浏览器复查「音视频合并」页：标题、文件选择区域、「开始合并」按钮均可显示；「调用监控」页可显示统计卡片与调用明细空状态，不会报页面错误。其他页面的主要交互证据见上方各条，仍不代表所有控件都已逐一验收。
+- 最新浏览器控制台诊断：MediaFlow 页面没有新增 JS console error/warning，跟踪到的 HTTP 4xx/5xx 为 0。历史页面间切换产生的中断型 SSE 请求单独看待，不混算成后端失败。
+- 当前本地页面的配置/健康/任务/历史/监控请求基本均返回 HTTP 200。观测到的 `403 favicon.svg` 属于本轮曾短暂打开的另一个站点 `10.8.132.198:8088`，不是 MediaFlow 本地页面的请求错误。
+
+### 本轮修复
+- `frontend/src/components/RealtimeRecorderPanel.tsx`：调试日志复制新增成功提示和失败提示；剪贴板 API 不可用或权限拒绝时不再静默失败，并向辅助技术暴露 `status`/`alert`。
+- `frontend/src/components/RealtimeRecorderPanel.tsx`：修复 `maxSessions` 配置异步到达导致 effect 清理后 `mountedRef` 一直为 false 的生命周期问题；释放实时会话后重新读取活跃会话数，避免麦克风被拒绝或会话失败时并发名额显示过期。
+- `frontend/src/components/RealtimeView.test.tsx`：覆盖调试日志复制成功/拒绝，以及先未提供 `maxSessions`、再从配置传入、麦克风权限拒绝并释放名额的回归路径。
+- `frontend/src/hooks/useFileTask.ts`、`frontend/src/App.tsx`：文件转写「复制全文」等待剪贴板写入成功后再显示已复制；失败显示可访问的页面内提示。JSON 导出错误从阻塞式 `window.alert` 改为页面内错误提示，保留用户当前转写文本。
+- `frontend/src/hooks/useFileTask.test.ts`：新增文件转写复制成功与权限失败测试。
+- `frontend/src/components/ConfigView.tsx`：窄屏时增加底部 padding（`pb-40 sm:pb-24`），减少固定操作栏挡住最后一组配置字段的风险。
+- `app/services/asr/realtime_base.py`、`tests/test_realtime_routes.py`：实测发现空音频包但 `is_final=false` 的 400 响应被错误归类为 `internal_error`；现已分类为 `invalid_request`，并添加错误码/不可重试断言，避免调用方误认为服务端故障。
+- `Dockerfile`：将 Python 基础镜像从浮动的 `python:3.12-slim` 明确为 `python:3.12-slim-trixie`。旧运行镜像已核实为 Debian Trixie；不应为固定 tag 降级为 Bookworm。Bookworm 构建因为下载 FFmpeg 的 Debian 系统依赖超过 360 秒时限而未完成，本地旧容器没有被替换，后续应以 Trixie 标签重建并通过健康检查验收。
+- 验证：最新全量前端 18 个测试文件、111/111 测试通过；后端 276/276 测试通过；Ruff、ESLint、`tsc -b`、Vite production build 通过。`git diff --check` 通过。新后端在容器内实际验证空非 final 音频包错误分类为 `invalid_request`；本地服务重建后 `docker compose ps` 为 `healthy`，`GET /health` HTTP 200，配置继续指向 `openai_compat / Qwen3-ASR-1.7B` 和 `realtime_ws` 内网 WebSocket endpoint，会话列表为空。
+- 为避免构建过程被系统包下载拖住，本轮先保留运行中的原镜像为 `mediaflow:baseline-ux-20261021`，再基于该镜像中的已安装 Python/FFmpeg 依赖，用 `/tmp/Dockerfile.mediaflow-ux-local` 构建前端新 bundle 和更新后的应用代码，成功后替换并健康检查。仓库 `Dockerfile` 已固定为 `python:3.12-slim-trixie`；但这次**干净基础镜像完整重建仍未完成验收**（apt 下载 FFmpeg 依赖长时间无进展/超时），需要在网络下载正常时再跑标准 `docker compose up -d --build` 验证可重复构建。
+- 工作区原有 `.env` 未由本轮修改；临时测试 WAV 已删除；本轮没有提交或推送。
+
+### 下一轮待完成
+1. 在浏览器可允许麦克风的上下文（或用户提供短语音测试文件）验收真实录音、声音电平、partial/final、停止后最终结果和重连；本轮确认了权限拒绝恢复，但没有真实语音识别验收。
+2. 补做 390px 的页面末尾滚动与横向溢出检查，尤其要确认配置固定操作栏不会遮住最后一个可交互控件；当前增加了 padding，但还没有完成全页末尾滚动验证。
+3. 真实点击文件转写的 JSON/全文剪贴板失败提示，并用权限拒绝模拟覆盖；本轮已通过对应 hook/全量测试，但尚未在浏览器里人为拒绝剪贴板权限。
+4. 音视频合并目前验证了 API 成功与混合格式拒绝，浏览器确认页面/文件选择入口显示，但尚未用真实浏览器文件选择器完成上传、合并、下载的完整 UI 链路；配置保存失败、监控异常断线恢复也仍需额外交互验证。不要清除已有历史记录，避免破坏测试数据。
+
+## UI/UX 打磨记录（2026-10-23，第二轮）
+
+### 本轮真实浏览器观察（本机后端 8081 + `vite.audit.config.ts` 前端 5174，Playwright + xvfb 真浏览器）
+- 接口调试页文件模拟链路对真实上游 `realtime_ws`（`ws://172.16.100.28:8022/v1/asr/stream`）跑通：默认 `2pass` 与识别模式 `online` 各跑一次，「开始发送」后事件流持续出现 `[seq=… …ms]` 的「识别中」行；「停止」+「发送结束信号」后共 30 行事件，其中 2 个「最终」（seq=13 @15698ms、seq=29 @25284ms）与 1 个「结束」（seq=30），「复制会话文稿」由禁用变可用。上一轮报告里「事件流空白」是驱动脚本选错按钮/选择器造成的，不是产品缺陷。
+- 录音页用假麦克风（`--use-file-for-fake-audio-capture=<wav>?loop=true`）跑通：页头显示「WebSocket 直连 · 边说边出字」、无演示 provider 引导、「在用 1/4 路」，67 条 `push_audio` + 12 条 `sse` 日志，静音阶段记到 `input_silent` 警告；全程只有 1 个 `final`（delta `{start:0, remove:17, text:""}` @32765ms）随后 `done`。
+- 因此这次 SRT/VTT 各只导出一条 cue（`I'm like a child.`），页面上如实写着「字幕时间按本次录音的墙钟计时（上游未给出整句切点，导出为一整条）」。多切点的字幕输出目前只有测试证据（`RealtimeView.test.tsx` 的 SRT/VTT 用例 + `realtimeCueTracker` 9 个用例），真实多句切点要等上游开 VAD 或用带整句切点的 provider 才能现场验收。
+- 原因在 `app/services/asr/realtime_ws.py:_build_start_frame`：`enable_vad` 写死 `False`（Qwen3-ASR 的 WebSocket VAD 会把短停顿过早判定为整句结束，导致丢词/改写），所以浏览器录音过程中拿不到句边界。
+- 顺带发现 `RealtimeSessionCreate.vad_silence_ms`（`app/models/schemas.py:259`）是**没有任何 provider 或路由读取的死字段**：配置上可调、文档里写了默认 700ms，实际不影响任何行为。要么接进 provider，要么从 schema 去掉。
+
+### 本轮修复
+- `frontend/src/components/ConfigView.tsx`：`/asr/config` 后到时**整体替换**表单，把 `/asr/profiles` 已经填好的服务地址、模型名、接口类型全部清成空串；此时点「保存这份配置」会把空值 `PUT /asr/profiles/{id}` 写回档案 —— 一次页面加载即一次静默的数据丢失。改为 `setFormState(prev => ({...prev, ...initialForm}))`，只覆盖该接口真正负责的全局字段。
+- `frontend/src/components/ConfigView.test.tsx`：新增回归测试，按真实到达顺序（`/asr/profiles` 里用 `setTimeout` 延后放行 `/asr/config`）复现，断言六个档案字段仍在、且随后的 PUT 请求体仍带全部六个字段。回退修复后该测试以「输入框为空」的症状失败。
+- `frontend/src/lib/realtimeCueTracker.ts`（新）+ `lib/subtitle.ts`：按 `source_event === 'final'` 的帧在前端记整句切点，导出 SRT/VTT；`subtitle.ts` 抽出 `SubtitleCue` + `buildSrtFromCues` / `buildVttFromCues`，文件转写与实时共用同一套「空条目丢弃 + 0.1s 下限」规则。9 个单测覆盖：无切点、上游重复改写、splice 删字符、`elapsed_ms` 乱序、纯空白条目、`reset()`。
+- `frontend/src/lib/labels.ts`（新）：provider / 切分策略 / 实时 provider 的中文表从 `ConfigView` 抽出，`Sidebar` 底部与 `RealtimeRecorderPanel` 头部改用同一张表；演示 provider 与 `realtime_offline` 的说明改为常驻并带「去服务配置」入口（此前只在首次引导里出现，改过一次配置就永久消失）。
+- `frontend/src/components/ConcatView.tsx`：改回 XHR 取真实上传进度，字节送完后改口说「服务端正在拼接（不重新编码）…」，新增「取消」按钮、卸载时 abort、失败时把 blob 里的服务端错误体读回来显示。
+- `frontend/src/components/SegmentList.tsx`：新增分片文本/分片号搜索、「只看失败（N）」筛选、命中计数与空结果出路；新分片只在用户本来就在列表末尾时才把视图拉下（IntersectionObserver），筛选变窄不滚动。
+- `frontend/src/hooks/useFileTask.ts` + `App.tsx`：新增 `textConflict` / `syncFullTextFromSegments`，两个校对区分叉时页面说明哪份导出跟哪边，并提供「以分片为准统一」；复制全文/复制日志改为写入成功后才确认，JSON 导出失败从 `window.alert` 改为页内错误块。
+- `frontend/src/components/RealtimeRecorderPanel.tsx`：`NotSupportedError`（Chrome 在无音频输入设备/远程桌面/虚机里抛的 "Not supported"）改为说明缺什么、去哪儿确认的中文提示；`maxSessions` 异步到达后恢复 `mountedRef`，并在 DELETE 完成后刷新「在用 N/M 路」。
+- `frontend/src/main.tsx`：`MotionConfig reducedMotion="user"`，此前 `index.css` 的动画抑制覆盖不到 framer-motion 的路由/视图过渡。
+- `frontend/src/App.tsx`：去掉外围 `AnimatePresence mode="wait"` 的退出等待（实测从「历史记录」回「文件转写」主区会留白，需刷新恢复），并按视图写 `document.title`（含前进/后退路径）。
+- `frontend/src/index.css`：删掉无组件引用的 `.step` / `.step .num`；声音波形与 `prefers-reduced-motion` 块纳入 `@layer`。
+- `app/services/asr/realtime_base.py` + `tests/test_realtime_routes.py`：空包但 `is_final=false` 的 400 此前归类 `internal_error`，现归 `invalid_request` / `retryable: false`。
+- `Dockerfile`：`python:3.12-slim` → `python:3.12-slim-trixie`；`.env` 设 `MEDIAFLOW_UID/GID=1000`（宿主用户），配合 `docker-compose.yml` 的 `user:` 变量，避免为了可写去 `chown` 数据目录。
+- 版本号 1.8.1：`app/main.py`、`frontend/package.json`、`build.sh`、`docker-compose.prod.yml` 四处一致，README / README.en / DEPLOY_ONSITE / ONSITE_DEPLOY 的 `mediaflow:1.8.1` 与 `mediaflow-1.8.1-arm64.tar.gz` 同步。
+
+### 验证
+- 前端：`npm run lint` 干净、`npx tsc -b` exit 0、`npm run test` → **20 files / 131 tests passed**、`npm run build` 成功（JS 472.34 kB / gzip 148.03 kB，CSS 48.83 kB）。
+- 后端：`python3 -m pytest -q` → **276 passed**；`git diff --check` 干净。
+- 浏览器：见上两节，接口调试与录音两条链路都在真 Chromium 里跑过并截图；假麦克风不是真实人声，只证明协议/生命周期/导出格式，不代表识别准确率。
+
+### 下一轮待完成
+1. **多切点字幕的真实验收**：目前只有单条 cue 的真实证据。要么在 `realtime_ws` 侧给 `_build_start_frame` 加可配的 `enable_vad`（并验收它不会重演「短停顿过早收尾、丢词」），要么用 `realtime_http` 验一次多句边界；顺带处理 `vad_silence_ms` 这个死字段。
+2. **干净基础镜像重建验收**：`python:3.12-slim-trixie` 的完整 `docker compose up -d --build` 仍未跑通（上一轮 apt 下载 FFmpeg 依赖超时），需要在网络正常时验证可重复构建并过健康检查。
+3. 390px 窄屏页面末尾滚动与横向溢出检查（配置页固定操作栏是否遮住最后一个可交互控件），上一轮加了 padding 但未完成全页末尾验证。
+4. 用真实浏览器文件选择器完成合并页的上传→合并→下载完整 UI 链路（本轮只验证了 XHR 进度/取消/错误体的代码路径与测试）。
+
 ## 悬而未决：无（截至本次更新）
+
 
 上一轮的分句契约问题已经解决。目前没有阻塞性决策待你回复；下一步是 AutoDL 部署联调（见下方问题 2/3），如果部署或联调中出现新的分支决策，会更新在这里。
 

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { UploadCloud, Mic, Settings, FolderArchive, BookOpen, AudioLines, Combine, Activity, Microscope } from 'lucide-react';
 import { SystemConfig } from '../types';
+import { PROVIDER_LABELS, enumLabel } from '../lib/labels';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 
 interface SidebarProps {
@@ -123,8 +124,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="px-4 py-3.5 border-t border-border flex flex-col gap-2 text-[12px]">
         <div className="flex justify-between items-center gap-2">
           <span className="text-muted shrink-0">上游服务</span>
-          <span className="text-fg truncate" title={config?.provider || '—'}>
-            {config?.provider || '—'}
+          {/* The raw enum id (`openai_compat`) is the config file's language,
+              not the operator's; the footer should say what is in use. */}
+          <span className="text-fg truncate" title={enumLabel(PROVIDER_LABELS, config?.provider) || '—'}>
+            {enumLabel(PROVIDER_LABELS, config?.provider) || '—'}
           </span>
         </div>
         <div className="flex justify-between items-center gap-2">

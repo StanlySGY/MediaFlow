@@ -88,6 +88,15 @@ describe('<RealtimeView /> browser recorder', () => {
       });
     });
     expect(await screen.findByText('识别完成')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /调试日志/ }));
+    await userEvent.click(screen.getByRole('button', { name: '复制' }));
+    expect(clipboardWriteText).toHaveBeenLastCalledWith(expect.stringContaining('session_created'));
+    expect(await screen.findByText('调试日志已复制到剪贴板')).toHaveAttribute('role', 'status');
+
+    clipboardWriteText.mockRejectedValueOnce(new Error('permission denied'));
+    await userEvent.click(screen.getByRole('button', { name: '复制' }));
+    expect(await screen.findByText('无法访问剪贴板，请手动选择下方日志复制')).toHaveAttribute('role', 'alert');
   });
 
   it('keeps browser recording active and rebuilds replay after a transient SSE error', async () => {
@@ -222,16 +231,58 @@ describe('<RealtimeView /> browser recorder', () => {
         }),
       },
     });
+    let sessionActive = false;
+    const authedFetch = vi.fn(async (url: string, options?: RequestInit) => {
+      if (url === '/asr/realtime/session') {
+        sessionActive = true;
+        return json({ session_id: 'sess-denied' });
+      }
+      if (url === '/asr/realtime/sessions') {
+        return json({ sessions: sessionActive ? [{ status: 'active' }] : [] });
+      }
+      if (url === '/asr/realtime/sess-denied' && options?.method === 'DELETE') {
+        sessionActive = false;
+        return json({ ok: true });
+      }
+      return json({ ok: true });
+    });
+
+    const view = render(<RealtimeView authedFetch={authedFetch} sseUrl={(path) => path} />);
+    // The app starts before its config request fills maxSessions. Changing the
+    // prop re-runs the capacity effect and must not leave mountedRef stuck false.
+    view.rerender(<RealtimeView authedFetch={authedFetch} sseUrl={(path) => path} maxSessions={4} />);
+    await userEvent.click(screen.getByRole('button', { name: '开始录音' }));
+
+    // "Permission denied" alone does not tell anyone where to click.
+    expect(await screen.findByText(/麦克风权限被拒绝/)).toBeInTheDocument();
+    expect(screen.getByText('发生错误')).toBeInTheDocument();
+    expect(await screen.findByText('在用 0/4 路')).toBeInTheDocument();
+    expect(authedFetch).toHaveBeenCalledWith('/asr/realtime/sess-denied', { method: 'DELETE' });
+  });
+
+  it('explains a machine with no audio input instead of saying "Not supported"', async () => {
+    // Chrome reports a missing capture device as the two-word DOMException
+    // message \"Not supported\" — on a remote desktop or a VM with no sound
+    // hardware that string is what a user would be left staring at.
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn(async () => {
+          throw Object.assign(new Error('Not supported'), { name: 'NotSupportedError' });
+        }),
+      },
+    });
     const authedFetch = vi.fn(async (url: string) => {
-      if (url === '/asr/realtime/session') return json({ session_id: 'sess-denied' });
+      if (url === '/asr/realtime/session') return json({ session_id: 'sess-noaudio' });
       return json({ ok: true });
     });
 
     render(<RealtimeView authedFetch={authedFetch} sseUrl={(path) => path} />);
     await userEvent.click(screen.getByRole('button', { name: '开始录音' }));
 
-    // "Permission denied" alone does not tell anyone where to click.
-    expect(await screen.findByText(/麦克风权限被拒绝/)).toBeInTheDocument();
+    expect(await screen.findByText(/无法开启录音/)).toBeInTheDocument();
+    expect(screen.getByText(/输入设备/)).toBeInTheDocument();
+    expect(screen.queryByText('Not supported')).not.toBeInTheDocument();
     expect(screen.getByText('发生错误')).toBeInTheDocument();
   });
 
@@ -271,5 +322,82 @@ describe('<RealtimeView /> browser recorder', () => {
       url === '/asr/realtime/sess-pending-mic'
       && opts?.method === 'DELETE'
     ))).toBe(true));
+  });
+  it('exports SRT and VTT cut at the upstream sentence boundaries it was told about', async () => {
+    // The server archives a realtime session with no segments, so the subtitle
+    // timeline is built here from upstream `final` frames plus this client's
+    // session clock. Both halves of that claim have to be visible in the output.
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/realtime/session') return json({ session_id: 'sess-srt' });
+      return json({ ok: true });
+    });
+
+    render(<RealtimeView authedFetch={authedFetch} sseUrl={(path) => path} realtimeProvider="realtime_ws" />);
+    await userEvent.click(screen.getByRole('button', { name: '开始录音' }));
+
+    expect(screen.getByRole('button', { name: '下载 SRT' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '下载 VTT' })).toBeDisabled();
+
+    act(() => {
+      // Online frames stream the sentence in progress; a `final` frame is the
+      // one where upstream says the sentence is settled, and that instant is
+      // the only cut the tracker makes.
+      const es = MockEventSource.instances[0];
+      es.emit('message', textDeltaEvent('sess-srt', 0, '第一句', 0, 200, false));
+      es.emit('message', textDeltaEvent('sess-srt', 3, '话', 0, 800, true));
+      es.emit('message', textDeltaEvent('sess-srt', 4, '第二句', 0, 900, false));
+      es.emit('message', textDeltaEvent('sess-srt', 7, '话', 0, 2_400, true));
+      // Text with no boundary after it: its cue has to run to "now".
+      es.emit('message', textDeltaEvent('sess-srt', 8, '还没说完的第三句', 0, 2_600, false));
+    });
+    expect(await screen.findByText('第一句话第二句话还没说完的第三句')).toBeInTheDocument();
+
+    // The caveat is readable text, not a hover tooltip nobody will find.
+    expect(await screen.findByText(/字幕时间按本次录音的墙钟计时，2 个切点/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: '下载 SRT' }));
+    const [srtName, srtBody, srtType] = downloadFile.mock.calls.at(-1) as [string, string, string];
+    expect(srtName).toMatch(/^realtime-\d{4}-\d{2}-\d{2}-\d{4}\.srt$/);
+    expect(srtType).toBe('text/plain;charset=utf-8');
+    // Both settled sentences are timed by the measured boundary instants; only
+    // the third cue's end is the wall clock, so it is the one left unpinned.
+    expect(srtBody).toContain('1\n00:00:00,000 --> 00:00:00,800\n第一句话\n');
+    expect(srtBody).toContain('2\n00:00:00,800 --> 00:00:02,400\n第二句话\n');
+    expect(srtBody).toContain('3\n00:00:02,400 --> ');
+    expect(srtBody).toContain('还没说完的第三句');
+
+    await userEvent.click(screen.getByRole('button', { name: '下载 VTT' }));
+    const [vttName, vttBody] = downloadFile.mock.calls.at(-1) as [string, string];
+    expect(vttName).toMatch(/\.vtt$/);
+    expect(vttBody).toContain('WEBVTT\n\n1\n00:00:00.000 --> 00:00:00.800\n第一句话\n');
+    expect(vttBody).toContain('2\n00:00:00.800 --> 00:00:02.400\n第二句话\n');
+  });
+
+  it('names a provider whose text does not arrive while recording, and links to the setting', async () => {
+    const onOpenConfig = vi.fn();
+    const authedFetch = vi.fn(async (url: string) => {
+      if (url === '/asr/realtime/session') return json({ session_id: 'sess-mock' });
+      return json({ ok: true });
+    });
+
+    render(
+      <RealtimeView
+        authedFetch={authedFetch}
+        sseUrl={(path) => path}
+        realtimeProvider="realtime_mock"
+        onOpenConfig={onOpenConfig}
+      />,
+    );
+
+    // The first-run guide disappears after the first config edit; this one has
+    // to stay as long as the setting is still the surprising one.
+    expect(await screen.findByText(/当前是演示 provider/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '去服务配置' }));
+    expect(onOpenConfig).toHaveBeenCalled();
+
+    const streaming = render(
+      <RealtimeView authedFetch={authedFetch} sseUrl={(path) => path} realtimeProvider="realtime_ws" />,
+    );
+    expect(streaming.container.textContent).not.toContain('演示 provider');
   });
 });

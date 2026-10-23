@@ -1,18 +1,22 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ClipboardCopy, Download, Mic, MicOff, Square, Trash2 } from 'lucide-react';
+import { ClipboardCopy, Download, Info, Mic, MicOff, Square, Trash2 } from 'lucide-react';
 import { StandardASRStreamEvent } from '../types';
 import { errorMessage, responseError } from '../lib/errors';
 import { applySplice } from '../lib/splice';
+import { buildSrtFromCues, buildVttFromCues } from '../lib/subtitle';
+import { createRealtimeCueTracker } from '../lib/realtimeCueTracker';
 import { downloadFile } from '../lib/download';
+import { formatSize } from '../lib/uploadPreflight';
+import { enumLabel, REALTIME_LABELS, realtimeProviderGuide, realtimeProviderNote } from '../lib/labels';
 import { Accordion } from './Accordion';
 import { AudioLevelMeter } from './AudioLevelMeter';
 
 /** "realtime-2026-10-20-1530.txt" — a constant filename meant every recording
  *  downloaded over the last one, and the browser's "keep both" fallback leaves
  *  files nobody can tell apart. */
-const transcriptFileName = (now = new Date()) => {
+const transcriptFileName = (ext = 'txt', now = new Date()) => {
   const p = (n: number) => String(n).padStart(2, '0');
-  return `realtime-${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}.txt`;
+  return `realtime-${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}.${ext}`;
 };
 
 interface RealtimeRecorderPanelProps {
@@ -21,6 +25,9 @@ interface RealtimeRecorderPanelProps {
   realtimeProvider?: string;
   /** Server-side cap on simultaneous recordings (realtime_max_sessions). */
   maxSessions?: number;
+  /** Jumps to 服务配置. Only the provider guide needs it, but a guide that
+   *  cannot be acted on is just a complaint. */
+  onOpenConfig?: () => void;
 }
 
 /** RealtimeManager.list() returns every session it still holds, including the
@@ -75,6 +82,12 @@ const microphoneErrorMessage = (error: unknown): string => {
       return '麦克风被其他程序占用（会议软件、录音工具），或系统未授予浏览器麦克风权限。关掉占用它的程序后再试。';
     case 'AbortError':
       return '麦克风初始化被中断，请重新开始录音。';
+    case 'NotSupportedError':
+      // Chrome's own wording is the two-word string "Not supported", which says
+      // nothing about what is missing. This one fires when the page cannot reach
+      // an audio device at all: no capture device in the OS, a remote desktop /
+      // VM session with no sound hardware, or a browser build without recording.
+      return '当前环境无法开启录音：系统里没有可用的音频输入设备，或这个浏览器不支持录音。请在系统声音设置里确认输入设备，远程桌面/无麦克风的环境无法使用实时录音。';
     default:
       return errorMessage(error);
   }
@@ -94,6 +107,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   sseUrl,
   realtimeProvider,
   maxSessions,
+  onOpenConfig,
 }) => {
   const [state, setState] = useState<RealtimeRecorderState>('idle');
   const isRecording = state === 'recording';
@@ -101,6 +115,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   const status = RECORDER_STATUS[state];
   const [transcript, setTranscript] = useState('');
   const [transcriptFeedback, setTranscriptFeedback] = useState('');
+  const [logsFeedback, setLogsFeedback] = useState('');
   const [notice, setNotice] = useState('');
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
@@ -117,6 +132,10 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   // an empty transcript; this is the only point where that is still fixable.
   const [heardSound, setHeardSound] = useState(false);
   const [silentFor, setSilentFor] = useState(0);
+  // How many sentence boundaries this recording has closed. The cue tracker
+  // itself lives in a ref (it is event state, not render state), but the export
+  // note is render text, so the count it needs is mirrored here.
+  const [boundaryCount, setBoundaryCount] = useState(0);
   const mountedRef = useRef(true);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -130,6 +149,12 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   const generationRef = useRef(0);
   const committedTextRef = useRef('');
   const releasePromiseRef = useRef<Promise<void>>(Promise.resolve());
+  // Subtitle cues for this recording. The server archives a realtime session
+  // with no segments because the upstream frames carry no utterance timestamps;
+  // what is measurable is this client's clock, so the boundaries are recorded
+  // here as the events arrive (see lib/realtimeCueTracker).
+  const cueTrackerRef = useRef(createRealtimeCueTracker());
+  const sessionStartRef = useRef(0);
 
   const refreshCapacity = useCallback(async () => {
     // Without a known cap the count has nothing to be compared against, so do
@@ -216,10 +241,21 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     streamRef.current = null;
     recorderRef.current = null;
     setMicStream(null);
-    releaseSession(sessionId);
-  }, [releaseSession]);
+    if (sessionId) {
+      void releaseSession(sessionId).finally(() => {
+        // Session creation updates the capacity badge before getUserMedia may
+        // reject. Refresh after DELETE completes so a denied microphone does
+        // not leave a stale "in use" count on the idle/error screen.
+        if (mountedRef.current) void refreshCapacity();
+      });
+    }
+  }, [refreshCapacity, releaseSession]);
 
   useEffect(() => {
+    // maxSessions is populated asynchronously from app config. This effect is
+    // re-run when that prop changes, so restore the mounted flag on every setup
+    // or all later capacity refreshes would be ignored after the first cleanup.
+    mountedRef.current = true;
     // Wrapped in a microtask-free async IIFE so the count lands in a callback
     // rather than the effect body (react-hooks/set-state-in-effect).
     void (async () => {
@@ -231,6 +267,12 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       cleanup();
     };
   }, [cleanup, refreshCapacity]);
+
+  // Wall clock of the session, used when a provider frame carries no elapsed_ms
+  // of its own. The server's own counter starts at session creation, which is
+  // the same instant this ref is set at.
+  const sessionElapsedMs = () =>
+    sessionStartRef.current ? Date.now() - sessionStartRef.current : 0;
 
   const subscribe = (sessionId: string, generation: number) => {
     eventSourceRef.current?.close();
@@ -250,6 +292,8 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       // transcript — removing this reset would double-apply the replay.
       if (hasOpened) {
         committedTextRef.current = '';
+        cueTrackerRef.current.reset();
+        setBoundaryCount(0);
         setTranscript('');
         setTranscriptFeedback('');
       }
@@ -277,6 +321,16 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
       if (event.type === 'text' && typeof event.delta === 'object' && event.delta !== null) {
         committedTextRef.current = applySplice(committedTextRef.current, event.delta);
         setTranscript(committedTextRef.current);
+        // `source_event` is the provider's own event type. `final` is the one
+        // frame where upstream says "this sentence is settled", so it is the
+        // only boundary worth cutting a subtitle on.
+        if (event.source_event === 'final') {
+          cueTrackerRef.current.closeBoundary(
+            committedTextRef.current.length,
+            event.elapsed_ms ?? sessionElapsedMs(),
+          );
+          setBoundaryCount(cueTrackerRef.current.boundaryCount());
+        }
       }
       if (event.type === 'done' || event.type === 'error') {
         setIsReconnecting(false);
@@ -397,6 +451,9 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     setNotice('');
     setIsReconnecting(false);
     committedTextRef.current = '';
+    cueTrackerRef.current.reset();
+    setBoundaryCount(0);
+    sessionStartRef.current = Date.now();
     setLogs([]);
     setChunks(0);
     setBytes(0);
@@ -547,8 +604,31 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   });
 
   const copyLogs = async () => {
-    await navigator.clipboard?.writeText(logs.join('\n'));
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(logs.join('\n'));
+      setLogsFeedback('调试日志已复制到剪贴板');
+    } catch {
+      setLogsFeedback('无法访问剪贴板，请手动选择下方日志复制');
+    }
   };
+
+  const downloadSubtitle = (format: 'srt' | 'vtt') => {
+    const cues = cueTrackerRef.current.cues(transcript, sessionElapsedMs());
+    if (cues.length === 0) return;
+    const body = format === 'srt' ? buildSrtFromCues(cues) : buildVttFromCues(cues);
+    downloadFile(transcriptFileName(format), body, 'text/plain;charset=utf-8');
+  };
+
+  /** What the SRT/VTT timestamps actually are. They come from this browser's
+   *  clock and the upstream sentence boundaries, never from the audio file —
+   *  a realtime session has no audio file, and the server says so out loud by
+   *  archiving it without segments. */
+  const subtitleNote = boundaryCount === 0
+    ? '字幕时间按本次录音的墙钟计时（上游未给出整句切点，导出为一整条）'
+    : `字幕时间按本次录音的墙钟计时，${boundaryCount} 个切点取上游判定为整句的时刻`;
+
+  const providerGuide = realtimeProviderGuide(realtimeProvider);
 
   const copyTranscript = async () => {
     try {
@@ -568,9 +648,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
           <span>实时录音</span>
           {realtimeProvider && (
             <span className="text-meta font-normal text-muted-2 truncate">
-              {realtimeProvider === 'realtime_mock'
-                ? '演示模式 · 不调用真实 ASR'
-                : realtimeProvider}
+              {realtimeProviderNote(realtimeProvider)}
             </span>
           )}
           {typeof maxSessions === 'number' && (
@@ -609,7 +687,7 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         </button>
         <span className="text-sm text-muted tabular-nums self-center">
           已发送 <b className="text-fg font-medium">{chunks}</b> 包 ·
-          累计 <b className="text-fg font-medium">{bytes.toLocaleString()}</b> 字节
+          累计 <b className="text-fg font-medium">{formatSize(bytes)}</b>
         </span>
         {isRecording && (
           // Keyboard-only hint: on a touch device there is no Escape key, so
@@ -661,6 +739,29 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         </div>
       )}
 
+      {providerGuide && (
+        // Not a first-run tip: the demo/offline providers keep behaving
+        // differently from a streaming one no matter how often the page has
+        // been used, and the difference is invisible until the recording ends.
+        <div
+          className="flex items-start gap-2.5 p-3 mb-4 rounded-lg border border-border bg-surface-2 text-[13px] text-muted"
+          role="status"
+        >
+          <Info className="w-4 h-4 shrink-0 mt-0.5 text-muted-2" />
+          <div className="min-w-0 flex-1">
+            <span className="text-fg font-medium">
+              {enumLabel(REALTIME_LABELS, realtimeProvider) || '实时 provider 未设置'}
+            </span>
+            <p className="mt-1 leading-snug break-words">{providerGuide}</p>
+          </div>
+          {onOpenConfig && (
+            <button onClick={onOpenConfig} className="text-[12px] py-1 px-2.5 shrink-0">
+              去服务配置
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="bg-surface border border-border rounded-[10px] min-h-[240px] p-4 sm:p-5">
         <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
           <div className="text-meta text-muted font-medium">
@@ -679,6 +780,24 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
               <Download className="w-3.5 h-3.5" />
               <span>下载 TXT</span>
             </button>
+            <button
+              onClick={() => downloadSubtitle('srt')}
+              disabled={!transcript}
+              title={subtitleNote}
+              className="text-[12px] py-1.5 px-3"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>下载 SRT</span>
+            </button>
+            <button
+              onClick={() => downloadSubtitle('vtt')}
+              disabled={!transcript}
+              title={subtitleNote}
+              className="text-[12px] py-1.5 px-3"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>下载 VTT</span>
+            </button>
           </div>
         </div>
         {transcriptFeedback && (
@@ -692,6 +811,12 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         <div className="text-[16px] leading-[1.9] text-fg whitespace-pre-wrap break-words">
           {transcript || <span className="text-muted-2">等待识别文本…</span>}
         </div>
+        {transcript && (
+          // The SRT/VTT timestamps are measured, and what they are measured
+          // against has to be said out loud — a title attribute is invisible
+          // on a touch device and unreadable until someone hovers a button.
+          <p className="text-meta text-muted-2 mt-3 leading-snug">{subtitleNote}</p>
+        )}
       </div>
 
       <div className="mt-4">
@@ -707,6 +832,11 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
               <span>清空</span>
             </button>
           </div>
+          {logsFeedback && (
+            <p className="text-[12px] mb-2" role={logsFeedback.startsWith('无法访问') ? 'alert' : 'status'} aria-live="polite">
+              {logsFeedback}
+            </p>
+          )}
           <textarea
             readOnly
             value={logs.join('\n')}

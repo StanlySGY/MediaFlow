@@ -6,6 +6,7 @@ interface RealtimeViewProps {
   sseUrl: (path: string) => string;
   realtimeProvider?: string;
   maxSessions?: number;
+  onOpenConfig?: () => void;
 }
 
 /**
@@ -20,6 +21,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
   sseUrl,
   realtimeProvider,
   maxSessions,
+  onOpenConfig,
 }) => {
   return (
     <div className="flex flex-col gap-6">
@@ -28,6 +30,7 @@ export const RealtimeView: React.FC<RealtimeViewProps> = ({
         sseUrl={sseUrl}
         realtimeProvider={realtimeProvider}
         maxSessions={maxSessions}
+        onOpenConfig={onOpenConfig}
       />
     </div>
   );

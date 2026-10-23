@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, Check, ChevronDown, Copy, PenLine, Play } from 'lucide-react';
 import { ASRSegment } from '../types';
@@ -56,6 +56,17 @@ export const SegmentList: React.FC<SegmentListProps> = ({
   const [copyErrorId, setCopyErrorId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
+  // A finished file transcription is hundreds of rows long, and searching it by
+  // scrolling is not a search. Both filters act on the same list, so a failed
+  // segment is never hidden behind a query the operator forgot to clear.
+  const [query, setQuery] = useState('');
+  const [onlyFailed, setOnlyFailed] = useState(false);
+  // Follow the newest segment only while the operator is already looking at the
+  // tail. Pulling the list down while someone reads an earlier row is worse
+  // than a list that never follows.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const tailRef = useRef<HTMLDivElement | null>(null);
+  const atTailRef = useRef(true);
   // Escape cancels an edit. The textarea can blur as React removes it, so use a
   // ref to prevent that blur from immediately committing the cancelled draft.
   const cancelBlurRef = useRef(false);
@@ -114,6 +125,39 @@ export const SegmentList: React.FC<SegmentListProps> = ({
 
   const sortedSegments = [...segments].sort((a, b) => a.segment_id - b.segment_id);
   const editable = sortedSegments.filter((s) => s.is_final && !s.error).length;
+  const failedCount = sortedSegments.filter((s) => s.error).length;
+  const trimmedQuery = query.trim();
+  const needle = trimmedQuery.toLowerCase();
+  const visibleSegments = sortedSegments.filter((seg) => {
+    if (onlyFailed && !seg.error) return false;
+    if (!needle) return true;
+    // Segment numbers are what the raw-error messages quote, so they search too.
+    return (seg.text || '').toLowerCase().includes(needle) || String(seg.segment_id) === needle;
+  });
+  const filtering = needle !== '' || onlyFailed;
+  const showToolbar = sortedSegments.length > 3 || filtering;
+
+  useEffect(() => {
+    const tail = tailRef.current;
+    if (!tail || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => { atTailRef.current = entries.some((entry) => entry.isIntersecting); },
+      { rootMargin: '160px 0px' },
+    );
+    observer.observe(tail);
+    return () => observer.disconnect();
+  }, [sortedSegments.length]);
+
+  // Only an arrival grows the list; a filter narrowing it must not scroll.
+  const countRef = useRef(visibleSegments.length);
+  useEffect(() => {
+    const grew = visibleSegments.length > countRef.current;
+    countRef.current = visibleSegments.length;
+    if (!grew || !atTailRef.current) return;
+    const rows = listRef.current?.querySelectorAll('[data-seg-row]');
+    const last = rows?.[rows.length - 1] as HTMLElement | undefined;
+    last?.scrollIntoView?.({ block: 'nearest' });
+  }, [visibleSegments.length]);
 
   return (
     <div className="flex flex-col gap-2">
@@ -123,8 +167,52 @@ export const SegmentList: React.FC<SegmentListProps> = ({
         </p>
       )}
 
-      <div className="rounded-[10px] border border-border bg-surface overflow-hidden divide-y divide-border">
-        {sortedSegments.map((seg) => {
+      {showToolbar && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="field flex-1 min-w-[180px] max-w-[340px]">
+            <span>搜索分片</span>
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="文本片段或分片号"
+              className="w-full bg-surface border border-border rounded-[8px] px-2.5 py-1.5 text-sm text-fg outline-none focus-visible:border-accent/50 focus-visible:ring-2 focus-visible:ring-accent/25"
+            />
+          </label>
+
+          {failedCount > 0 && (
+            <button
+              onClick={() => setOnlyFailed((v) => !v)}
+              aria-pressed={onlyFailed}
+              title={`只看识别失败的 ${failedCount} 个分片`}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-sm transition-colors ${
+                onlyFailed ? 'border-err/40 bg-err-soft text-err' : 'border-border text-muted hover:border-border-strong hover:text-fg'
+              }`}
+            >
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span>只看失败（{failedCount}）</span>
+            </button>
+          )}
+
+          {filtering && (
+            <span className="text-meta text-muted tabular-nums ml-auto" role="status">
+              {visibleSegments.length} / {sortedSegments.length} 段
+            </span>
+          )}
+        </div>
+      )}
+
+      <div ref={listRef} className="rounded-[10px] border border-border bg-surface overflow-hidden divide-y divide-border">
+        {visibleSegments.length === 0 && (
+          <div className="px-4 py-6 text-center text-sm text-muted">
+            {needle ? `没有分片包含「${trimmedQuery}」` : '没有识别失败的分片'}
+            <button onClick={() => { setQuery(''); setOnlyFailed(false); }} className="block mx-auto mt-2 text-sm text-accent">
+              查看全部分片
+            </button>
+          </div>
+        )}
+
+        {visibleSegments.map((seg) => {
           const isExpanded = expandedSegId === seg.segment_id;
           const isLoading = loadingId === seg.segment_id;
           const elapsed = seg.elapsed_ms ? `${seg.elapsed_ms.toFixed(0)}ms` : null;
@@ -132,7 +220,7 @@ export const SegmentList: React.FC<SegmentListProps> = ({
           const isEditing = editingId === seg.segment_id;
 
           return (
-            <div key={seg.segment_id} className="group/seg">
+            <div key={seg.segment_id} data-seg-row className="group/seg">
               <div
                 role="button"
                 tabIndex={0}
@@ -278,6 +366,10 @@ export const SegmentList: React.FC<SegmentListProps> = ({
             </div>
           );
         })}
+
+        {/* Measured, not decorative: whether the operator is at the end of the
+            list decides if a newly recognized segment should pull the view down. */}
+        <div ref={tailRef} aria-hidden="true" className="h-0" />
       </div>
     </div>
   );

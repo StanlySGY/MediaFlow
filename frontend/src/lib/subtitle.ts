@@ -13,24 +13,44 @@ export const fmtSubtitleTime = (sec: number, comma: boolean): string => {
   return `${p(h)}:${p(m)}:${p(s)}${comma ? ',' : '.'}${p(ms, 3)}`;
 };
 
-const subtitleEntries = (segs: ASRSegment[]) =>
+/** One subtitle cue. `start`/`end` are seconds from the start of the recording;
+ *  who measured them is the caller's business (file segments carry the media
+ *  timeline, a realtime session carries its own clock). */
+export interface SubtitleCue {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/** Drop empty cues and keep every cue at least 0.1s long, as the backend does:
+ *  a zero-length cue is unreadable in every player. */
+const usableCues = (cues: SubtitleCue[]): SubtitleCue[] =>
+  cues
+    .filter((c) => c.text && c.text.trim())
+    .map((c) => ({ start: Math.max(0, c.start), end: c.end <= c.start ? c.start + 0.1 : c.end, text: c.text.trim() }));
+
+const cuesFromSegments = (segs: ASRSegment[]): SubtitleCue[] =>
   [...segs]
     .sort((a, b) => a.segment_id - b.segment_id)
     .filter((s) => s.text && s.text.trim() && !s.error)
-    .map((s) => ({ start: s.start, end: s.end <= s.start ? s.start + 0.1 : s.end, text: s.text.trim() }));
+    .map((s) => ({ start: s.start, end: s.end, text: s.text }));
 
-export const buildSrt = (segs: ASRSegment[]): string =>
-  subtitleEntries(segs)
+export const buildSrtFromCues = (cues: SubtitleCue[]): string =>
+  usableCues(cues)
     .map((e, i) => `${i + 1}\n${fmtSubtitleTime(e.start, true)} --> ${fmtSubtitleTime(e.end, true)}\n${e.text}\n`)
     .join('\n');
 
-export const buildVtt = (segs: ASRSegment[]): string => {
+export const buildVttFromCues = (cues: SubtitleCue[]): string => {
   const body = ['WEBVTT', ''];
-  subtitleEntries(segs).forEach((e, i) => {
+  usableCues(cues).forEach((e, i) => {
     body.push(String(i + 1), `${fmtSubtitleTime(e.start, false)} --> ${fmtSubtitleTime(e.end, false)}`, e.text, '');
   });
   return body.join('\n');
 };
+
+export const buildSrt = (segs: ASRSegment[]): string => buildSrtFromCues(cuesFromSegments(segs));
+
+export const buildVtt = (segs: ASRSegment[]): string => buildVttFromCues(cuesFromSegments(segs));
 
 /**
  * Join proofread segments into the full-text pane's content.

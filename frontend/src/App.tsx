@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { AlertTriangle, Check, CircleStop, Copy, Download, FileArchive, FileText, FolderDown, Hourglass, RotateCcw, Trash2, Undo2, X } from 'lucide-react';
 
 import { useAuth } from './hooks/useAuth';
@@ -39,6 +39,16 @@ const VIEW_META: { [key: string]: { title: string; crumb: string } } = {
 
 const viewMeta = (view: string) => VIEW_META[view] || VIEW_META[DEFAULT_VIEW];
 
+/**
+ * Browser-tab / bookmark title. A hash-routed SPA keeps one <title> for every
+ * view, so a tab strip full of "MediaFlow · 音视频处理" cannot be told apart,
+ * and a bookmark cannot say which view it opens. Set it wherever the view is
+ * resolved — including on back/forward, which never runs handleViewChange.
+ */
+const applyDocumentTitle = (view: string) => {
+  document.title = `${viewMeta(view).title} · MediaFlow`;
+};
+
 const serverDefaultText = (value: unknown) =>
   value === undefined || value === null || value === '' ? '服务端默认' : `服务端默认 ${value}`;
 
@@ -51,15 +61,16 @@ export default function App() {
   // Topbar / Footer connection info. Declared before useFileTask because the
   // upload preflight reads the limits straight out of this payload.
   const [config, setConfig] = useState<SystemConfig | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   // File-transcription lifecycle (upload / SSE / polling / proofreading / export).
   const {
     segments, taskId, taskStatus, taskTotalSegs, taskFinSegs, taskDuration, taskProgress,
-    fullText, setFullText,
+    fullText, setFullText, fullTextEdited, textConflict, syncFullTextFromSegments,
     ovModel, setOvModel, ovLanguage, setOvLanguage, ovSplit, setOvSplit,
     ovChunk, setOvChunk, ovOverlap, setOvOverlap, ovHotwords, setOvHotwords,
     ovHints, setOvHints, ovTimestamps, setOvTimestamps, setOvTimestampsTouched,
-    activePane, setActivePane, copied,
+    activePane, setActivePane, copied, copyError,
     uploadProgress, mediaUrl, mediaIsVideo, segmentsEdited, mediaRef,
     undoDepth, undoEdit, hasLocalMedia, downloadBundle,
     resetTask, abortTask, retryTask, handleSeek, handleEditSegment, handleFileSelect,
@@ -148,6 +159,7 @@ export default function App() {
     const meta = viewMeta(view);
     setViewTitle(meta.title);
     setViewCrumb(meta.crumb);
+    applyDocumentTitle(view);
     // Leaving a view drops its query: the fragments stay short, and the
     // history filters are not meant to leak into 文件转写.
     writeView(view);
@@ -162,6 +174,7 @@ export default function App() {
         const meta = viewMeta(view);
         setViewTitle(meta.title);
         setViewCrumb(meta.crumb);
+        applyDocumentTitle(view);
         return view;
       });
       if (view === 'history') {
@@ -230,7 +243,8 @@ export default function App() {
         />
 
         <div className="content p-4 md:p-7 max-w-6xl w-full mx-auto flex-1">
-          <AnimatePresence mode="wait">
+          {/* Swap route content immediately: waiting for nested exit animations
+              could leave the main pane blank after sidebar navigation. */}
 
             {/* 1. TASKS ROUTE */}
             {currentView === 'tasks' && (
@@ -238,7 +252,6 @@ export default function App() {
                 key="tasks"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
                 className="flex flex-col gap-6"
               >
                 {/* Beginner guide — shown only until the upstream is configured */}
@@ -490,10 +503,24 @@ export default function App() {
                         <div id="pane-final" role="tabpanel" aria-labelledby="pane-tab-final" tabIndex={0} className="pane flex flex-col gap-4 outline-none">
                           <div className="flex items-start gap-3 flex-wrap">
                             <p className="hint flex-1 min-w-[200px]">
-                              {segmentsEdited
-                                ? '已应用分片校对，SRT/VTT 按校对后的文本导出。'
-                                : '在「分片明细」双击句子校对后，SRT/VTT 会按校对结果导出。'}
+                              {textConflict
+                                ? '两个校对区当前不一致：TXT/复制用下方「完整文本」，SRT/VTT 用「分片明细」的时间轴。点右侧按钮可让两者统一。'
+                                : segmentsEdited
+                                  ? '已应用分片校对，TXT、SRT、VTT 都按校对后的分片导出。'
+                                  : fullTextEdited
+                                    ? '已直接校对完整文本，TXT 与复制按这里导出；SRT/VTT 仍带服务端时间轴。'
+                                    : '在「分片明细」双击句子校对后，SRT/VTT 会按校对结果导出。'}
                             </p>
+                            {textConflict && (
+                              <button
+                                onClick={syncFullTextFromSegments}
+                                title="用「分片明细」的文本覆盖下方完整文本"
+                                className="text-[12px] px-3 py-1.5"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                <span>以分片为准统一</span>
+                              </button>
+                            )}
                             <button
                               onClick={undoEdit}
                               disabled={undoDepth === 0}
@@ -534,12 +561,13 @@ export default function App() {
                               </button>
                               <button
                                 onClick={async () => {
+                                  setExportError(null);
                                   try {
                                     const r = await authedFetch(`/asr/file/${taskId}/result`);
                                     if (!r.ok) throw new Error(`HTTP ${r.status}`);
                                     downloadFile(`${taskId}.json`, await r.text(), 'application/json');
                                   } catch (error) {
-                                    window.alert(`JSON 导出失败：${error instanceof Error ? error.message : '请检查连接后重试'}`);
+                                    setExportError(`JSON 导出失败：${error instanceof Error ? error.message : '请检查连接后重试'}`);
                                   }
                                 }}
                                 className="text-[12px] px-3 py-1.5"
@@ -561,6 +589,16 @@ export default function App() {
                               )}
                             </div>
                           </div>
+                          {copyError && (
+                            <p className="text-sm text-err mt-2" role="alert" aria-live="assertive">
+                              {copyError}
+                            </p>
+                          )}
+                          {exportError && (
+                            <p className="text-sm text-err mt-2" role="alert" aria-live="assertive">
+                              {exportError}。请检查连接后重试，转写文本不会丢失。
+                            </p>
+                          )}
                         </div>
                       )}
                     </div>
@@ -575,13 +613,13 @@ export default function App() {
                 key="realtime"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
               >
                 <RealtimeView
                   authedFetch={authedFetch}
                   sseUrl={sseUrl}
                   realtimeProvider={config?.realtime_asr_provider}
                   maxSessions={config?.realtime_max_sessions}
+                  onOpenConfig={() => handleViewChange('config')}
                 />
               </motion.div>
             )}
@@ -592,7 +630,6 @@ export default function App() {
                 key="api-debug"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
               >
                 <RealtimeApiDebugView
                   authedFetch={authedFetch}
@@ -610,7 +647,6 @@ export default function App() {
                 key="monitor"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
               >
                 <MonitorView authedFetch={authedFetch} sseUrl={sseUrl} />
               </motion.div>
@@ -622,7 +658,6 @@ export default function App() {
                 key="config"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
               >
                 <ConfigView authedFetch={authedFetch} refreshTopbar={refreshTopbar} />
               </motion.div>
@@ -634,7 +669,6 @@ export default function App() {
                 key="history"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
               >
                 <HistoryView
                   key={historyNav}
@@ -653,13 +687,11 @@ export default function App() {
                 key="concat"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
               >
-                <ConcatView authedFetch={authedFetch} />
+                <ConcatView />
               </motion.div>
             )}
 
-          </AnimatePresence>
         </div>
       </main>
 

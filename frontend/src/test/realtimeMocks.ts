@@ -47,15 +47,28 @@ export class MockEventSource {
 }
 
 /** One incremental text event under the splice contract the server emits. */
-export const textDeltaEvent = (sessionId: string, start: number, text: string, remove = 0) => ({
+export const textDeltaEvent = (
+  sessionId: string,
+  start: number,
+  text: string,
+  remove = 0,
+  elapsedMs?: number,
+  // Whether this frame is upstream's "this sentence is settled" frame. It cannot
+  // be inferred from `start`: an online frame appends too. The cue tracker cuts
+  // only on this one, so a test has to say which frame it is.
+  final = start > 0,
+) => ({
   type: 'text',
   stream: 'realtime',
   id: sessionId,
   session_id: sessionId,
   text: '',
   delta: { start, remove, text },
-  is_final: start > 0,
-  source_event: start > 0 ? 'final' : 'online',
+  is_final: final,
+  source_event: final ? 'final' : 'online',
+  // The server counts elapsed_ms from session creation; a test that cares about
+  // subtitle timing sets it instead of relying on the wall clock.
+  ...(elapsedMs !== undefined ? { elapsed_ms: elapsedMs } : {}),
 });
 
 /**
