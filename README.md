@@ -34,6 +34,38 @@
 - **音视频无损合并**（`POST /media/concat`：同格式多文件按上传顺序拼接，FFmpeg concat demuxer + `-c copy`，不转码、输出格式 = 输入格式，音频/视频通用）
 - **实时识别 pipeline**（POST /asr/realtime/session → POST audio base64 chunks → SSE events → POST end）
 
+## 这个项目到底解决什么
+
+一句话：**上游给你的是「一次识别调用」，这个项目给你的是「能用」**。识别能力不在这里（见下节「能力边界」），这里的代码几乎全花在上游不提供的那部分边界上。
+
+先把**不是**本项目产出的东西说清楚：`requirements.txt` 里没有任何 ML 依赖（无 torch / onnx / whisper / transformers / funasr / modelscope），两个文件转写 provider 的实质就是 httpx 请求 + 响应解析。
+
+| 文件 | 实质 |
+| --- | --- |
+| `app/services/asr/openai_compat.py` | `POST /audio/transcriptions` 表单上传 + 指数退避重试 |
+| `app/services/asr/openai_chat_audio.py` | `POST /chat/completions` base64 audio + 重试 + 响应解析 |
+| `app/services/asr/registry.py` · `realtime_registry.py` | 按名字挑 provider |
+
+下面是**上游不给、但必须有人写**的部分，每条都有代码落点：
+
+| 上游不给的东西 | 落点 | 为什么必须存在 |
+| --- | --- | --- |
+| 上游只吃完整音频，长录音得自己切 | `app/services/splitter.py` `split()`：`fixed` / `silence` / `overlap` 三种策略，`asyncio.Semaphore` 限并发切片 | 切多了重复句子，切少了截断句子 |
+| 切完之后怎么拼回去 | `app/services/merger.py:88-112`（有 word 时间戳 → 按重叠区中点裁剪）、`:115`（无时间戳 → 最长公共子串去重，`min_len=4`）、`_is_cjk` 边界规则 | 直接相加会留下重复片段，中文之间还会多出空格 |
+| 浏览器录的是 WebM/Opus，下游实时服务只收 raw PCM | `app/services/asr/realtime_ws.py`：每会话常驻一个 FFmpeg，转 16 kHz mono s16le，送 200 ms 二进制帧 | 没有这一层，浏览器录音按钮接不上原生 WebSocket |
+| 上游不支持流式，但前端只有一套契约 | `app/services/asr/realtime_offline.py`：收 base64 chunk → 会话结束落成一个 WAV → 结果仍以 SSE 事件流回灌 | 前端一行不改就能换 provider |
+| 断线、刷新页面不丢消息 | `app/services/stream_manager.py:181-197`：快照与注册之间不 `await`（否则一条事件会既进快照又进队列，或两边都漏）；实时与 `/transcribe-stream` 的事件历史各限 512 条（`realtime_manager.py:68`、`stream_transcribe_manager.py:26`） | 上游的流断一条就没了 |
+| 会话资源边界 | `app/services/realtime_manager.py`：并发上限、累计音频/时长上限、已结束会话不再占额度、DELETE 后给 pump 有界 drain 窗口、`asyncio.shield` 保证被取消的 DELETE 仍释放上游资源 | 并发上限 4 是实测结果（CHANGELOG 1.7.2），不是拍的 |
+| 上游报错是自由文本 | `app/services/asr/realtime_base.py:31-85` `classify_message()` → 稳定的 `code` / `hint` / `retryable` | 前端只在 `retryable` 且文件仍在本地时才给「重试」按钮 |
+| 磁盘写满 / 并发上传压垮进程 | `app/services/upload_gate.py`：在读取请求体之前判定，超限 429 `upload_limit`、空间不足 507 `insufficient_storage` | 被拒的上传不落盘，也就不留残留文件 |
+| 崩溃残留与重启后的状态 | `app/main.py:349` `_sweep_temp_dir()`、`stream_manager.recover_interrupted()`：中断任务标成 `interrupted`，仍可查、可重提 | `kill -9` / OOM 之后留在 `temp/` 的源文件此前没人回收 |
+| 离线机器上的可运维性 | 见下文「离线现场部署」：非 root uid + 数据卷属主自检（不可写就拒绝启动并逐条指名路径）、`/docs` 与 `/openapi.json` 需令牌、Swagger 资源本地化、`--provenance=false` 保证离线 `docker load` 能加载、`SHUTDOWN_GRACE_SECONDS = 8.0` 优雅停机 | 这一层跟 ASR 无关，但它是交付到内网 / 昇腾机器的现实前提 |
+
+规模感：后端 36 个 `.py` / 约 8.6k 行，前端 61 个 `.ts` / `.tsx` / 约 10.5k 行，26 个测试文件 / 256 个 test 函数。
+
+**所以它值不值得用，取决于你的需求长什么样**：如果你只需要一个脚本调一次 ASR，这个项目远超需要，它的价值全部在上面那张表里；如果你面对的是几百段的长录音、要给用户用的界面、一台不能联网的内网机器，那缺的恰恰就是上面那十行，而不是模型。
+
+
 ## 能力边界
 
 先看这张表，再决定要不要用：

@@ -31,6 +31,38 @@ An audio/video toolbox built on FastAPI / asyncio / FFmpeg that combines three c
 - **Lossless concat** (`POST /media/concat`: ≥2 same-format files joined in upload order via the concat demuxer with `-c copy`, no re-encode, output format = input format, audio and video)
 - **Realtime pipeline** (`POST /asr/realtime/session` → base64 audio chunks → SSE events → `POST end`)
 
+## What this project actually solves
+
+In one line: **the upstream gives you a single recognition call; this project gives you something usable.** The recognition itself is not here (see *Capability boundary* below) — nearly all of the code here is spent on the boundaries the upstream does not provide.
+
+What is **not** this project's output, stated up front: `requirements.txt` contains no ML dependency (no torch / onnx / whisper / transformers / funasr / modelscope), and the two file-transcription providers are, in substance, an httpx request plus response parsing.
+
+| File | Substance |
+| --- | --- |
+| `app/services/asr/openai_compat.py` | `POST /audio/transcriptions` multipart upload + exponential-backoff retry |
+| `app/services/asr/openai_chat_audio.py` | `POST /chat/completions` with base64 audio + retry + response parsing |
+| `app/services/asr/registry.py` · `realtime_registry.py` | pick a provider by name |
+
+What the upstream does **not** give you, and someone therefore has to write — every row has a code location:
+
+| Missing from the upstream | Where it lives | Why it has to exist |
+| --- | --- | --- |
+| The upstream accepts one complete audio file; long recordings must be split | `app/services/splitter.py` `split()`: `fixed` / `silence` / `overlap`, slice fan-out capped by `asyncio.Semaphore` | too many splits duplicate sentences, too few truncate them |
+| Rejoining the split results | `app/services/merger.py:88-112` (word timestamps → crop at the overlap midpoint), `:115` (no timestamps → longest-common-substring dedup, `min_len=4`), plus the `_is_cjk` boundary rule | naive concatenation leaves duplicated fragments and inserts spaces between CJK characters |
+| The browser records WebM/Opus; the downstream realtime service takes raw PCM only | `app/services/asr/realtime_ws.py`: one FFmpeg process per session → 16 kHz mono s16le → 200 ms binary frames | without this layer the browser's record button cannot reach the native WebSocket |
+| Providers that cannot stream, against one frontend contract | `app/services/asr/realtime_offline.py`: buffer base64 chunks → materialize a WAV at session end → replay the transcript as SSE events | the frontend changes not one line when the provider changes |
+| Disconnects and page refreshes must lose nothing | `app/services/stream_manager.py:181-197`: snapshot and register with no `await` between them (otherwise an event lands in both, or in neither); realtime and `/transcribe-stream` event histories are capped at 512 each (`realtime_manager.py:68`, `stream_transcribe_manager.py:26`) | a dropped upstream stream event is normally gone for good |
+| Session resource limits | `app/services/realtime_manager.py`: concurrency cap, per-session byte and duration caps, finished sessions stop holding a slot, a bounded drain window for the pump after DELETE, `asyncio.shield` so a cancelled DELETE still releases the upstream resource | the limit of 4 concurrent sessions is a measurement, not a guess (CHANGELOG 1.7.2) |
+| Upstream errors are free-form text | `app/services/asr/realtime_base.py:31-85` `classify_message()` → stable `code` / `hint` / `retryable` | the frontend offers "retry" only when `retryable` is true and the file is still local |
+| Disk full / upload fan-out | `app/services/upload_gate.py`: decided before the request body is read — 429 `upload_limit`, 507 `insufficient_storage` | a rejected upload never touches disk, so it leaves no residue |
+| Crash residue and post-restart state | `app/main.py:349` `_sweep_temp_dir()`, `stream_manager.recover_interrupted()`: interrupted tasks become `interrupted` and stay queryable and re-submittable | after `kill -9` or an OOM, nothing used to reclaim the sources left in `temp/` |
+| Operability on an offline machine | see *Air-gapped delivery*: non-root uid with a data-volume writability preflight (refuse to start and name each offending path), `/docs` and `/openapi.json` require a token, Swagger assets vendored locally, `--provenance=false` so an offline `docker load` can import the image, `SHUTDOWN_GRACE_SECONDS = 8.0` graceful shutdown | unrelated to ASR, but the precondition for shipping into an intranet / Ascend host |
+
+Scale: 36 backend `.py` files / ~8.6k lines, 61 frontend `.ts` / `.tsx` files / ~10.5k lines, 26 test files / 256 test functions.
+
+**So whether it is worth using depends on what you need**: if you only want a script that calls ASR once, this project is far more than you need and its entire value is the table above; if you need hundreds of segments of long audio, a UI real people use, and a machine that cannot reach the internet, then the ten rows above are exactly what is missing — not the model.
+
+
 ## Capability boundary
 
 | Capability | In this project | Notes |
