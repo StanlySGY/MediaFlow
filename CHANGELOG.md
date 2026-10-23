@@ -3,7 +3,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 版本号的落点：`app/main.py` 的 FastAPI `version`、`frontend/package.json`、`build.sh` 的 `DEFAULT_TAG` 与 `docker-compose.prod.yml` 引用的 `mediaflow:<版本>` 四处保持一致。
 
-仓库里真实出现过的版本落点只有 `0.1.0 → 1.2.0 → 1.3.0 → 1.4.0 → 1.4.1 → 1.7.0 → 1.7.1 → 1.7.2 → 1.7.3 → 1.8.0 → 1.8.1`：`1.5.x` / `1.6.x` 从未使用；`1.3.1` 只在 2026-07-28 一次提交的 `frontend/package.json` 里出现，随即被 `1.4.1` 覆盖，`build.sh` / `app/main.py` / `docker-compose.prod.yml` 三处从未跟进，因此不单独列为一个发布。首个 git tag 是 `v1.7.3`（2026-10-19 切出，版本号本身落点在 2026-09-23 的 `a34b62d`）。
+仓库里真实出现过的版本落点只有 `0.1.0 → 1.2.0 → 1.3.0 → 1.4.0 → 1.4.1 → 1.7.0 → 1.7.1 → 1.7.2 → 1.7.3 → 1.8.0 → 1.8.1 → 1.8.2`：`1.5.x` / `1.6.x` 从未使用；`1.3.1` 只在 2026-07-28 一次提交的 `frontend/package.json` 里出现，随即被 `1.4.1` 覆盖，`build.sh` / `app/main.py` / `docker-compose.prod.yml` 三处从未跟进，因此不单独列为一个发布。首个 git tag 是 `v1.7.3`（2026-10-19 切出，版本号本身落点在 2026-09-23 的 `a34b62d`）。
+
+## [1.8.2] - 2026-10-23
+
+### 修复
+- **开机后第一次历史扫描被节流吞掉**：`HistoryIndex` 用 `_last_refresh = 0.0` 表示「从未刷新」，但判断用的是 `time.monotonic()` —— 它从一个任意的过去时刻起算，在一台刚启动不到 `HISTORY_REFRESH_SECONDS`（默认 1s）的机器上，`monotonic()` 的值比这个窗口还小，于是第一次 `refresh()` 被当成「窗口内」直接返回，归档读出来是空的；写任务结束时调的 `invalidate()` 同理失效，刚完成的任务在开机头一段时间里不进历史列表。本地 `monotonic()` 恒为几万秒，所以这个 bug 只在 CI（新起的 runner）暴露：`test_refresh_is_throttled_unless_forced` 报 `assert 0 == 1`。哨兵改为 `None`，「是否已经刷新过」不再靠时钟值猜。测试用 `monkeypatch` 把时钟拨到 5.0s 复现，回退修复后以同一症状失败。
+- **CI 矩阵互相顶替**：`test` job 的矩阵是默认 `fail-fast: true`，3.11 失败会取消 3.12，那个 job 在页面上显示为 `-`（实际它的 pytest 已经 `276 passed`），一个 3.11 专属故障看起来像「到处都坏了」。改为 `fail-fast: false`，两个版本各自报告结果。
+- **CI 的 Node 版本**：`setup-node` 的 `node-version: 20` 已被 GitHub 强制跑在 Node 24 上并每次发弃用警告，改为 22（与本地开发环境一致）。
+- 版本号 1.8.2（`app/main.py`、`frontend/package.json`、`build.sh`、`docker-compose.prod.yml` 四处一致）。`v1.8.1` tag 已推送、不改写已发布的 ref，所以这个修复单独发一个补丁版；**`v1.8.1` 那个 tag 的代码带上述历史列表 bug，不要用它构建交付**。
 
 ## [1.8.1] - 2026-10-23
 

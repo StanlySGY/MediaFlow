@@ -119,17 +119,35 @@ def test_index_drops_rows_when_the_files_are_deleted(tmp_path):
     assert index.records() == []
 
 
-def test_refresh_is_throttled_unless_forced(tmp_path):
+def test_refresh_is_throttled_unless_forced(tmp_path, monkeypatch):
     out = tmp_path / "out"
     out.mkdir()
     _write(out / "t1.json", {"task_id": "t1", "status": "done", "segments": []})
+
+    # `monotonic()` counts from an arbitrary instant. On a machine booted
+    # seconds ago (every CI runner) its value is smaller than a 60s throttle
+    # window, so a "0.0 means never refreshed" sentinel silently skips the
+    # first refresh and the whole archive reads as empty. Pin the clock low.
+    clock = {"now": 5.0}
+    monkeypatch.setattr(
+        "app.services.history_index.time.monotonic", lambda: clock["now"]
+    )
+
     index = HistoryIndex(out, refresh_seconds=60)
     index.refresh()  # first call always runs
+    assert len(index.records()) == 1
 
     _write(out / "t2.json", {"task_id": "t2", "status": "done", "segments": []})
+    clock["now"] = 20.0
     index.refresh()
     assert len(index.records()) == 1  # still inside the window
 
+    clock["now"] = 40.0
+    index.invalidate()  # a writer finished a task; the next request must see it
+    index.refresh()
+    assert len(index.records()) == 2
+
+    clock["now"] = 60.0
     index.refresh(force=True)
     assert len(index.records()) == 2
 

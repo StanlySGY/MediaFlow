@@ -243,6 +243,29 @@ session_id 级别的共享状态。违反此隔离会导致并发订阅者在不
 3. 390px 窄屏页面末尾滚动与横向溢出检查（配置页固定操作栏是否遮住最后一个可交互控件），上一轮加了 padding 但未完成全页末尾验证。
 4. 用真实浏览器文件选择器完成合并页的上传→合并→下载完整 UI 链路（本轮只验证了 XHR 进度/取消/错误体的代码路径与测试）。
 
+## CI 修复记录（2026-10-23，同日第三轮）
+
+推送 `7ecc334` / `v1.8.1` 后 GitHub Actions CI 失败（run 39909185467）。真失败只有一处，另外两格是被连带的：
+
+- `test (3.11)` → `FAILED tests/test_history_and_uploads.py::test_refresh_is_throttled_unless_forced - assert 0 == 1`。
+- `test (3.12)` 的 pytest 实际是 `276 passed` + Ruff `All checks passed!`，但矩阵默认 `fail-fast: true`，3.11 失败把它取消，页面上显示 `-`；`docker` job 因 `needs` 未运行。
+
+### 根因（是产品 bug，不是测试写错）
+`app/services/history_index.py` 用 `self._last_refresh = 0.0` 当「从未刷新」的哨兵，节流判断是 `now - self._last_refresh < refresh_seconds`，而 `now = time.monotonic()`。Linux 上 `monotonic()` 从开机起算：GitHub runner 是新机器，开机头几十秒里 `monotonic() < 60`，于是**第一次 `refresh()` 被当成「窗口内」直接 return**，`records()` 为空。同理 `invalidate()` 置 0.0 也失效 —— 刚开机时写完任务再刷新，新任务不进历史列表。
+
+本地复现不了的原因：开发机 `monotonic()` 恒为几万秒，永远大于任何 `refresh_seconds`。用把时钟拨到 5.0s 的脚本确认两种情况（首刷被吞、invalidate 后仍看不到新任务）。
+
+修法：哨兵改 `None`，`refresh()` 只在 `self._last_refresh is not None` 时才节流；`invalidate()` 置 `None`。测试 `test_refresh_is_throttled_unless_forced` 用 `monkeypatch` 把 `history_index.time.monotonic` 拨到 5.0s，覆盖「低开机时钟 + 首刷 / 窗口内 / invalidate 后立即可见 / force」四个阶段；把修复还原后它以 CI 里同样的 `assert 0 == 1` 失败，恢复后 `11 passed`。
+
+同时检查了仓库里其它 `monotonic()` 用法（`stream_manager.completed_at`/`_evict_if_needed`、`routes.py` 的上游健康缓存）：它们的起点都来自一次真实读数，不是 0.0 哨兵，没有同类问题。
+
+### CI 配置改动
+- `test` job 加 `fail-fast: false`：两个 Python 版本各自报告结果，不再互相顶替。
+- `setup-node` 的 `node-version: 20` → `22`（GitHub 已把 Node 20 强制跑在 Node 24 上，每次构建都发弃用警告；22 与本地 `node -v` 一致）。
+
+### 版本
+发布 **1.8.2**（四处落点 + 文档 tarball 名同步）。`v1.8.1` 已推送且不改写已发布 ref，所以单独发补丁版；**`v1.8.1` tag 的代码带这个历史列表 bug，不要用它构建交付**。
+
 ## 悬而未决：无（截至本次更新）
 
 

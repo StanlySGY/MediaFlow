@@ -56,14 +56,18 @@ class HistoryIndex:
         # at 20k tasks ≈ 100ms), so it is throttled. Writers call invalidate()
         # so the next request re-scans — on its threadpool, not on the loop.
         self._refresh_seconds = refresh_seconds
-        self._last_refresh = 0.0
+        # None, not 0.0: `monotonic()` counts from an arbitrary point, and on a
+        # freshly booted machine it can be smaller than refresh_seconds — a 0.0
+        # "never refreshed" sentinel then throttles the very first refresh away
+        # and the archive reads as empty.
+        self._last_refresh: float | None = None
 
     # ---- building ----
 
     def refresh(self, *, force: bool = False) -> None:
         """Re-read only the files whose signature changed since the last call."""
         now = time.monotonic()
-        if not force and now - self._last_refresh < self._refresh_seconds:
+        if not force and self._last_refresh is not None and now - self._last_refresh < self._refresh_seconds:
             return
         self._last_refresh = now
         self._refresh_state()
@@ -121,7 +125,7 @@ class HistoryIndex:
         the request's threadpool rather than on whichever coroutine finished a
         task and would otherwise block the event loop.
         """
-        self._last_refresh = 0.0
+        self._last_refresh = None
 
     # ---- mutation from live tasks ----
 
