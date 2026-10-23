@@ -307,8 +307,10 @@ session_id 级别的共享状态。违反此隔离会导致并发订阅者在不
 - `app/web` 静态产物本身与 HEAD 前端代码一致（早前用仓库现存的 `frontend/node_modules` 离线 `npm run build` 逐字节复现过，1.8.3 后新哈希 `index-jSiCNCs6.js`）。
 - CI 的 `docker` job 对这同一个 Dockerfile 是全绿的（run 39917143539 `test (3.11)` `test (3.12)` `frontend` `docker` 全 success），说明 Dockerfile 本身没有环境无关的错误，本机失败的是这条代理链路。
 - **构建架构**：`./build.sh` 不带参数时按 `uname -m` 选本机架构，`--platform` 只有在显式传入时才加进 `docker build`——本机（WSL2 x86_64）默认就是 `linux/amd64`，上面的镜像即由此产出。**本轮的 arm64 交叉构建已中止**：现场目标是鲲鹏 920（`ONSITE_DEPLOY.md` 明确写「不要在 WSL2 上构建带去现场的镜像」），交付包应在现场同架构的 ARM 打包机上 `./build.sh --save` 产出，不在本机做 qemu 模拟构建（qemu 下 pip/apt 层的网络耗时是原生的数倍，本轮实测 arm64 apt 层跑了 20 分钟以上）。中止时残留的 arm64 镜像标签 `mediaflow:1.8.3`（id `379f3fb6755f`，222 MB，`arch=arm64`）已 `docker rmi` 删除，本机 `mediaflow:1.8.4` / `:latest` 现在只有 amd64 一份。
-- **交叉架构护栏**（`build.sh`）：显式传入的 `--platform` 与 `uname -m` 不符时先警告「每一层在 QEMU 模拟下执行、交付包应在同架构打包机上产出」；若 daemon 连对应模拟器都没注册，直接失败并给出注册命令。实测：本机传 `--platform linux/amd64` 无警告照跑；传 `--platform linux/riscv64` 两条警告后 `exit 1`。`PLATFORM_SET` 只在参数里真的出现 `--platform` 时才置 1，不带参数的原生构建不受影响。
-- 本轮为试 arm64 装了 `tonistiigi/binfmt --install arm64`，宿主 `binfmt_misc` 里现在注册着 `qemu-aarch64`，buildx `default` builder 的平台表因此含 `linux/arm64`。不影响原生构建；要撤掉：`docker run --privileged --rm tonistiigi/binfmt --uninstall qemu-aarch64`。
+- **交叉架构护栏**（`build.sh`）：显式传入的 `--platform` 与 `uname -m` 不符时先警告「每一层在 QEMU 模拟下执行、交付包应在同架构打包机上产出」；若 daemon 连对应模拟器都没注册，直接失败并给出注册命令。实测：本机传 `--platform linux/amd64` 与宿主同架构，护栏整块跳过、无警告；传 `--platform linux/riscv64` 与 `--platform linux/arm64` 都是两条警告后 `exit 1`。`PLATFORM_SET` 只在参数里真的出现 `--platform` 时才置 1，不带参数的原生构建不受影响。
+- 护栏第一版判定用的是 `docker buildx inspect default` 的 `Platforms:` 行，实测**不可靠**：本轮撤掉 qemu 之后该行仍列 `linux/arm64`（builder 缓存的能力报告），而最小 arm64 构建（`FROM python:3.12-slim-trixie` + 一条 `RUN python -c ...`）已经 `exec format error`。改为读 `/proc/sys/fs/binfmt_misc` 的注册表（`arm64 → qemu-aarch64`，`amd64 → qemu-x86_64`），目录不可读时才退回 buildx。撤 qemu 后实测 `arch_emulated arm64` 返回 1（此前会返回 0）。
+- 本轮为试 arm64 装的 `tonistiigi/binfmt --install arm64` **已撤掉**：`docker run --privileged --rm tonistiigi/binfmt --uninstall qemu-aarch64`，`/proc/sys/fs/binfmt_misc` 现在只剩 `WSLInterop` / `python3.12`。
+
 - **不要用 `v1.8.1` / `v1.8.2` tag 构建交付**（分别带历史列表 bug 和标题缺口）。
 
 ### 版本

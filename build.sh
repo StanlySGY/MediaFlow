@@ -76,6 +76,28 @@ command -v docker >/dev/null 2>&1 \
 [[ -f frontend/package.json ]] || die "frontend/package.json missing — frontend not initialized."
 [[ -f requirements.txt ]] || die "requirements.txt missing."
 
+# ---- cross-arch guard helpers ----
+# binfmt_misc is what actually decides whether the daemon can exec a foreign
+# binary. `docker buildx inspect`'s Platforms line is a capability report cached
+# by the builder and keeps listing a platform after its emulator has been
+# uninstalled — measured here: after `binfmt --uninstall qemu-aarch64` it still
+# reports linux/arm64 while an arm64 RUN fails with "exec format error". So the
+# kernel's registration table is consulted first, and buildx only as a fallback
+# for hosts where it is not readable from here.
+arch_emulated() {
+    local arch="$1" pattern
+    case "$arch" in
+        arm64) pattern='qemu-aarch64\|qemu-arm64\|^arm64' ;;
+        amd64) pattern='qemu-x86_64\|qemu-amd64\|^amd64' ;;
+        *)     pattern="qemu-${arch}\|^${arch}" ;;
+    esac
+    if [[ -d /proc/sys/fs/binfmt_misc ]] && [[ -n "$(ls -A /proc/sys/fs/binfmt_misc 2>/dev/null)" ]]; then
+        ls /proc/sys/fs/binfmt_misc 2>/dev/null | grep -qiE "$pattern"
+        return $?
+    fi
+    docker buildx inspect default 2>/dev/null | grep -qi "Platforms:[^\n]*linux/${arch}"
+}
+
 # ---- cross-arch guard ----
 # The image must match the architecture of the machine that runs it, and
 # build.sh already picks that from `uname -m`, so a normal build needs no
@@ -94,8 +116,8 @@ if [[ "$PLATFORM_SET" -eq 1 ]]; then
     if [[ "$TARGET_ARCH" != "$HOST_ARCH" ]]; then
         warn "cross-arch build: host is ${HOST_ARCH}, target is ${TARGET_ARCH}; layers run under QEMU emulation."
         warn "for offline delivery build on a ${TARGET_ARCH} host — there ./build.sh --save needs no --platform."
-        docker buildx inspect default 2>/dev/null | grep -qi "Platforms:.*${TARGET_ARCH}" \
-            || die "the docker daemon cannot build ${PLATFORM}: no emulator registered. Install one with: docker run --privileged --rm tonistiigi/binfmt --install ${TARGET_ARCH}"
+        arch_emulated "${TARGET_ARCH}" \
+            || die "the docker daemon cannot run ${PLATFORM} layers: no ${TARGET_ARCH} emulator registered in this kernel's binfmt_misc. Install one with: docker run --privileged --rm tonistiigi/binfmt --install ${TARGET_ARCH}"
     fi
 fi
 
