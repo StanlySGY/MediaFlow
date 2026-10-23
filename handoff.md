@@ -273,6 +273,33 @@ session_id 级别的共享状态。违反此隔离会导致并发订阅者在不
 ### 版本
 发布 **1.8.2**（四处落点 + 文档 tarball 名同步）。`v1.8.1` 已推送且不改写已发布 ref，所以单独发补丁版；**`v1.8.1` tag 的代码带这个历史列表 bug，不要用它构建交付**。
 
+## 本地实例重启 + 1.8.2 验证（2026-10-23，同日第四轮）
+
+### 实例状态变化
+- 旧容器（`mediaflow:latest` = 1.8.0 镜像，`420484591b74`）已 `docker compose -f docker-compose.yml down --remove-orphans` 移除。**没有重建镜像**：本机当前无外网（见下），`./build.sh` 在 `RUN npm ci --include=dev` 处失败。
+- 8999 上现在跑的是宿主进程直接执行仓库代码：`nohup env PYTHONPATH=. PORT=8999 HOST=127.0.0.1 python3 -m app.main`，日志 `~/.cache/mediaflow-local/run8999.log`。数据目录仍是仓库的 `./temp` `./outputs` `./config`（1465 个归档 + 24 个 state，`config/runtime_config.json` 0600，`active_provider: realtime_ws`），与容器版一致。
+- 与容器的差别：没有 uid 10001/`MEDIAFLOW_UID` 那套用户设置，且 `HOST=127.0.0.1` 只监听回环（容器里 `HOST: 0.0.0.0`）。要恢复容器路径：网络恢复后 `./build.sh`（产出 `mediaflow:1.8.3` + `:latest`）再 `docker compose -f docker-compose.yml up -d`，或 `./build.sh --up`。
+
+### 1.8.2 历史列表修复的实地证据
+- `GET /openapi.json` → `"version":"1.8.2"`（当时）；`/health` 200；启动日志除既有的 `ASR_API_KEY is not set` 警告外无异常。
+- **重启后第一次请求** `GET /asr/tasks?limit=5` → `rows: 5`、`total: 1464`。这条正是被修掉的哨兵 bug 会清空的调用路径。
+- 限制说明：本机 `/proc/uptime` ≈ 24700s，`monotonic()` 恒远大于 `HISTORY_REFRESH_SECONDS`，所以这个 bug 在本地**本来就不会触发**；上面的证据只证明修复没把正常路径改坏，真正的复现证据仍是 CI 里那条 `assert 0 == 1` 和 `monkeypatch` 到 5.0s 的测试。
+
+### 顺带发现并修掉的缺口 → 1.8.3
+真浏览器逐个视图看标签标题时发现的：1.8.1 的按视图 `document.title` 只在 `handleViewChange` 和 `hashchange` 里调用，**冷启动直接打开 `#/history` 时两者都不运行**，标签仍是 `MediaFlow · 音视频处理`。先写 `App.title.test.tsx` 复现（修复前 `document.title` 为空串），再改为 `currentView` 上一个 `useEffect` 统一设置，删掉原两处调用。
+- 前端：`npx tsc -b` exit 0、`npm test` → **21 files / 135 tests**、`npm run lint` 干净、`npm run build` 成功（JS 472.37 kB / gzip 148.05 kB，CSS 48.83 kB，新入口 `index-jSiCNCs6.js`）。
+- 后端：`python3 -m pytest -q` → **276 passed**。
+- 真 Chromium（CDP，`--remote-debugging-port=9333` + `~/.cache/mediaflow-local/scripts/cdp_title.py`）逐个导航实测：`/`→文件转写、`#/history`→历史记录、`#/concat`→音视频合并、`#/realtime`→实时识别、`#/config`→服务配置、`#/api-debug`→接口调试、`#/monitor`→调用监控，全部正确；`history.back()` / `forward()` 后标题也跟着变（`服务配置` → `接口调试`）。这是 1.8.1 那次改动只在 jsdom 里测过、没做真浏览器验收才漏掉的场景。
+- 顺带记录两个测试环境陷阱：① `MonitorView` 直接读 `data.summary.window_size`，测试里 `/asr/monitor` 返回裸 `{}` 会让它崩（不是产品 bug，真实接口带 `summary`）；② `google-chrome --dump-dom --virtual-time-budget` 打开 `#/monitor` 会因为 SSE 挂住而超时返回空文件，用不带 virtual-time 的 `--dump-dom` 或 CDP 导航才拿得到页面。
+
+### 仍然阻塞：镜像重建 / 交付 tar 包
+本机无外网：宿主代理 `http://127.0.0.1:7897` connection refused，DNS 解析失败（resolv `10.255.255.254`），`registry.npmmirror.com` / `registry.npmjs.org` / `docker.1ms.run` 全部不可达，`docker run python:3.12-slim-trixie` 报 `proxyconnect tcp: dial tcp 127.0.0.1:7897: connect: connection refused`。本地只有 `node:22-alpine` / `node:20-alpine` / `python:3.11-slim` 三个基础镜像，不够 Dockerfile 用。因此：
+- `mediaflow:1.8.3` / `:latest` 镜像**尚未构建**；`app/web` 静态产物已用仓库里现存的 `frontend/node_modules` 离线 `npm run build` 重建，与 HEAD 前端代码一致（`59a58cb` 之后 `frontend/src` 无改动，重建产物与旧产物逐字节相同，1.8.3 后新哈希 `index-jSiCNCs6.js`）。
+- 网络恢复后要跑：`./build.sh`（构建）→ `docker compose -f docker-compose.yml up -d`；交付包 `./build.sh --platform linux/arm64 --save` → `mediaflow-1.8.3-arm64.tar.gz`。**不要用 `v1.8.1` / `v1.8.2` tag 构建交付**（分别带历史列表 bug 和标题缺口）。
+
+### 版本
+发布 **1.8.3**（`app/main.py`、`frontend/package.json` + lock、`build.sh`、`docker-compose.prod.yml` 四处一致；`DEPLOY_ONSITE.md` / `ONSITE_DEPLOY.md` / `README.md` / `README.en.md` 的 tarball 名同步）。
+
 ## 悬而未决：无（截至本次更新）
 
 

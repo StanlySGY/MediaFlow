@@ -3,7 +3,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 版本号的落点：`app/main.py` 的 FastAPI `version`、`frontend/package.json`、`build.sh` 的 `DEFAULT_TAG` 与 `docker-compose.prod.yml` 引用的 `mediaflow:<版本>` 四处保持一致。
 
-仓库里真实出现过的版本落点只有 `0.1.0 → 1.2.0 → 1.3.0 → 1.4.0 → 1.4.1 → 1.7.0 → 1.7.1 → 1.7.2 → 1.7.3 → 1.8.0 → 1.8.1 → 1.8.2`：`1.5.x` / `1.6.x` 从未使用；`1.3.1` 只在 2026-07-28 一次提交的 `frontend/package.json` 里出现，随即被 `1.4.1` 覆盖，`build.sh` / `app/main.py` / `docker-compose.prod.yml` 三处从未跟进，因此不单独列为一个发布。首个 git tag 是 `v1.7.3`（2026-10-19 切出，版本号本身落点在 2026-09-23 的 `a34b62d`）。
+仓库里真实出现过的版本落点只有 `0.1.0 → 1.2.0 → 1.3.0 → 1.4.0 → 1.4.1 → 1.7.0 → 1.7.1 → 1.7.2 → 1.7.3 → 1.8.0 → 1.8.1 → 1.8.2 → 1.8.3`：`1.5.x` / `1.6.x` 从未使用；`1.3.1` 只在 2026-07-28 一次提交的 `frontend/package.json` 里出现，随即被 `1.4.1` 覆盖，`build.sh` / `app/main.py` / `docker-compose.prod.yml` 三处从未跟进，因此不单独列为一个发布。首个 git tag 是 `v1.7.3`（2026-10-19 切出，版本号本身落点在 2026-09-23 的 `a34b62d`）。
+
+## [1.8.3] - 2026-10-23
+
+### 修复
+- **深链接打开的页面标签仍是通用标题**：1.8.1 给每个视图写了 `document.title`，但调用点只有 `handleViewChange` 和 `hashchange` 监听 —— 冷启动直接打开 `#/history`（书签、分享的链接）时这两个都不运行，标签条上还是 `MediaFlow · 音视频处理`，恰恰是这次改动要解决的场景。改为在 `currentView` 上一个 effect 统一设置：挂载、点导航、前进/后退三条路径共用一处，原来的两个调用点删掉。`App.title.test.tsx` 用 `#/history` 冷启动复现（修复前 `document.title` 是空字符串）。
+- 版本号 1.8.3（`app/main.py`、`frontend/package.json`、`build.sh`、`docker-compose.prod.yml` 四处一致，两份现场部署文档与 README 里的 tarball 名同步）。`v1.8.2` 已推送且不改写已发布 ref，其代码带上述标题缺口，交付构建用 `v1.8.3`。
 
 ## [1.8.2] - 2026-10-23
 

@@ -42,8 +42,8 @@ const viewMeta = (view: string) => VIEW_META[view] || VIEW_META[DEFAULT_VIEW];
 /**
  * Browser-tab / bookmark title. A hash-routed SPA keeps one <title> for every
  * view, so a tab strip full of "MediaFlow · 音视频处理" cannot be told apart,
- * and a bookmark cannot say which view it opens. Set it wherever the view is
- * resolved — including on back/forward, which never runs handleViewChange.
+ * and a bookmark cannot say which view it opens. One effect on currentView
+ * covers mount, navigation and back/forward alike.
  */
 const applyDocumentTitle = (view: string) => {
   document.title = `${viewMeta(view).title} · MediaFlow`;
@@ -102,6 +102,13 @@ export default function App() {
 
   const [footStatus, setFootStatus] = useState<{ text: string; status: 'ok' | 'err' | 'warn' | '' }>({ text: '未测试', status: '' });
 
+  // One place sets the tab title, and it runs on the first render too: a cold
+  // load of #/history never fires the hashchange listener, so before this the
+  // deep link the bookmark was made for opened under the generic title.
+  useEffect(() => {
+    applyDocumentTitle(currentView);
+  }, [currentView]);
+
   // Responsive sidebar (mobile drawer)
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -159,7 +166,6 @@ export default function App() {
     const meta = viewMeta(view);
     setViewTitle(meta.title);
     setViewCrumb(meta.crumb);
-    applyDocumentTitle(view);
     // Leaving a view drops its query: the fragments stay short, and the
     // history filters are not meant to leak into 文件转写.
     writeView(view);
@@ -174,7 +180,6 @@ export default function App() {
         const meta = viewMeta(view);
         setViewTitle(meta.title);
         setViewCrumb(meta.crumb);
-        applyDocumentTitle(view);
         return view;
       });
       if (view === 'history') {

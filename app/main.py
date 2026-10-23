@@ -470,7 +470,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MediaFlow",
         description=API_DESCRIPTION,
-        version="1.8.2",
+        version="1.8.3",
         lifespan=_lifespan,
         docs_url=None,  # replaced by the local-asset /docs route below
         # The schema enumerates every endpoint and payload. FastAPI would serve
