@@ -264,6 +264,9 @@ session_id 级别的共享状态。违反此隔离会导致并发订阅者在不
 - `setup-node` 的 `node-version: 20` → `22`（GitHub 已把 Node 20 强制跑在 Node 24 上，每次构建都发弃用警告；22 与本地 `node -v` 一致）。
 - **action 大版本升级**（补充）：上一条只改了 `node-version`，警告仍在 —— 它报的是 action 自身 `action.yml` 里的 `using: node20`。逐个核实后升 `checkout@v4→v7`、`setup-python@v5→v7`、`setup-node@v4→v7`、`configure-pages@v5→v6`、`upload-pages-artifact@v3→v5`、`deploy-pages@v4→v5`（v5 内部嵌套的 `upload-artifact` 也从 v4/node20 换到 v7/node24）。`checkout@v7` 唯一行为变化是 `pull_request_target`/`workflow_run` 下拒绝检出 fork PR，本仓库没用到这两种触发。
 
+### action 升级后的 CI 结果（run 39912101457 / 39912101487，commit `8c43d2b`）
+`✓ test (3.11)` `✓ test (3.12)` `✓ frontend` `✓ docker` `✓ Pages build` `✓ Pages deploy`，且日志里 `##[warning]` 行数从升级前的 **4 条 → 0 条**（旧 run 39911184762 的 4 条正是 `checkout@v4` / `setup-python@v5` / `setup-node@v4` / `configure-pages@v5`+`upload-artifact@v4` / `deploy-pages@v4` 的 node20 警告）。注：`gh run view --json jobs` 的 `conclusionDetails` 和 `check-runs/{id}/annotations` 对这两个 run 都返回空，连旧 run 的已知警告也取不到，所以判定用的是日志里的 `##[warning]` 行。
+
 ### 修复后的 CI 结果（run 39911184762，全绿 1m38s）
 `✓ test (3.11) 48s` · `✓ test (3.12) 51s` · `✓ frontend 41s` · `✓ docker 42s`；Pages run 39911184644 也绿。`docker` job 日志确认基础镜像按 digest 解析：`FROM python:3.12-slim-trixie@sha256:a0f57064…`，`naming to docker.io/library/mediaflow:ci done` —— 这同时给上面「下一轮待完成」第 2 条的一个侧证：**CI 里的 `docker build` 能干净跑通**（含 apt 装 FFmpeg 的那几层），只是本机的 `docker compose up -d --build` 端到端验收仍未做。
 
