@@ -81,7 +81,7 @@ Where upstream speaker labels end up, per provider:
 
 | Provider | Fate of upstream `speaker` labels |
 | --- | --- |
-| `openai_compat` | **not parsed.** Only top-level `text` and `words[]` are read. `verbose_json.segments[].speaker` survives in the raw response at `/asr/task/{id}/segments/{id}/raw`, but never reaches the subtitles |
+| `openai_compat` | Parses `words[].speaker` and `segments[].speaker` (also spelled `speaker_id` / `speaker_label`) into `Word.speaker`. An upstream that emits only `segments[]` and no `words[]` is still consumed — the request already pays for segment granularity. No speaker labels at all upstream means none here either |
 | `openai_chat_audio` | Parses `segments[].speaker` / `speaker_id` and `[SPEAKER_00]`-style labels in the text into `words[].speaker`; subtitles break on speaker change and carry `[speaker]` |
 | `realtime_offline` | Groups the transcript by speaker after full-audio transcription |
 
@@ -114,23 +114,23 @@ Only loopback is published by default (port from `.env`'s `PORT`, default 8999).
 
 ```bash
 ./build.sh --save                                  # build machine (same arch as the target):
-                                                 # → mediaflow-1.8.4-<build-arch>.tar.gz
+                                                 # → mediaflow-1.8.5-<build-arch>.tar.gz
                                                  # build.sh picks the arch from `uname -m`, so a
                                                  # matching build host needs no --platform; a
                                                  # cross-arch --platform build runs every layer
                                                  # under QEMU and is a fallback only
-docker load -i mediaflow-1.8.4-arm64.tar.gz        # target host
+docker load -i mediaflow-1.8.5-arm64.tar.gz        # target host
 cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d    # prod compose has no `build:` on purpose
 ```
 
-`docker-compose.prod.yml` pins `mediaflow:1.8.4` and mounts `./outputs`, `./temp`, `./config` as volumes, so re-loading an image keeps history and saved configs. Full field manual: [DEPLOY_ONSITE.md](DEPLOY_ONSITE.md).
+`docker-compose.prod.yml` pins `mediaflow:1.8.5` and mounts `./outputs`, `./temp`, `./config` as volumes, so re-loading an image keeps history and saved configs. Full field manual: [DEPLOY_ONSITE.md](DEPLOY_ONSITE.md).
 
 ## Wiring an upstream ASR you already run
 
 | `ASR_PROVIDER` | Upstream endpoint | Works with | Word timestamps | Upstream speaker labels |
 |---|---|---|---|---|
-| `openai_compat` | `POST /v1/audio/transcriptions` (multipart) | OpenAI's own API, self-hosted faster-whisper OpenAI gateways (e.g. scribecrate), DashScope compat transcriptions, FunASR `funasr-server` | ✅ if the upstream honours `timestamp_granularities[]` | ❌ reads `text` / `words` only; `segments[].speaker` stays in the raw response |
+| `openai_compat` | `POST /v1/audio/transcriptions` (multipart) | OpenAI's own API, self-hosted faster-whisper OpenAI gateways (e.g. scribecrate), DashScope compat transcriptions, FunASR `funasr-server` | ✅ if the upstream honours `timestamp_granularities[]` | ✅ parses `words[].speaker` and `segments[].speaker` |
 | `openai_chat_audio` | `POST /v1/chat/completions` (JSON + base64 `input_audio`) | vLLM Qwen3-ASR-Flash, DashScope compat chat multimodal, any deployment that serves an audio model as a multimodal LLM | ⚠️ only if the upstream also returns `segments[]` | ✅ parses `segments[].speaker` and `[SPEAKER_00]` labels |
 
 Discriminate with one curl:
@@ -170,7 +170,7 @@ curl -sX POST $ASR_BASE_URL/audio/transcriptions \
   -F "response_format=verbose_json" -F "timestamp_granularities[]=word" | head -c 400
 ```
 
-Top-level `"words":[{...}]` → keep `ASR_TIMESTAMPS=true`. A 400 on `timestamp_granularities[]`, or empty `words` → set `ASR_TIMESTAMPS=false`. Enable diarization upstream (`WHISPER_DIARIZATION=1`); `openai_compat` does not surface it.
+Top-level `"words":[{...}]` → keep `ASR_TIMESTAMPS=true`. A 400 on `timestamp_granularities[]`, or empty `words` → set `ASR_TIMESTAMPS=false`. Enable diarization upstream (`WHISPER_DIARIZATION=1`): `openai_compat` reads the resulting `segments[].speaker` into `Word.speaker`, and subtitles break on speaker change.
 
 **B. FunASR (SenseVoice / Paraformer)**
 
@@ -294,7 +294,7 @@ To add a non-OpenAI upstream, implement the `ASRProvider` protocol (`__aenter__`
 
 ## Roadmap
 
-- **Land diarization downstream**: `Word.speaker` and the realtime path are already wired; what's missing is feeding `openai_compat`'s `verbose_json.segments[].speaker` into `words[]` so file-task subtitles carry `[speaker]` too
+- **Speaker presentation on the file path**: both providers now read upstream speaker labels into `Word.speaker` (`openai_compat` gained `segments[].speaker` in 1.8.5). What remains is upstream work — MediaFlow ships no diarization model, so no labels upstream means no speakers downstream
 - **Translation / summarization** after the full text is assembled
 - **Task queue**: tasks are scheduled with in-process `asyncio.create_task`; Celery / RQ + Redis for horizontal scaling
 

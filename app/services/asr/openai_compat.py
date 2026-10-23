@@ -141,14 +141,53 @@ class OpenAICompatProvider:
             raise
 
 
+def _speaker_of(entry: dict) -> str | None:
+    """Speaker label as various upstreams spell it. None when the upstream does
+    not do diarization at all — that is the normal case, not an error."""
+    for key in ("speaker", "speaker_id", "speaker_label"):
+        value = entry.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
 def _parse_response(payload: dict) -> ASRResult:
     text = (payload.get("text") or "").strip()
     words_raw = payload.get("words") or []
     words = [
-        WordTime(word=w.get("word", ""), start=float(w.get("start", 0.0)), end=float(w.get("end", 0.0)))
+        WordTime(
+            word=w.get("word", ""),
+            start=float(w.get("start", 0.0)),
+            end=float(w.get("end", 0.0)),
+            speaker=_speaker_of(w),
+        )
         for w in words_raw
         if "start" in w and "end" in w
     ]
+    # verbose_json segments: the request asks for segment granularity (see
+    # _build_form), so the payload's `segments` is the diarization carrier for
+    # upstreams that label speakers per segment rather than per word. Without
+    # this the timestamps and speaker tags are paid for in upstream bandwidth
+    # and dropped: only `words` ever reached the merger, which is what decides
+    # whether the transcript keeps speaker labels at all (merger._join_words).
+    #
+    # Segments fill a word entry only where there is no per-word timing, so a
+    # word-level stream is never overwritten by coarser segment text.
+    if not words:
+        segments_raw = payload.get("segments") or []
+        words = [
+            WordTime(
+                word=seg.get("text", ""),
+                start=float(seg.get("start", 0.0)),
+                end=float(seg.get("end", 0.0)),
+                speaker=_speaker_of(seg),
+            )
+            for seg in segments_raw
+            if seg.get("text") and "start" in seg and "end" in seg
+        ]
+    if not text:
+        # Some upstreams return only segments under verbose_json.
+        text = "".join(w.word for w in words).strip()
     return ASRResult(
         text=text,
         language=payload.get("language"),

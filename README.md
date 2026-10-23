@@ -86,7 +86,7 @@
 
 | Provider | 上游 speaker 标签的去向 |
 | --- | --- |
-| `openai_compat` | **不解析** `verbose_json.segments[].speaker`。只读顶层 `text` 与 `words[]`；speaker 只出现在 `/asr/task/{id}/segments/{id}/raw` 的原始响应里，不会进入字幕 |
+| `openai_compat` | 解析 `words[].speaker` 与 `segments[].speaker`（含 `speaker_id` / `speaker_label` 两种写法），写进 `Word.speaker`；上游只给 `segments[]` 而不给 `words[]` 时也接住（请求本来就付了 segment 粒度的钱）。上游完全不输出 speaker 标签时这一列是空的，raw 响应里也不会有 |
 | `openai_chat_audio` | 解析 `segments[].speaker` / `speaker_id`，以及文本里的 `[SPEAKER_00]` 类标签，写进 `words[].speaker`；字幕在 speaker 变化处换行并带上 `[说话人]` |
 | `realtime_offline` | 整段转写后按 speaker 分组输出文本 |
 
@@ -145,12 +145,12 @@ docker compose up -d --build
 #    现场是 arm64 就在 arm64 打包机上跑，x86 现场同理。跨架构构建（--platform）只是兜底：
 #    每一层都在 QEMU 模拟下跑，apt/pip 层耗时数倍、更易超时。
 ./build.sh --save
-#    产物：mediaflow-1.8.4-<构建机架构>.tar.gz（arm64 打包机 → mediaflow-1.8.4-arm64.tar.gz）
+#    产物：mediaflow-1.8.5-<构建机架构>.tar.gz（arm64 打包机 → mediaflow-1.8.5-arm64.tar.gz）
 
 # 2. 把 .tar.gz、docker-compose.prod.yml、.env.example 拷到现场（U 盘 / 内网盘）
 
 # 3. 现场服务器（离线）：加载镜像
-docker load -i mediaflow-1.8.4-arm64.tar.gz
+docker load -i mediaflow-1.8.5-arm64.tar.gz
 
 # 4. 准备配置：ASR_BASE_URL 指向内网已部署的 ASR（无鉴权可留空 ASR_API_KEY）
 cp .env.example .env
@@ -159,7 +159,7 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.8.4`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
+`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.8.5`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
 
 > `docker-compose.prod.yml` 默认用 `network_mode: host` 以绕开部分主机的 Docker bridge 转发问题，但 `.env.example` 将 `HOST` 设为 `127.0.0.1`。远程访问必须先设置 `ACCESS_TOKENS`，再将 `HOST` 改为 `0.0.0.0` 并放行宿主防火墙/安全组。普通 Docker 主机可改用 bridge 网络；默认端口映射应保留 loopback，远程发布也必须先启用令牌。
 
@@ -175,7 +175,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 | `ASR_PROVIDER` | 上游端点 | 适用 | Word 时间戳 | 上游给出 speaker 时 |
 |---|---|---|---|---|
-| `openai_compat` | `POST /v1/audio/transcriptions`（multipart） | OpenAI 官方接口、自建 faster-whisper OpenAI 网关（如 scribecrate）、DashScope compat 的 transcriptions、FunASR `funasr-server` | ✅（若上游支持 `timestamp_granularities[]`） | ❌ 只读 `text` / `words`，`segments[].speaker` 留在 raw 响应里，不进字幕 |
+| `openai_compat` | `POST /v1/audio/transcriptions`（multipart） | OpenAI 官方接口、自建 faster-whisper OpenAI 网关（如 scribecrate）、DashScope compat 的 transcriptions、FunASR `funasr-server` | ✅（若上游支持 `timestamp_granularities[]`） | ✅ 解析 `words[].speaker` 与 `segments[].speaker` |
 | `openai_chat_audio` | `POST /v1/chat/completions`（JSON + base64 input_audio） | vLLM Qwen3-ASR-Flash、DashScope compat 的 chat 多模态、任何把音频模型当多模态 LLM 服务的部署 | ⚠️ 仅当上游额外返回 `segments[]` | ✅ 解析 `segments[].speaker` 与文本里的 `[SPEAKER_00]` 标签 |
 
 > 名字里带 faster-whisper 的服务**不一定**是 OpenAI 兼容的：常见的 `ayutaz/faster-whisper-server` 只暴露 `GET/POST /transcribe`，用 `ASR_PROVIDER=openai_compat` 一定 404。这类上游要么自己加一层 OpenAI 兼容 shim，要么写一个自定义 provider（见「自部署服务**非** OpenAI 兼容」）。
@@ -216,7 +216,7 @@ curl -sX POST $ASR_BASE_URL/audio/transcriptions   -F "file=@any.wav" -F "model=
 ```
 
 顶层出现 `"words":[{...}]` → 保持 `ASR_TIMESTAMPS=true`；上游对 `timestamp_granularities[]` 报 400 或 `words` 为空 → 改 `ASR_TIMESTAMPS=false`（省一次无谓的失败重试）。
-diarization 在上游侧开 `WHISPER_DIARIZATION=1`，speaker 写进 `verbose_json.segments[].speaker`；`openai_compat` 不解析它，见「能力边界」。
+diarization 在上游侧开 `WHISPER_DIARIZATION=1`，speaker 写进 `verbose_json.segments[].speaker`；`openai_compat` 会把它读进 `Word.speaker`，字幕在 speaker 变化处换行。
 
 **B. FunASR（SenseVoice / Paraformer）**
 
@@ -601,7 +601,7 @@ def _funasr(settings):
 然后 `import app.services.asr.funasr` 触发注册（可在 `app/services/asr/__init__.py` 加），并设置 `ASR_PROVIDER=funasr`。
 
 ## 进一步可扩展
-- **说话人分离落地下游**：`Word.speaker` 与实时链路已经打通，缺的是把 `openai_compat` 的 `verbose_json.segments[].speaker` 灌进 `words[]`，让文件任务字幕也带 `[说话人]`
+- **文件链路的 speaker 展示层**：两个 provider 现在都把上游 speaker 标签读进 `Word.speaker`（`openai_compat` 自 1.8.5 起也读 `segments[].speaker`），剩下的仍是上游侧的事——本项目不含 diarization 模型，上游不输出标签就没有 speaker 可言
 - **翻译 / 摘要**：拿到完整文本后接 LLM
 - **任务队列**：当前任务在进程内 `asyncio.create_task` 调度；横向扩展可替换为 Celery / RQ + Redis
 

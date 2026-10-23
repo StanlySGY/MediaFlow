@@ -569,3 +569,99 @@ async def test_monitor_finalizes_once_per_session(monkeypatch):
     assert snapshot["summary"]["total"] == 1
     assert snapshot["summary"]["succeeded"] == 1
     assert snapshot["summary"]["failed"] == 0
+
+
+async def test_compaction_is_lossless_when_an_earlier_segment_is_still_open():
+    """The sliding window must not compact past a segment that has no final yet.
+
+    Upstream can hold a segment open (partial only) while later segments
+    finalize. Compacting from the front would then drop segment 0's slot before
+    its final arrives, and its text would land after the already-compacted
+    prefix — the transcript order breaks for the whole session.
+    """
+    provider = RealtimeWSProvider(base_url="ws://asr.internal:8022/v1/asr/stream")
+    provider._max_final_segments = 4
+
+    provider._remember_segment("0")
+    provider._partial_segments["0"] = "open-zero"
+    for i in range(1, 7):
+        segment_id = str(i)
+        provider._remember_segment(segment_id)
+        provider._final_segments[segment_id] = f"f{i}"
+        provider._trim_old_segments()
+
+    assert provider._finalized_prefix == ""
+    assert provider._segment_order == [str(i) for i in range(0, 7)]
+    # The still-open segment renders in place, not appended.
+    assert provider._render_text("0", "open-zero") == "open-zero f1 f2 f3 f4 f5 f6"
+
+    provider._final_segments["0"] = "zero-final"
+    provider._partial_segments.pop("0")
+    provider._trim_old_segments()
+
+    # 7 finals with a cap of 4: the front of the order is folded until the window
+    # fits, and the barrier segment is now first in line.
+    assert provider._finalized_prefix == "zero-final f1 f2"
+    assert provider._segment_order == ["3", "4", "5", "6"]
+    assert provider._render_text() == "zero-final f1 f2 f3 f4 f5 f6"
+
+
+async def test_compacted_text_equals_uncompacted_text():
+    """The prefix is a re-encoding of what was dropped, not a lossy summary."""
+    uncompacted = RealtimeWSProvider(base_url="ws://asr.internal:8022/v1/asr/stream")
+    compacted = RealtimeWSProvider(base_url="ws://asr.internal:8022/v1/asr/stream")
+    compacted._max_final_segments = 4
+
+    texts = ["first", "hello", "third", "world", "fifth", "last"]
+    for i, text in enumerate(texts):
+        segment_id = str(i)
+        for provider in (uncompacted, compacted):
+            provider._remember_segment(segment_id)
+            provider._final_segments[segment_id] = text
+        compacted._trim_old_segments()
+
+    assert compacted._render_text() == uncompacted._render_text()
+    # max_final_segments=4: only the two oldest finals are folded into the prefix.
+    assert compacted._finalized_prefix == "first hello"
+    assert len(compacted._final_segments) == 4
+    assert compacted._render_text() == "first hello third world fifth last"
+
+
+async def test_empty_finals_are_compacted_without_leaving_holes():
+    """Upstream emits empty finals (silence-only segments). They must still be
+    released from the window, or a session full of silence never shrinks."""
+    provider = RealtimeWSProvider(base_url="ws://asr.internal:8022/v1/asr/stream")
+    provider._max_final_segments = 4
+
+    for i in range(1, 8):
+        segment_id = str(i)
+        provider._remember_segment(segment_id)
+        provider._final_segments[segment_id] = ""
+        provider._trim_old_segments()
+
+    assert len(provider._final_segments) == 4
+    assert provider._segment_order == ["4", "5", "6", "7"]
+    assert provider._render_text() == ""
+
+    provider._remember_segment("8")
+    provider._final_segments["8"] = "终于有词"
+    provider._trim_old_segments()
+    assert provider._render_text() == "终于有词"
+
+
+async def test_compaction_preserves_the_cjk_join_rule_at_the_prefix_boundary():
+    """_join_parts only spaces an ASCII-alnum boundary, so CJK segments stay
+    closed-up. Folding them into the prefix must not gain a space that the
+    per-segment rendering would not have had.
+    """
+    provider = RealtimeWSProvider(base_url="ws://asr.internal:8022/v1/asr/stream")
+    provider._max_final_segments = 1
+
+    for i, text in enumerate(["第一句", "hello", "第二句"]):
+        segment_id = str(i)
+        provider._remember_segment(segment_id)
+        provider._final_segments[segment_id] = text
+        provider._trim_old_segments()
+
+    assert provider._finalized_prefix == "第一句hello"
+    assert provider._render_text() == "第一句hello第二句"

@@ -11,7 +11,7 @@ from app.config import Settings
 from app.models.schemas import Segment, SegmentEvent, TaskResult, TaskStatus
 from app.services import stream_manager
 from app.services.asr.base import ASRResult
-from app.services.stream_manager import TaskManager, _Task
+from app.services.stream_manager import TaskManager, _Task, _EVENT_HISTORY_SIZE
 
 
 @pytest.fixture
@@ -351,3 +351,43 @@ async def test_submit_checkpoint_failure_rolls_back_registered_task(settings, tm
     assert manager._tasks == {}
     assert manager._bg == set()
     assert source.exists()
+
+
+async def test_file_task_event_history_is_bounded():
+    """The /asr/file replay window must not grow with session length.
+
+    Same bound as RealtimeManager and StreamTranscribeManager: only the tail is
+    ever sent to a reconnecting subscriber, and the full transcript is in the
+    archived result, so the third manager keeping an unbounded list was an
+    oversight rather than a different design.
+    """
+    task = _Task("t-bound", _stub_settings())
+    for i in range(_EVENT_HISTORY_SIZE + 200):
+        task.publish(SegmentEvent(task_id="t-bound", segment_id=i, start=0.0, end=1.0, text=f"s{i}", is_final=True))
+    assert len(task.events) == _EVENT_HISTORY_SIZE
+    assert task.events[0].segment_id == 200  # oldest dropped, tail kept
+    assert task.events[-1].segment_id == _EVENT_HISTORY_SIZE + 199
+
+
+async def test_subscriber_receives_bounded_tail_then_live_events():
+    task = _Task("t-tail", _stub_settings())
+    for i in range(_EVENT_HISTORY_SIZE + 50):
+        task.publish(_evt(i))
+
+    received: list[int] = []
+    gen = task.subscribe()
+
+    async def consume():
+        async for e in gen:
+            received.append(e.segment_id)
+
+    consumer = asyncio.create_task(consume())
+    await asyncio.sleep(0)  # let consumer subscribe + drain the replayed tail
+    task.publish(_evt(999))
+    await asyncio.sleep(0)
+    task.complete()
+    await consumer
+
+    # The snapshot a new subscriber gets is the bounded tail, not the whole
+    # history; events published after it subscribed still arrive live.
+    assert received == list(range(50, 50 + _EVENT_HISTORY_SIZE)) + [999]

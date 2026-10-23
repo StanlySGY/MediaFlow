@@ -15,7 +15,7 @@
 |------|------|------|
 | `vllm-part-aa` + `vllm-part-ab` + `vllm-checksum.txt` | ~6.5G | ASR 推理镜像（两片分卷，刻在两张 4G 盘上） |
 | `streaming.tar.gz` | ~? | 流式服务镜像（本地预构建，现场无需联网构建） |
-| `mediaflow-1.8.4-arm64.tar.gz` | ~? | MediaFlow 应用镜像（`./build.sh --save` 生成） |
+| `mediaflow-1.8.5-arm64.tar.gz` | ~0.2G | MediaFlow 应用镜像（`./build.sh --save` 生成）。本机对 1.8.4 镜像实测 `docker save \| gzip` = 225,434,919 字节（`docker images` 报 870MB 是解压后的层大小）；arm64 构建的层内容基本同一份依赖，量级相同 |
 | `Qwen3-ASR-1.7B.tar.gz` | ~3.4G | 模型文件（现场已有模型则不用带） |
 | `deploy/qwen3-asr-npu/` 目录 | 52K | ASR 服务的 docker-compose.yml + streaming_server |
 | MediaFlow 项目代码 | — | `docker-compose.prod.yml`、`.env.example` 等 |
@@ -68,17 +68,17 @@ docker images | grep vllm-ascend
 ### 2.1 如果 MediaFlow 镜像是整包
 
 ```bash
-docker load -i mediaflow-1.8.4-arm64.tar.gz
+docker load -i mediaflow-1.8.5-arm64.tar.gz
 docker images | grep mediaflow
-# 应看到 mediaflow    1.8.4
+# 应看到 mediaflow    1.8.5
 ```
 
 ### 2.2 如果 MediaFlow 镜像也分片了
 
 ```bash
 sha256sum -c mediaflow-checksum.txt        # 校验
-cat mediaflow-part-* > mediaflow-1.8.4-arm64.tar.gz
-docker load -i mediaflow-1.8.4-arm64.tar.gz
+cat mediaflow-part-* > mediaflow-1.8.5-arm64.tar.gz
+docker load -i mediaflow-1.8.5-arm64.tar.gz
 ```
 
 ---
@@ -162,6 +162,17 @@ npu-smi info
 
 ## 五、启动 ASR 服务
 
+> **先确认你要跑的是哪一套 ASR 服务**，它决定 MediaFlow 的实时接口类型怎么填，两套不能混：
+>
+> | 路线 | 服务 | 端点 | MediaFlow 实时接口类型 |
+> |---|---|---|---|
+> | **A（本文档下面这套）** | `deploy/qwen3-asr-npu/`：`vllm serve` 做文件识别（8022）+ 仓库自带的 `streaming_server/` 做流式（8023） | 8023 上是 HTTP+SSE 会话协议（`/session/...`） | `realtime_http`，地址 `http://<IP>:8023`（不带路径） |
+> | **B（现场真实服务）** | 仓库根目录 `asr-deploy-code/`：同一进程同时提供 `/v1/audio/transcriptions` 与 `WebSocket /v1/asr/stream` | 一个端口两套接口 | `realtime_ws`，地址 `ws://<IP>:<端口>/v1/asr/stream`（带路径） |
+>
+> `streaming_server/` 是把模型包成流式接口的简化验证用的实现（见 `handoff.md`），**不是现场那套真实服务**；`asr-deploy-code/` 才是按现场服务原样复刻的源码，它**没有 `/session/...` 接口**，给它配 `realtime_http` 一定连不上。路线 B 的完整部署与 MediaFlow 两侧配置写法见 [deploy/qwen3-asr-cuda/README.md](deploy/qwen3-asr-cuda/README.md)（该目录目前是 CUDA 版；`asr-deploy-code/` 的 NPU 版 Dockerfile 仓库里还没有，需要在现场按同样的 `ASR_*` 环境变量自建）。
+>
+> 本文档的后续步骤是路线 A。
+
 ### 5.1 构建 + 启动
 
 > streaming 服务现查镜像不在本地，首次会构建（装 ffmpeg + qwen-asr，**需要几分钟，期间需联网装依赖**）。
@@ -233,7 +244,10 @@ ASR_MODEL=qwen3-asr
 ASR_LANGUAGE=zh
 ASR_TIMESTAMPS=true
 
-# 实时识别（指向本地流式服务，边说边出字）
+# 实时识别（路线 A：仓库自带的 streaming 服务，8023 上是 /session/... 协议）
+# 若走路线 B（asr-deploy-code/），改为：
+#   REALTIME_ASR_PROVIDER=realtime_ws
+#   REALTIME_ASR_BASE_URL=ws://localhost:8022/v1/asr/stream
 REALTIME_ASR_PROVIDER=realtime_http
 REALTIME_ASR_BASE_URL=http://localhost:8023
 REALTIME_ASR_API_KEY=
@@ -289,14 +303,14 @@ curl http://localhost:8999/health
 
 ### 7.2 实时识别（边说边出字）
 
-| 配置项 | 值 |
-|--------|-----|
-| 实时接口类型 | `realtime_http` |
-| 实时接口地址 | `http://localhost:8023` |
-| 实时接口密钥 | （留空） |
-| 实时模型名称 | `qwen3-asr` |
+按第五节选定路线填，**别把两套接口串起来**：
 
-保存。
+| 路线 | 实时接口类型 | 实时接口地址 |
+|---|---|---|
+| A（本节默认，`streaming_server`） | `realtime_http` | `http://localhost:8023`（不带路径） |
+| B（`asr-deploy-code/`，现场真实服务） | `realtime_ws` | `ws://localhost:<端口>/v1/asr/stream`（带路径） |
+
+实时接口密钥留空、实时模型名称 `qwen3-asr`，然后保存。填错的表现是一打开实时页就失败、上游收不到任何事件。
 
 ### 7.3 测试边说边出字
 
@@ -394,6 +408,15 @@ lsof -i:8999   # MediaFlow 端口
 docker images | grep mediaflow
 # 必须 ≥ 1.4.1。旧镜像就重新 load 新的。
 ```
+### 9.8 实时识别一打开就失败、上游日志里没有任何会话请求
+
+九成是接口类型与上游协议不符（第五节路线表）：8023 上的 `streaming_server` 只有
+`/session/...` 会话协议，配 `realtime_ws` 连不上；`asr-deploy-code/` 那套只有
+`WebSocket /v1/asr/stream`，配 `realtime_http` 连不上。地址写法也各有要求：
+`realtime_http` 不带路径（`http://<IP>:8023`），`realtime_ws` 必须带路径
+（`ws://<IP>:<端口>/v1/asr/stream`）。取值写错时 MediaFlow 启动即报错，错误信息会列出四个可用取值。
+
+四个取值的完整含义见 [DEPLOY_ONSITE.md](DEPLOY_ONSITE.md) 第四节「实时识别（边说边出字）的配置」。
 
 ---
 
@@ -407,7 +430,7 @@ cat vllm-part-* > vllm-ascend-v0.22.1rc1.tar.gz
 gunzip -c vllm-ascend-v0.22.1rc1.tar.gz | docker load
 
 # 2. 导入 MediaFlow 镜像
-docker load -i mediaflow-1.8.4-arm64.tar.gz
+docker load -i mediaflow-1.8.5-arm64.tar.gz
 
 # 3. 放模型
 mkdir -p /home/models && tar xzf Qwen3-ASR-1.7B.tar.gz -C /home/models/
@@ -444,5 +467,4 @@ curl http://localhost:8999/health
 | vllm-ascend | v0.22.1rc1 |
 | CANN | 9.0.1 |
 | Qwen3-ASR | 1.7B |
-| MediaFlow | 1.8.4 |
-```
+| MediaFlow | 1.8.5 |

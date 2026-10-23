@@ -2,6 +2,13 @@
 
 基于 [vllm-ascend](https://github.com/vllm-project/vllm-ascend) 官方支持，参考 [官方部署指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/Qwen3-ASR-1.7B.html)。
 
+> **这份文档管什么**：昇腾 NPU 上 Qwen3-ASR 服务本身的部署（8022 文件识别 / 8023 流式）。
+> MediaFlow 应用侧的部署、配置、验证、排错看仓库根目录 [DEPLOY_ONSITE.md](../../DEPLOY_ONSITE.md)；
+> 需要把大镜像切分带进离线现场的逐步操作看 [ONSITE_DEPLOY.md](../../ONSITE_DEPLOY.md)（它含 NPU 卡号确认与合并导入）；
+> 只部署 8023 流式服务、基础镜像已在现场的情况看 [STREAMING_ONSITE_DEPLOY.md](../../STREAMING_ONSITE_DEPLOY.md)；
+> CUDA 宿主上部署 `asr-deploy-code/`（真实服务的原样复刻）看 [deploy/qwen3-asr-cuda/README.md](../qwen3-asr-cuda/README.md)。
+> 同一件事只在一处写全，其余文档链接过去，不各自维护一份副本。
+
 ## 一、环境要求
 
 ### 硬件
@@ -17,6 +24,7 @@
 - Docker + Docker Compose
 - NPU 驱动已安装（`npu-smi info` 可正常执行）
 - CANN 9.0.1
+- 内存建议 64GB+；操作系统不限发行版，麒麟等国产 Linux 同样可用（只要 NPU 驱动与 CANN 装得上）
 
 ## 二、快速部署（推荐）
 
@@ -112,14 +120,22 @@ curl http://localhost:8022/v1/audio/transcriptions \
 
 适用于 NPU 服务器无法联网的场景。需要在本地有网络的机器上准备镜像和模型。
 
+> 原来单独一份 `OFFLINE_DEPLOY.md` 与本节内容重复且数字互相矛盾（同一份镜像写了 4-5GB / 8-10GB 两个值），已合并进本节；那份文件现在只是一个指路牌。
+
 ### 步骤 1：在本地机器准备镜像
 
 ```bash
 # 拉取官方镜像
 docker pull quay.io/ascend/vllm-ascend:v0.22.1rc1
 
-# 导出镜像为 tar 文件（约 8-10GB）
-docker save quay.io/ascend/vllm-ascend:v0.22.1rc1 -o vllm-ascend-v0.22.1rc1.tar
+# 导出并压缩。压缩后实测 6.4GB（仓库里交付用的
+# vllm-ascend-v0.22.1rc1.tar.gz 实测 6,893,164,068 字节）；不压缩的 tar 约 8-10GB，
+# 所以交付一律压缩，超容量的介质再切分。
+docker save quay.io/ascend/vllm-ascend:v0.22.1rc1 | gzip > vllm-ascend-v0.22.1rc1.tar.gz
+
+# 需要切分时记下校验和，现场合并后可验证
+sha256sum vllm-ascend-v0.22.1rc1.tar.gz > vllm-checksum.txt
+split -b 3200m vllm-ascend-v0.22.1rc1.tar.gz vllm-part-
 ```
 
 ### 步骤 2：传输到 NPU 服务器
@@ -135,8 +151,11 @@ scp vllm-ascend-v0.22.1rc1.tar user@npu-server:/home/user/
 ### 步骤 3：在 NPU 服务器导入镜像
 
 ```bash
-# 导入镜像
+# 导入镜像（切分的先合并、校验，再导入）
+cat vllm-part-* > vllm-ascend-v0.22.1rc1.tar.gz
+sha256sum -c vllm-checksum.txt
 docker load -i vllm-ascend-v0.22.1rc1.tar
+# 压缩过的用管道导入： gunzip -c vllm-ascend-v0.22.1rc1.tar.gz | docker load
 
 # 验证镜像
 docker images | grep vllm-ascend
@@ -166,15 +185,21 @@ mkdir -p /home/models
 tar xzf Qwen3-ASR-1.7B.tar.gz -C /home/models/
 ```
 
-### 步骤 5：启动服务
+### 步骤 5：启动服务并验证
 
 ```bash
 # 在服务器上进入部署目录
 cd /path/to/MediaFlow/deploy/qwen3-asr-npu
 
-# 修改 docker-compose.yml 中的 NPU 卡号
-# 启动服务
+# 先用 npu-smi info 确认空闲卡，再改 docker-compose.yml 里的卡号
 docker-compose up -d
+
+# 等模型加载完（看到 "Uvicorn running on http://0.0.0.0:8000"）
+docker-compose logs -f qwen3-asr
+
+# 验证
+curl http://localhost:8022/v1/models          # 应包含 "qwen3-asr"
+curl http://localhost:8022/v1/audio/transcriptions -F "file=@test.wav"
 ```
 
 ### 离线部署文件清单
@@ -183,9 +208,13 @@ docker-compose up -d
 
 | 文件 | 大小 | 说明 |
 |------|------|------|
-| `vllm-ascend-v0.22.1rc1.tar` | ~8-10GB | Docker 镜像 |
-| `Qwen3-ASR-1.7B.tar.gz` | ~3.4GB | 模型文件 |
+| `vllm-ascend-v0.22.1rc1.tar.gz` | 实测 6.4GB（未压缩 ~8-10GB） | Docker 镜像 |
+| `Qwen3-ASR-1.7B.tar.gz` | ~3.4GB | 模型文件（现场已有则不需要） |
 | `docker-compose.yml` | <1KB | 部署配置 |
+| `vllm-checksum.txt` | <1KB | 传输/切分校验 |
+
+> 现场合并分片、导入镜像、放模型的逐步命令（含 npu-smi 卡号确认）见仓库根目录
+> [ONSITE_DEPLOY.md](../../ONSITE_DEPLOY.md) 第一~三节；本节只讲这份 ASR 服务本身。
 
 ## 四、MediaFlow 配置
 
@@ -199,6 +228,9 @@ docker-compose up -d
 | API 密钥 | （留空） |
 | 识别语言 | `zh` |
 
+> 这一节只覆盖**文件转写**。实时识别是另一套接口、另一个地址，取值取决于第五节走哪条路线：见 5.4，
+> 以及仓库根目录 [DEPLOY_ONSITE.md](../../DEPLOY_ONSITE.md) 第四节「实时识别（边说边出字）的配置」。
+
 ## 五、流式部署（边说边出字）
 
 上面的 `vllm serve` 部署提供 OpenAI 兼容接口，只能**收完整音频后返回**结果。
@@ -206,9 +238,21 @@ MediaFlow 端用 `realtime_offline`（录完再识别、结果逐字推送）模
 但并非真正的边说边出字。
 
 如果需要**真正的流式识别**——音频 chunk 到达即解码、增量识别、立即推送部分
-结果——请额外部署 `streaming_server`。它包装了 `qwen-asr` 库的
-`streaming_transcribe()` 增量流式 API，对外暴露与 MediaFlow `realtime_http`
-provider 兼容的 HTTP+SSE 协议。
+结果——有两条路线：
+
+| 路线 | 服务 | 8023/8022 上的协议 | MediaFlow `REALTIME_ASR_PROVIDER` |
+|---|---|---|---|
+| **A：额外部署 `streaming_server`**（本节以下） | `deploy/qwen3-asr-npu/streaming_server/`，8023 端口 | HTTP+SSE 会话协议：`POST /session` → `/session/{id}/audio` → `/session/{id}/events` → `/session/{id}/end` | `realtime_http`，地址 `http://<IP>:8023`（**不带路径**） |
+| **B：直接部署现场真实服务** | 仓库根目录 `asr-deploy-code/`，一个端口同时给 `/v1/audio/transcriptions` 与 `WebSocket /v1/asr/stream` | OpenAI 兼容 + WebSocket | `realtime_ws`，地址 `ws://<IP>:<端口>/v1/asr/stream`（**带路径**） |
+
+`streaming_server` 是把 `qwen-asr` 库包成流式接口的**简化验证实现**（见 `handoff.md`），
+不是现场那套真实服务。`asr-deploy-code/` 才是按现场服务原样复刻的源码，它没有任何
+`/session/...` 接口——给它配 `realtime_http` 连不上；反过来 `streaming_server` 没有
+WebSocket 端点，配 `realtime_ws` 同样连不上。路线 B 的部署与 MediaFlow 两侧配置写法见
+[deploy/qwen3-asr-cuda/README.md](../qwen3-asr-cuda/README.md)（CUDA 版；`asr-deploy-code/`
+的 NPU 版 Dockerfile 仓库里还没有，需在现场按同样的 `ASR_*` 环境变量自建）。
+
+以下 5.1~5.5 是路线 A。
 
 ### 5.1 两种部署的区别
 
@@ -217,7 +261,7 @@ provider 兼容的 HTTP+SSE 协议。
 | 端口 | 8022 | 8023 |
 | 接口 | OpenAI 兼容 `/v1/...` | HTTP+SSE `/session/...` |
 | 识别方式 | 收完整音频后返回 | 边收边识别，逐块推送部分结果 |
-| MediaFlow 接口类型 | `openai_chat_audio` + `realtime_offline` 模拟 | `realtime_http` 真流式 |
+| MediaFlow 接口类型 | `openai_chat_audio` + `realtime_offline` 模拟 | `realtime_http` 真流式（仅适用于这个服务，见上方路线表） |
 | NPU 占用 | 1 张卡 | 独占**另一张**卡 |
 
 两个服务可以同时运行（各占一张 NPU 卡），也可以只部署其中一个。
@@ -281,7 +325,7 @@ curl -X POST http://localhost:8023/session/<session_id>/audio \
 
 ### 5.4 MediaFlow 配置连接流式服务
 
-在 MediaFlow 页面「服务配置 → 实时识别」中设置：
+本服务说的是 `/session/...` 会话协议，所以实时接口类型必须是 `realtime_http`，地址不带路径：
 
 | 配置项 | 值 |
 |--------|-----|
@@ -335,7 +379,7 @@ docker ps | grep qwen3-asr
 docker exec -it qwen3-asr bash
 ```
 
-## 六、切换 NPU 卡号
+## 七、切换 NPU 卡号
 
 修改 `docker-compose.yml` 中的两个地方：
 
@@ -353,7 +397,7 @@ devices:
 docker-compose down && docker-compose up -d
 ```
 
-## 七、故障排查
+## 八、故障排查
 
 ### 模型加载失败
 
@@ -381,9 +425,10 @@ docker exec -it qwen3-asr ls /dev/davinci*
 # 查看 8022 端口占用
 lsof -i:8022
 
-# 修改 docker-compose.yml 中的端口映射
+# 修改 docker-compose.yml 中 qwen3-asr 服务的端口映射左侧（宿主机端口）
 ports:
-  - "8023:8000"  # 改为其他端口
+  - "8032:8022"  # 改为其他空闲端口
+# 改完同步 MediaFlow 侧：ASR_BASE_URL 用 http://<服务器IP>:8032/v1
 ```
 
 ### 版本兼容性问题
@@ -397,7 +442,7 @@ ports:
 | PyTorch | 2.10.0 |
 | torch-npu | 2.10.0.post2 |
 
-## 八、参考文档
+## 九、参考文档
 
 - [vllm-ascend 官方文档](https://docs.vllm.ai/projects/ascend/en/latest/)
 - [Qwen3-ASR-1.7B 部署指南](https://docs.vllm.ai/projects/ascend/en/latest/tutorials/models/Qwen3-ASR-1.7B.html)

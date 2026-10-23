@@ -6,6 +6,7 @@ import logging
 import shutil
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -29,6 +30,12 @@ from app.services.merger import merge_segments
 log = logging.getLogger(__name__)
 
 _TERMINAL = {TaskStatus.done, TaskStatus.failed, TaskStatus.cancelled}
+# Replay window for a file task's SSE events, matching RealtimeManager and
+# StreamTranscribeManager. A reconnecting subscriber can only be sent the tail
+# of the stream; the full transcript lives in the archived result, so keeping
+# more than this in the task's memory buys nothing. Without a bound the list
+# grew for the whole task_ttl_seconds (default 1h) retention window.
+_EVENT_HISTORY_SIZE = 512
 _PUBLIC_STATUS = {
     TaskStatus.pending.value: "queued",
     TaskStatus.preprocessing.value: "processing",
@@ -154,7 +161,7 @@ class _Task:
     def __init__(self, task_id: str, settings: Settings) -> None:
         self.info = TaskInfo(task_id=task_id, status=TaskStatus.pending)
         self.result = TaskResult(task_id=task_id, status=TaskStatus.pending)
-        self.events: list[SegmentEvent] = []
+        self.events: deque[SegmentEvent] = deque(maxlen=_EVENT_HISTORY_SIZE)
         self.subscribers: set[asyncio.Queue[SegmentEvent | None]] = set()
         self.done: asyncio.Event = asyncio.Event()
         self.completed_at: float | None = None

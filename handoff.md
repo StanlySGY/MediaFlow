@@ -316,6 +316,24 @@ session_id 级别的共享状态。违反此隔离会导致并发订阅者在不
 ### 版本
 发布 **1.8.4**（`app/main.py`、`frontend/package.json` + lock、`build.sh`、`docker-compose.prod.yml` 四处一致；`DEPLOY_ONSITE.md` / `ONSITE_DEPLOY.md` / `README.md` / `README.en.md` 的 tarball 名同步）。内容是本轮的三条构建层修复（npm 可选依赖、apt 超时、pip 断链）加 `build.sh` 的跨架构护栏；前端与后端代码相对 1.8.3 无改动。1.8.4 的构建产物是 `a8f96c244026`（829.3 MB，`linux/amd64`）。**不要用 `v1.8.1` / `v1.8.2` / `v1.8.3` tag 构建交付**：前两个带功能 bug，`v1.8.3` 只有 pip 层断链这一个构建缺陷，功能上可用，但要少一次手工重试就用 `v1.8.4`。
 
+## 1.8.5：解析/内存上界 + 文档职责链（2026-10-23，同日第五轮）
+
+### 这一轮做了什么（对应「你感觉他需要改进吗」那份清单的 1/2/3/6/7）
+- **①文件转写事件历史上界**：`app/services/stream_manager.py` 的 `_Task.events` 从 `list` 改 `deque(maxlen=512)`（`_EVENT_HISTORY_SIZE`），与 `RealtimeManager` / `StreamTranscribeManager` 取同一值。此前它在 `task_ttl_seconds`（默认 1h）保留窗口里无界增长。用户可见文本不变：完整结果在归档里，`useFileTask` 按 `segment_id` 去重并在终态时重新 `GET /asr/file/{id}/result`，上界只缩短断线重放窗口。
+- **②`openai_compat` 真正读 verbose_json**：`_build_form` 本来就请求 `timestamp_granularities=["word","segment"]`，但 `_parse_response` 只读 `words[]`。现在加 `_speaker_of()`（`speaker` / `speaker_id` / `speaker_label` 三种写法），逐词读 speaker；`words[]` 为空时用 `segments[]` 填词级条目（只在没有词级时间时填，不把细的换成粗的）；`text` 空时从词文本重建。新增 `tests/test_openai_compat_provider.py`（5 条）。**局限已写进 CHANGELOG/README**：现场那份 `asr-deploy-code/` 的 HTTP verbose_json 分支只返回 `{text, language, duration, infer_ms, rtf, task, backend, device, raw}`（`asr-deploy-code/routers/http.py`），没有 `words[]` / `segments[]`，所以这条对那个上游无可见收益。
+- **③版本号落点守门**：新增 `tests/test_version_consistency.py`（7 条），从 `app/main.py` / `frontend/package.json` / `build.sh` 的 `DEFAULT_TAG` / `docker-compose.prod.yml` 的 `image:` / `CHANGELOG.md` 顶部条目各读一个版本号并断言五者相等。守的正是 CHANGELOG 自己记录的那次漂移（`1.3.1` 只出现在 `frontend/package.json`）。
+- **⑥测试覆盖**：后端补 `tests/test_stream_manager.py` 2 条（有界尾巴 + 先尾巴后实时）、`tests/test_realtime_ws_provider.py` 4 条（未 finalize 的段是压缩屏障、压缩前后文本逐字符相等、空 final 不留空洞、CJK 补格规则在前缀接缝处成立）。前端把 `RealtimeRecorderPanel.tsx` 里的 5 个未导出纯函数 + 2 个常量抽到 `frontend/src/lib/realtimeRecording.ts`（91 行），组件 851 → 790 行，新增 `realtimeRecording.test.ts`（19 条）。`npm run lint` 与 `npx tsc -b` 干净。
+- **⑦文档职责链**（本轮最大的一块，详见 CHANGELOG 的 1.8.5 条目）：五份手册此前把 `realtime_http` + `http://<IP>:8023` 写成现场实时识别的通用配法，而仓库里两份 ASR 服务协议不同——`deploy/qwen3-asr-npu/streaming_server/` 是 HTTP+SSE 的 `/session/...`，现场真实服务 `asr-deploy-code/` 只有 `WebSocket /v1/asr/stream`、没有任何 `/session/...`。现在每份文档顶部写「这份文档管什么」并互相指路；`ONSITE_DEPLOY.md` / `deploy/qwen3-asr-npu/DEPLOY.md` / `deploy/qwen3-asr-npu/docker-compose.yml` 加路线 A/B 对照表；`STREAMING_ONSITE_DEPLOY.md` 加「适用范围」；`DEPLOY_ONSITE.md` 新增实时识别配置小节 + 三条排错行。`deploy/qwen3-asr-npu/OFFLINE_DEPLOY.md` 合并进 `DEPLOY.md` §三 并压成 23 行指路牌（原因：同一份镜像两处写 4-5GB / 8-10GB，实测压缩产物 6,893,164,068 字节）。顺带修三处既有缺陷：`ONSITE_DEPLOY.md` 末尾未闭合的代码围栏、`DEPLOY.md` 两个 `## 六` 标题、端口冲突示例把 ASR 映射到同一份 compose 里流式服务自己的 8023。
+- **已知缺口（未做，已写进文档）**：仓库没有 `asr-deploy-code/` 的 NPU Dockerfile（仓库总共 4 个 Dockerfile，CUDA 版是 `deploy/qwen3-asr-cuda/Dockerfile`），走路线 B 上 NPU 要现场自建。
+
+### 基线与实例状态
+- 后端 `python3 -m pytest -q` → **294 passed**（原 276，+18：5 provider + 2 stream_manager + 7 version + 4 realtime_ws）。
+- 前端 `npm test` → **22 files / 154 passed**（原 21 files / 135 tests）；`npx tsc -b` exit 0；`npm run lint` 干净（上一轮记录的 `MonitorView.tsx:53` setState-in-effect 与 `RealtimeView.test.tsx:71` 未使用 `opts` 两个既有错误本轮未复现）。
+- 8999 上跑的仍是 `mediaflow:latest`（= 1.8.4 镜像 `a8f96c244026`），`/openapi.json` 报 `1.8.4`——本轮改动**尚未构建进镜像**，本轮也未重建镜像（改动不含依赖与 Dockerfile 层变化）。要实地跑 1.8.5：`./build.sh --up`（原生 amd64）或 `./build.sh --save` 产出交付包。
+
+### 版本
+发布 **1.8.5**（`app/main.py`、`frontend/package.json` + lock、`build.sh`、`docker-compose.prod.yml` 四处一致；`DEPLOY_ONSITE.md` / `ONSITE_DEPLOY.md` / `README.md` / `README.en.md` 的 tarball 名同步）。本轮不含依赖变更、不含 Dockerfile 层变更，交付镜像相对 1.8.4 的差异只有后端解析/内存上界与前端模块拆分。1.8.4 的构建产物仍是 `a8f96c244026`（829.3 MB，`linux/amd64`）；**1.8.5 的构建产物需要在打包机上产出后才能核对**。`ONSITE_DEPLOY.md` 的交付清单里 `mediaflow-*.tar.gz` 那行的「~?」填成实测 ~0.2G（`docker save 1.8.4 | gzip` = 225,434,919 字节；`docker images` 报的 870MB 是解压后层大小）。
+
 ## 悬而未决：无（截至本次更新）
 
 

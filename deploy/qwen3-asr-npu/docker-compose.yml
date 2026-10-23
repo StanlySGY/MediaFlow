@@ -61,8 +61,13 @@ services:
   #       请为它分配不同的卡号（下面示例用卡 1）。
   #
   # MediaFlow 配置（服务配置 → 实时识别）：
-  #   实时接口类型 = realtime_http
+  #   实时接口类型 = realtime_http        ← 只适用于本 streaming 服务的 /session/... 协议
   #   实时接口地址 = http://<服务器IP>:8023
+  #
+  #   注意：realtime_http 讲的是下面这套 HTTP+SSE 协议，现场那套真实服务
+  #   （仓库根目录的 asr-deploy-code/，端点 /v1/asr/stream）没有 /session/... 接口，
+  #   配成 realtime_http 一定连不上。那一套用 realtime_ws +
+  #   ws://<服务器IP>:<端口>/v1/asr/stream，见 deploy/qwen3-asr-cuda/README.md。
   streaming:
     build: ./streaming_server
     container_name: qwen3-asr-streaming

@@ -3,6 +3,13 @@
 > 仅部署 **流式边说边出字** 服务（端口 8023）。
 > 前提：现场已具备 `vllm-ascend:v0.22.1rc1` 基础镜像（已 load 进 Docker）、Ascend NPU 驱动、Docker、Docker Compose。
 > 离线现场无需联网。所有命令按顺序复制执行。
+>
+> **这份文档管什么**：8023 流式服务（`streaming_server`）镜像的离线交付与启动。
+> MediaFlow 应用侧的部署/配置/排错见 [DEPLOY_ONSITE.md](DEPLOY_ONSITE.md)；
+> 文件识别服务（8022）与 NPU 环境要求见 [deploy/qwen3-asr-npu/DEPLOY.md](deploy/qwen3-asr-npu/DEPLOY.md)。
+
+> **适用范围**：本手册部署的是仓库自带的 `deploy/qwen3-asr-npu/streaming_server/`，它在 8023 上说的是 HTTP+SSE 会话协议（`POST /session` → `/session/{id}/audio` → `/session/{id}/events` → `/session/{id}/end`）。MediaFlow 侧对应 `REALTIME_ASR_PROVIDER=realtime_http`。
+> 如果现场跑的是仓库根目录 `asr-deploy-code/` 那一套真实服务（端点 `WebSocket /v1/asr/stream`，**没有 `/session/...` 接口**），本手册不适用：那套服务自带流式能力，不需要额外的 streaming 服务，MediaFlow 侧配 `realtime_ws` + `ws://<IP>:<端口>/v1/asr/stream`，部署写法见 [deploy/qwen3-asr-cuda/README.md](deploy/qwen3-asr-cuda/README.md)。
 
 ---
 
@@ -201,7 +208,7 @@ cd /path/to/MediaFlow
 vi .env
 ```
 
-确保实时识别配置指向 streaming 服务:
+确保实时识别配置指向本手册部署的 streaming 服务（`/session/...` 协议，所以是 `realtime_http`；地址**不带路径**）:
 
 ```ini
 # 实时识别（边说边出字）
@@ -234,6 +241,8 @@ docker compose -f docker-compose.prod.yml up -d
 | 实时接口地址 | `http://<服务器IP>:8023` |
 | 实时接口密钥 | （留空）                   |
 | 实时模型名称 | `qwen3-asr`              |
+
+（这里必须是 `realtime_http` 而不是 `realtime_ws`：本手册的服务没有 WebSocket 端点。配成 `realtime_ws` 会连不上。）
 
 保存 → 顶部「浏览器录音测试」→ 点「开始录音」→ 对麦克风说话 → **文字边说边出现** → 点「停止录音」结束。
 
