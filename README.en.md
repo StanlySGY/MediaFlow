@@ -114,17 +114,17 @@ Only loopback is published by default (port from `.env`'s `PORT`, default 8999).
 
 ```bash
 ./build.sh --save                                  # build machine (same arch as the target):
-                                                 # → mediaflow-1.8.5-<build-arch>.tar.gz
+                                                 # → mediaflow-1.8.6-<build-arch>.tar.gz
                                                  # build.sh picks the arch from `uname -m`, so a
                                                  # matching build host needs no --platform; a
                                                  # cross-arch --platform build runs every layer
                                                  # under QEMU and is a fallback only
-docker load -i mediaflow-1.8.5-arm64.tar.gz        # target host
+docker load -i mediaflow-1.8.6-arm64.tar.gz        # target host
 cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d    # prod compose has no `build:` on purpose
 ```
 
-`docker-compose.prod.yml` pins `mediaflow:1.8.5` and mounts `./outputs`, `./temp`, `./config` as volumes, so re-loading an image keeps history and saved configs. Full field manual: [DEPLOY_ONSITE.md](DEPLOY_ONSITE.md).
+`docker-compose.prod.yml` pins `mediaflow:1.8.6` and mounts `./outputs`, `./temp`, `./config` as volumes, so re-loading an image keeps history and saved configs. The image runs as uid `10001`, so those directories need `chown -R 10001:10001 temp outputs config` once — or `MEDIAFLOW_UID` / `MEDIAFLOW_GID` in `.env` set to their current owner, which both compose files honour. Full field manual: [DEPLOY_ONSITE.md](DEPLOY_ONSITE.md).
 
 ## Wiring an upstream ASR you already run
 

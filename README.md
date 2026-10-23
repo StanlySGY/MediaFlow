@@ -145,12 +145,12 @@ docker compose up -d --build
 #    现场是 arm64 就在 arm64 打包机上跑，x86 现场同理。跨架构构建（--platform）只是兜底：
 #    每一层都在 QEMU 模拟下跑，apt/pip 层耗时数倍、更易超时。
 ./build.sh --save
-#    产物：mediaflow-1.8.5-<构建机架构>.tar.gz（arm64 打包机 → mediaflow-1.8.5-arm64.tar.gz）
+#    产物：mediaflow-1.8.6-<构建机架构>.tar.gz（arm64 打包机 → mediaflow-1.8.6-arm64.tar.gz）
 
 # 2. 把 .tar.gz、docker-compose.prod.yml、.env.example 拷到现场（U 盘 / 内网盘）
 
 # 3. 现场服务器（离线）：加载镜像
-docker load -i mediaflow-1.8.5-arm64.tar.gz
+docker load -i mediaflow-1.8.6-arm64.tar.gz
 
 # 4. 准备配置：ASR_BASE_URL 指向内网已部署的 ASR（无鉴权可留空 ASR_API_KEY）
 cp .env.example .env
@@ -159,7 +159,7 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.8.5`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
+`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.8.6`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
 
 > `docker-compose.prod.yml` 默认用 `network_mode: host` 以绕开部分主机的 Docker bridge 转发问题，但 `.env.example` 将 `HOST` 设为 `127.0.0.1`。远程访问必须先设置 `ACCESS_TOKENS`，再将 `HOST` 改为 `0.0.0.0` 并放行宿主防火墙/安全组。普通 Docker 主机可改用 bridge 网络；默认端口映射应保留 loopback，远程发布也必须先启用令牌。
 
@@ -167,7 +167,7 @@ docker compose -f docker-compose.prod.yml up -d
 
 > ⚠️ **数据卷属主（1.8.0 起）**：镜像以非 root（uid `10001`）运行，`./temp`、`./outputs`、`./config` 是宿主机的 bind mount。首次部署或从旧版本升级前执行一次：
 > `mkdir -p temp outputs config && sudo chown -R 10001:10001 temp outputs config`
-> 否则容器**会在启动时直接退出**（非 0 退出码，`docker logs` 可见）：启动日志逐条指名哪个路径不可写并打印这条命令。
+> 否则容器**会在启动时直接退出**（非 0 退出码，`docker logs` 可见）：启动日志逐条指名哪个路径不可写并打印这条命令。不便 `chown` 时（无 sudo、目录属主不能改、与别的服务共用目录），在 `.env` 里设 `MEDIAFLOW_UID` / `MEDIAFLOW_GID` 为目录属主的 UID/GID，两份 compose 都会让容器以该身份运行。
 
 ## 对接自部署 ASR
 

@@ -1,6 +1,6 @@
 # MediaFlow 现场部署与配置指南
 
-> 适用版本：`mediaflow:1.8.5`（**arm64**）。面向离线内网环境，全程无需联网。
+> 适用版本：`mediaflow:1.8.6`（**arm64**）。面向离线内网环境，全程无需联网。
 
 > **这份文档管什么**：MediaFlow 应用本身在现场的部署、配置、验证、运维、排错。
 > 上游 ASR 服务怎么起不在这里：昇腾 NPU 上的 Qwen3-ASR（8022/8023）见 [deploy/qwen3-asr-npu/DEPLOY.md](deploy/qwen3-asr-npu/DEPLOY.md)；
@@ -16,7 +16,7 @@
 
 | 文件 | 说明 |
 |---|---|
-| `mediaflow-1.8.5-arm64.tar.gz` | Docker 镜像离线包（arm64） |
+| `mediaflow-1.8.6-arm64.tar.gz` | Docker 镜像离线包（arm64） |
 | `docker-compose.prod.yml` | 部署编排文件（host 网络、只跑不构建） |
 | `.env.example` | 配置模板，据此生成 `.env` |
 | 本文档 | 部署 / 配置 / 验证 / 排错说明 |
@@ -39,7 +39,7 @@
 
 ```bash
 # 1. 加载镜像
-docker load -i mediaflow-1.8.5-arm64.tar.gz
+docker load -i mediaflow-1.8.6-arm64.tar.gz
 
 # 2. 生成配置文件（要改什么见第四节）
 cp .env.example .env
@@ -57,6 +57,9 @@ curl -sf http://localhost:8999/health && echo "  ← 服务已启动"
 ```
 
 > ⚠️ **第 3 步不能省**：镜像以非 root（uid `10001`）运行，而 `temp/`、`outputs/`、`config/` 是宿主机创建的目录，属主是部署用户。属主不对时容器**会直接拒绝启动**，日志最后一行就给出要执行的 `chown` 命令。（旧版本是能启动、`/health` 正常，但第一次上传、保存配置或打开配置页才失败，更难排查。）
+>
+> 现场不能执行 `chown`（没有 sudo、目录属主不能改、多个服务共用同一目录）时，改为让容器直接用目录的属主运行：在 `.env` 里加
+> `MEDIAFLOW_UID=<属主 UID>` / `MEDIAFLOW_GID=<属主 GID>`（`id -u 部署用户` 取 UID），第 3 步的 `chown` 就不需要了。两个 compose 文件都认这两个变量，取值方式与 `docker-compose.yml` 一致。
 
 启动后浏览器打开 `http://<本机IP>:8999/`（用 `hostname -I` 查看本机 IP）。
 
@@ -208,7 +211,7 @@ docker compose -f docker-compose.prod.yml up -d        # 自动用新镜像重�
 | 症状 | 可能原因 | 处理 |
 |---|---|---|
 | 本机 `curl localhost:8999/health` 不通 | 容器没起来 | `... logs` 看报错、`... ps` 看状态 |
-| 启动报 `image not found` | 镜像没加载或版本号不符 | `docker images` 确认有 `mediaflow:1.8.5`，与 compose 的 `image:` 一致 |
+| 启动报 `image not found` | 镜像没加载或版本号不符 | `docker images` 确认有 `mediaflow:1.8.6`，与 compose 的 `image:` 一致 |
 | 本机通、外部电脑打不开 | 防火墙 / 安全组没放行 | 见第五节放行 8999 |
 | `/asr/ping` 返回 `ok=false` 或超时 | ASR 地址 / 密钥 / 协议错，或网络不通 | 核对 `ASR_BASE_URL`/`ASR_API_KEY`/`ASR_PROVIDER`；在宿主上 `curl` 内网 ASR 地址确认可达 |
 | 字幕没有词级时间戳 | 用了 `openai_chat_audio` | 内网 ASR 支持 transcriptions 端点时改用 `openai_compat` |
@@ -216,7 +219,7 @@ docker compose -f docker-compose.prod.yml up -d        # 自动用新镜像重�
 | 实时识别第 5 个人报「会话已满」/429 | 超出 `REALTIME_MAX_SESSIONS`（默认 4） | 见第四节。上限来自上游推理串行，调大只会让所有人变慢 |
 | 录音一会儿后自动结束 | 触发 `REALTIME_MAX_SESSION_SECONDS` / `REALTIME_MAX_SESSION_BYTES` | 见第四节，按需调大 |
 | 上传大文件报 413 | 超过 `MAX_UPLOAD_BYTES` | 调大该值后重建生效 |
-| 启动即退出，日志末行提示 `data volume（s） ... not writable by uid 10001` | `temp`/`outputs`/`config` 属主不是 uid 10001 | 执行 `sudo chown -R 10001：10001 temp outputs config` 后重新 `up -d` |
+| 启动即退出，日志末行提示 `data volume（s） ... not writable by uid 10001` | `temp`/`outputs`/`config` 属主不是 uid 10001 | 执行 `sudo chown -R 10001：10001 temp outputs config` 后重新 `up -d`；不能 chown 时在 `.env` 设 `MEDIAFLOW_UID` / `MEDIAFLOW_GID` 为目录属主 |
 | 重启后任务消失 | 进行中任务不持久化 | 见第九节，重启选业务空闲时段 |
 
 ---

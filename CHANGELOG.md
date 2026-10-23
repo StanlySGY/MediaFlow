@@ -5,6 +5,15 @@
 
 仓库里真实出现过的版本落点只有 `0.1.0 → 1.2.0 → 1.3.0 → 1.4.0 → 1.4.1 → 1.7.0 → 1.7.1 → 1.7.2 → 1.7.3 → 1.8.0 → 1.8.1 → 1.8.2 → 1.8.3 → 1.8.4`：`1.5.x` / `1.6.x` 从未使用；`1.3.1` 只在 2026-07-28 一次提交的 `frontend/package.json` 里出现，随即被 `1.4.1` 覆盖，`build.sh` / `app/main.py` / `docker-compose.prod.yml` 三处从未跟进，因此不单独列为一个发布。首个 git tag 是 `v1.7.3`（2026-10-19 切出，版本号本身落点在 2026-09-23 的 `a34b62d`）。
 
+## [1.8.6] - 2026-10-23
+
+### 修复
+- **`docker-compose.prod.yml` 不认 `.env` 里的 `MEDIAFLOW_UID` / `MEDIAFLOW_GID`**：1.8.1 给 `docker-compose.yml` 加了 `user: "${MEDIAFLOW_UID:-10001}:${MEDIAFLOW_GID:-10001}"`，让宿主数据目录的属主不必 `chown` 也能跑非 root 容器；交付用的 `docker-compose.prod.yml` 漏了这一行。后果只出现在现场最典型的那类宿主上——`temp` / `outputs` / `config` 属于一个普通用户、而又不能改属主（没有 sudo、目录与别的服务共用）：`.env` 已经写对了身份，`docker-compose.yml` 认，`docker-compose.prod.yml` 不认，于是 `./build.sh --up`（走的正是 prod 文件）在 `_check_volume_access` 处逐条报 `data volume(s) outputs, temp, config are not writable by uid 10001` 并 `RuntimeError` 退出；配合 `restart: unless-stopped` 变成崩溃循环，现场看到的是「容器一直在 Restarting，日志每轮重复同一条 chown 命令」。本机实测复现（`.env` 里 `MEDIAFLOW_UID=1000`），修后 `docker compose -f docker-compose.prod.yml config` 报 `user: 1000:1000`，prod `up -d` 起来 `health=200`。同一现象还顺带解释了另一条噪声日志：`config/runtime_config.json is unreadable`——那个 0600 文件属于 uid 1000，uid 10001 读不到。
+  - 新增 `tests/test_compose_volume_identity.py`（4 条）：两个 compose 文件都必须有这一行（正则失配时报的是「哪一份没有」）；`.env.example` 必须写出这两个变量；任何写了 `chown` 的文档必须同时给出变量这条出路——只教 chown 的文档等于把「不能 chown 的宿主」这一类现场排除在外。
+  - `DEPLOY_ONSITE.md`、`ONSITE_DEPLOY.md`、`README.md`、`README.en.md` 各补上这条出路（取 UID 用 `id -u 部署用户`），`DEPLOY_ONSITE.md` 的排错表那一行也补了后半句。
+- 测试基线：后端 `pytest -q` → **298 passed**（原 294，+4 来自新增的 compose 身份测试）。
+- 版本号 1.8.6（`app/main.py`、`frontend/package.json`、`build.sh`、`docker-compose.prod.yml` 四处一致，文档里的 tarball 名同步）。本轮不含后端/前端代码变更、不含依赖变更、不含 Dockerfile 层变更，交付镜像相对 1.8.5 的差异只有 compose 文件本身——**只换 compose 文件也能修掉这个启动问题**，不必重新 `docker load`。
+
 ## [1.8.5] - 2026-10-23
 
 ### 修复

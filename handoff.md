@@ -334,6 +334,21 @@ session_id 级别的共享状态。违反此隔离会导致并发订阅者在不
 ### 版本
 发布 **1.8.5**（`app/main.py`、`frontend/package.json` + lock、`build.sh`、`docker-compose.prod.yml` 四处一致；`DEPLOY_ONSITE.md` / `ONSITE_DEPLOY.md` / `README.md` / `README.en.md` 的 tarball 名同步）。本轮不含依赖变更、不含 Dockerfile 层变更，交付镜像相对 1.8.4 的差异只有后端解析/内存上界与前端模块拆分。1.8.4 的构建产物仍是 `a8f96c244026`（829.3 MB，`linux/amd64`）；**1.8.5 的构建产物需要在打包机上产出后才能核对**。`ONSITE_DEPLOY.md` 的交付清单里 `mediaflow-*.tar.gz` 那行的「~?」填成实测 ~0.2G（`docker save 1.8.4 | gzip` = 225,434,919 字节；`docker images` 报的 870MB 是解压后层大小）。
 
+## 1.8.6：prod compose 的 bind mount 身份（2026-10-23，同日第六轮）
+
+### 这一轮做了什么
+- **`docker-compose.prod.yml` 补上 `user:` 行**（本轮唯一的功能性缺陷，也是唯一交付相关的一处）：1.8.1 只给 `docker-compose.yml` 加了 `user: "${MEDIAFLOW_UID:-10001}:${MEDIAFLOW_GID:-10001}"`，prod 文件漏了。本机实测复现：`.env` 写 `MEDIAFLOW_UID=1000`、`temp`/`outputs`/`config` 属于 uid 1000 时，`./build.sh --up`（`start_built_image()` 走的正是 prod 文件）崩溃循环——`app/main.py:420 _check_volume_access` 三条 `data volume ... not writable by uid 10001` + `RuntimeError` → `ERROR: Application startup failed. Exiting.`，`restart: unless-stopped` 让它每轮重打印同一条 chown 命令。修后 `docker compose -f docker-compose.prod.yml config` 报 `user: 1000:1000`，prod `up -d` → `health=200`、`/openapi.json` 报当轮版本。顺带确认 `config/runtime_config.json is unreadable` 这条噪声日志是同一根因（0600 文件属于 uid 1000，uid 10001 读不到）。
+- **测试**：新增 `tests/test_compose_volume_identity.py`（4 条）——两份 compose 都要有这行、`.env.example` 要写出这两个变量、写了 `chown` 的文档必须同时给出变量这条出路。后端 `pytest -q` → **298 passed**（原 294）。
+- **文档**：`DEPLOY_ONSITE.md`（第 3 步警告后 + 排错表那一行）、`ONSITE_DEPLOY.md:272` 块、`README.md`「数据卷属主」引文、`README.en.md` 对应段落，四处补 `MEDIAFLOW_UID=<属主 UID>` / `MEDIAFLOW_GID=<属主 GID>`（`id -u 部署用户`）这条替代路线。
+- **未做的一件事（有意）**：没有改 prod 的 `network_mode: host` 默认行为。仓库 `.env` 是 `HOST=0.0.0.0` + `ACCESS_TOKENS=`（空），prod 用 host 网络意味着在本机所有网卡上无鉴权监听。本轮验证 prod 启动时用的是 `HOST=127.0.0.1 docker compose -f docker-compose.prod.yml up -d`，验证完 `down` 并恢复 loopback 的开发实例。`HOST` 来自 `.env`，文档已要求先设 `ACCESS_TOKENS` 再 `HOST=0.0.0.0`，所以不动默认值。
+
+### 基线与实例状态
+- 后端 **298 passed**；`ruff check app tests` 干净。前端本轮无改动（`npm test` 仍是 22 files / 154 passed、`tsc -b` 与 `lint` 干净——本轮未重跑，因为前端代码零改动）。
+- 本地 8999 实例：1.8.5 镜像（`mediaflow:1.8.5` = `mediaflow:latest`，id `718bc955548b`，829.3 MB，`linux/amd64`）已在 `127.0.0.1:8999->8999` 上 healthy 运行过并核对 `/openapi.json` = `1.8.5`。**本轮改动不进镜像**（只动 compose 文件、文档与测试），所以 8999 报告的版本号仍会落后于仓库版本，直到重新 `./build.sh`。
+
+### 版本
+发布 **1.8.6**。因为本轮不含后端/前端代码与 Dockerfile 层变更，**只替换 `docker-compose.prod.yml` 就能修掉现场的启动崩溃循环**，不必重新 `docker load`。交付命令照旧：在与现场同架构的打包机上 `./build.sh --save` → `mediaflow-1.8.6-<架构>.tar.gz`（~0.2G），现场 `docker load -i mediaflow-1.8.6-arm64.tar.gz && docker compose -f docker-compose.prod.yml up -d`。
+
 ## 悬而未决：无（截至本次更新）
 
 

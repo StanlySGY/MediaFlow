@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # MediaFlow — one-shot Docker image builder.
 # Usage:
-#   ./build.sh                build mediaflow:1.8.5 + :latest (defaults to host arch)
+#   ./build.sh                build mediaflow:1.8.6 + :latest (defaults to host arch)
 #   ./build.sh --platform P   cross-build (e.g. linux/arm64). Only for a foreign target arch:
 #                           the default already matches this host, so delivery builds run ./build.sh
 #                           --save on a machine of the target arch instead.
@@ -19,7 +19,7 @@ set -euo pipefail
 
 # ---- defaults ----
 IMAGE_NAME="mediaflow"
-DEFAULT_TAG="1.8.5"
+DEFAULT_TAG="1.8.6"
 TAG="$DEFAULT_TAG"
 # Used for the offline tarball name. Not passed to `docker build` unless the
 # user asked: the legacy builder rejects --platform unless the daemon has
