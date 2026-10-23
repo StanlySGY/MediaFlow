@@ -81,13 +81,18 @@ Only loopback is published by default (port from `.env`'s `PORT`, default 8999).
 ### Air-gapped delivery
 
 ```bash
-./build.sh --save                                  # build machine: mediaflow-1.8.3-arm64.tar.gz
-docker load -i mediaflow-1.8.3-arm64.tar.gz        # target host
+./build.sh --save                                  # build machine (same arch as the target):
+                                                 # → mediaflow-1.8.4-<build-arch>.tar.gz
+                                                 # build.sh picks the arch from `uname -m`, so a
+                                                 # matching build host needs no --platform; a
+                                                 # cross-arch --platform build runs every layer
+                                                 # under QEMU and is a fallback only
+docker load -i mediaflow-1.8.4-arm64.tar.gz        # target host
 cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d    # prod compose has no `build:` on purpose
 ```
 
-`docker-compose.prod.yml` pins `mediaflow:1.8.3` and mounts `./outputs`, `./temp`, `./config` as volumes, so re-loading an image keeps history and saved configs. Full field manual: [DEPLOY_ONSITE.md](DEPLOY_ONSITE.md).
+`docker-compose.prod.yml` pins `mediaflow:1.8.4` and mounts `./outputs`, `./temp`, `./config` as volumes, so re-loading an image keeps history and saved configs. Full field manual: [DEPLOY_ONSITE.md](DEPLOY_ONSITE.md).
 
 ## Wiring an upstream ASR you already run
 

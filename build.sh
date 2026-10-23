@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # MediaFlow — one-shot Docker image builder.
 # Usage:
-#   ./build.sh                build mediaflow:1.8.3 + :latest (defaults to host arch)
-#   ./build.sh --platform P   cross-build (e.g. linux/arm64). Native builds omit --platform.
+#   ./build.sh                build mediaflow:1.8.4 + :latest (defaults to host arch)
+#   ./build.sh --platform P   cross-build (e.g. linux/arm64). Only for a foreign target arch:
+#                           the default already matches this host, so delivery builds run ./build.sh
+#                           --save on a machine of the target arch instead.
 #   ./build.sh --save [FILE]  docker save image to a gzipped tar for offline transfer
 #   ./build.sh --no-cache     skip layer cache
 #   ./build.sh --pull         pull fresh base images first
@@ -17,7 +19,7 @@ set -euo pipefail
 
 # ---- defaults ----
 IMAGE_NAME="mediaflow"
-DEFAULT_TAG="1.8.3"
+DEFAULT_TAG="1.8.4"
 TAG="$DEFAULT_TAG"
 # Used for the offline tarball name. Not passed to `docker build` unless the
 # user asked: the legacy builder rejects --platform unless the daemon has
@@ -73,6 +75,29 @@ command -v docker >/dev/null 2>&1 \
 [[ -f Dockerfile ]] || die "Dockerfile missing — run from project root."
 [[ -f frontend/package.json ]] || die "frontend/package.json missing — frontend not initialized."
 [[ -f requirements.txt ]] || die "requirements.txt missing."
+
+# ---- cross-arch guard ----
+# The image must match the architecture of the machine that runs it, and
+# build.sh already picks that from `uname -m`, so a normal build needs no
+# --platform. Passing one for a foreign arch means every layer runs under
+# QEMU emulation: apt/pip layers are several times slower and far likelier to
+# time out, which is why the onsite manuals say to build on a host with the
+# target architecture and export the tarball there. Warn, then refuse only when
+# the daemon could not do it at all.
+if [[ "$PLATFORM_SET" -eq 1 ]]; then
+    case "$(uname -m)" in
+        aarch64|arm64) HOST_ARCH="arm64" ;;
+        x86_64)        HOST_ARCH="amd64" ;;
+        *)             HOST_ARCH="$(uname -m)" ;;
+    esac
+    TARGET_ARCH="${PLATFORM##*/}"
+    if [[ "$TARGET_ARCH" != "$HOST_ARCH" ]]; then
+        warn "cross-arch build: host is ${HOST_ARCH}, target is ${TARGET_ARCH}; layers run under QEMU emulation."
+        warn "for offline delivery build on a ${TARGET_ARCH} host — there ./build.sh --save needs no --platform."
+        docker buildx inspect default 2>/dev/null | grep -qi "Platforms:.*${TARGET_ARCH}" \
+            || die "the docker daemon cannot build ${PLATFORM}: no emulator registered. Install one with: docker run --privileged --rm tonistiigi/binfmt --install ${TARGET_ARCH}"
+    fi
+fi
 
 if [[ "$RUN_TESTS" -eq 1 ]]; then
     if [[ -x .venv/bin/pytest ]]; then

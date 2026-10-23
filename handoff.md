@@ -293,12 +293,26 @@ session_id 级别的共享状态。违反此隔离会导致并发订阅者在不
 - 顺带记录两个测试环境陷阱：① `MonitorView` 直接读 `data.summary.window_size`，测试里 `/asr/monitor` 返回裸 `{}` 会让它崩（不是产品 bug，真实接口带 `summary`）；② `google-chrome --dump-dom --virtual-time-budget` 打开 `#/monitor` 会因为 SSE 挂住而超时返回空文件，用不带 virtual-time 的 `--dump-dom` 或 CDP 导航才拿得到页面。
 
 ### 仍然阻塞：镜像重建 / 交付 tar 包
-本机无外网：宿主代理 `http://127.0.0.1:7897` connection refused，DNS 解析失败（resolv `10.255.255.254`），`registry.npmmirror.com` / `registry.npmjs.org` / `docker.1ms.run` 全部不可达，`docker run python:3.12-slim-trixie` 报 `proxyconnect tcp: dial tcp 127.0.0.1:7897: connect: connection refused`。本地只有 `node:22-alpine` / `node:20-alpine` / `python:3.11-slim` 三个基础镜像，不够 Dockerfile 用。因此：
-- `mediaflow:1.8.3` / `:latest` 镜像**尚未构建**；`app/web` 静态产物已用仓库里现存的 `frontend/node_modules` 离线 `npm run build` 重建，与 HEAD 前端代码一致（`59a58cb` 之后 `frontend/src` 无改动，重建产物与旧产物逐字节相同，1.8.3 后新哈希 `index-jSiCNCs6.js`）。
-- 网络恢复后要跑：`./build.sh`（构建）→ `docker compose -f docker-compose.yml up -d`；交付包 `./build.sh --platform linux/arm64 --save` → `mediaflow-1.8.3-arm64.tar.gz`。**不要用 `v1.8.1` / `v1.8.2` tag 构建交付**（分别带历史列表 bug 和标题缺口）。
+上一轮写的「本机无外网」**不成立**，本轮推翻：宿主代理 `http://127.0.0.1:7897` 现在能通（`curl -x … https://registry.npmjs.org/-/ping` → 200），代理变量置空时 DNS 也能解析。Docker daemon 的代理来自 `/etc/systemd/system/docker.service.d/http-proxy.conf`（`HTTP(S)_PROXY=http://127.0.0.1:7897`，`NO_PROXY=localhost,127.0.0.1`）。
+
+真正的阻塞是**构建层里的网络不稳**，两个不同表现：
+
+1. **`npm ci` 静默漏装可选依赖**（已修）。失败信息是 `RUN npm run build` 报 rolldown `Cannot find native binding … Cannot find module '@rolldown/binding-linux-x64-gnu'`，但那不是构建阶段的问题：`node_modules/@rolldown/` 里只有 `pluginutils`，没有任何 `binding-*`，而 `node_modules/.package-lock.json` 却列了 7 个 `binding-linux` 条目。rolldown 的原生绑定是**可选依赖**，npm 拉那个 ~8.8 MB tarball 失败时不把 install 判为失败，只是把它略过——于是这一层被当成「成功层」缓存下来，缺绑定要等好几层之后才在 `npm run build` 里爆出来（npm/cli#4828）。实测同一条 `fetch()` 在构建层里 3 次里只成功 1 次（`FETCH OK 8822604` / `fetch failed` / `terminated`）。
+   修法（`Dockerfile` stage 1）：`FROM node:20-slim` → `node:22-slim`（与 CI `setup-node: 22` 和开发宿主一致，npm 10.9.9 路径实测装出 `binding-linux-x64-gnu` + `musl` 且 `✓ built in 1.04s`）；`npm ci --include=dev` 后加 `node -e "import('rolldown')"` 完整性检查并整层重试，让缺绑定在**安装层**失败重跑，而不是缓存成一个坏层。本轮之后 `npm run build` 层已 CACHED 通过。
+2. **apt 装 FFmpeg 超时**（已修）。`Failed to fetch …/libllvm19_19.1.7-3%2bb1_amd64.deb Connection timed out`，`exit code: 100`，ffmpeg 要拉 ~200 个包。给 apt 显式加 `-o Acquire::Retries=5 -o Acquire::http(s)::Timeout=30`（默认不重试），pip 侧加 `PIP_RETRIES=10` / `PIP_TIMEOUT=60`。
+
+- `mediaflow:1.8.4` / `:latest`（**本机 x86_64 原生构建**，`./build.sh` 不带 `--platform`，platform `linux/amd64`）：已构建通过——829.3 MB，id `a8f96c244026`，前端层与 apt 层 CACHED，pip 层重跑通过（0 次重试、无 SIGPIPE 噪声）。本地实例现在跑的就是这个镜像（容器 `mediaflow`，`127.0.0.1:8999`，healthy，`/health` `{"status":"ok"}`，`/openapi.json` 报 `1.8.4`，容器内 11 个 pin 全核对通过，`/asr/tasks?limit=3` 200）。
+3. **pip 层被代理断链**（已修）。原生构建里 `RUN pip install -r requirements.txt` 报 `ProtocolError: Connection broken: BrokenPipeError(32, 'Broken pipe')`，`exit code: 2`——代理在**下载中途**断链，不是请求超时，所以 `PIP_RETRIES` 帮不上（它只重发 HTTP 请求，不管传到一半的响应体）。修法与 npm 层同构：整层 `for attempt in 1..5` 重试，且每次成功后按 `requirements.txt` 的 pin 逐个核对（`pip freeze` + grep，`${name%%\[*\]}` 剥掉 `uvicorn[standard]` 的 extras）。核对本身先验证过两个方向：真镜像里 11 个 pin 全过；把 pin 改成 `pydantic==9.9.9` 时层失败（实测 5 次重试后 `exit 1`）。本轮构建日志里它确实**重试了 1 次**再成功（第 2 次 `Successfully installed … uvicorn-0.48.0 …`）。
+   这个核对本身还带出一个缺陷并一并修掉：原先写成 `pip freeze | grep -qiE …`，`grep -q` 命中即退出，`pip freeze` 收到 SIGPIPE，于是构建日志在正确的判定旁边多出一段 `pip/_internal/commands/freeze.py … BrokenPipeError` 的 traceback——判定没错，但把真结论埋在噪声下面，而且每次核对都要跑 11 次 `pip freeze`。改为一次 `installed="$(pip freeze)"` 存进变量、逐个 pin 用 `printf '%s\n' "$installed" | grep -iE … >/dev/null` 匹配（grep 读完整个输入才退出，不会断管）。修后在真镜像里跑：exit 0、`pin not satisfied` 0 条、无 traceback；反向对照（把 pin 改成 `pydantic==9.9.9`）：exit 1、1 条 `pin not satisfied`、5 次重试消息、同样无 traceback。随后 `./build.sh` 重建：pip 层实跑 26.5s 通过，重试 0 次、无 SIGPIPE 噪声。
+- `app/web` 静态产物本身与 HEAD 前端代码一致（早前用仓库现存的 `frontend/node_modules` 离线 `npm run build` 逐字节复现过，1.8.3 后新哈希 `index-jSiCNCs6.js`）。
+- CI 的 `docker` job 对这同一个 Dockerfile 是全绿的（run 39917143539 `test (3.11)` `test (3.12)` `frontend` `docker` 全 success），说明 Dockerfile 本身没有环境无关的错误，本机失败的是这条代理链路。
+- **构建架构**：`./build.sh` 不带参数时按 `uname -m` 选本机架构，`--platform` 只有在显式传入时才加进 `docker build`——本机（WSL2 x86_64）默认就是 `linux/amd64`，上面的镜像即由此产出。**本轮的 arm64 交叉构建已中止**：现场目标是鲲鹏 920（`ONSITE_DEPLOY.md` 明确写「不要在 WSL2 上构建带去现场的镜像」），交付包应在现场同架构的 ARM 打包机上 `./build.sh --save` 产出，不在本机做 qemu 模拟构建（qemu 下 pip/apt 层的网络耗时是原生的数倍，本轮实测 arm64 apt 层跑了 20 分钟以上）。中止时残留的 arm64 镜像标签 `mediaflow:1.8.3`（id `379f3fb6755f`，222 MB，`arch=arm64`）已 `docker rmi` 删除，本机 `mediaflow:1.8.4` / `:latest` 现在只有 amd64 一份。
+- **交叉架构护栏**（`build.sh`）：显式传入的 `--platform` 与 `uname -m` 不符时先警告「每一层在 QEMU 模拟下执行、交付包应在同架构打包机上产出」；若 daemon 连对应模拟器都没注册，直接失败并给出注册命令。实测：本机传 `--platform linux/amd64` 无警告照跑；传 `--platform linux/riscv64` 两条警告后 `exit 1`。`PLATFORM_SET` 只在参数里真的出现 `--platform` 时才置 1，不带参数的原生构建不受影响。
+- 本轮为试 arm64 装了 `tonistiigi/binfmt --install arm64`，宿主 `binfmt_misc` 里现在注册着 `qemu-aarch64`，buildx `default` builder 的平台表因此含 `linux/arm64`。不影响原生构建；要撤掉：`docker run --privileged --rm tonistiigi/binfmt --uninstall qemu-aarch64`。
+- **不要用 `v1.8.1` / `v1.8.2` tag 构建交付**（分别带历史列表 bug 和标题缺口）。
 
 ### 版本
-发布 **1.8.3**（`app/main.py`、`frontend/package.json` + lock、`build.sh`、`docker-compose.prod.yml` 四处一致；`DEPLOY_ONSITE.md` / `ONSITE_DEPLOY.md` / `README.md` / `README.en.md` 的 tarball 名同步）。
+发布 **1.8.4**（`app/main.py`、`frontend/package.json` + lock、`build.sh`、`docker-compose.prod.yml` 四处一致；`DEPLOY_ONSITE.md` / `ONSITE_DEPLOY.md` / `README.md` / `README.en.md` 的 tarball 名同步）。内容是本轮的三条构建层修复（npm 可选依赖、apt 超时、pip 断链）加 `build.sh` 的跨架构护栏；前端与后端代码相对 1.8.3 无改动。1.8.4 的构建产物是 `a8f96c244026`（829.3 MB，`linux/amd64`）。**不要用 `v1.8.1` / `v1.8.2` / `v1.8.3` tag 构建交付**：前两个带功能 bug，`v1.8.3` 只有 pip 层断链这一个构建缺陷，功能上可用，但要少一次手工重试就用 `v1.8.4`。
 
 ## 悬而未决：无（截至本次更新）
 

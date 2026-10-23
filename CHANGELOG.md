@@ -3,7 +3,18 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 版本号的落点：`app/main.py` 的 FastAPI `version`、`frontend/package.json`、`build.sh` 的 `DEFAULT_TAG` 与 `docker-compose.prod.yml` 引用的 `mediaflow:<版本>` 四处保持一致。
 
-仓库里真实出现过的版本落点只有 `0.1.0 → 1.2.0 → 1.3.0 → 1.4.0 → 1.4.1 → 1.7.0 → 1.7.1 → 1.7.2 → 1.7.3 → 1.8.0 → 1.8.1 → 1.8.2 → 1.8.3`：`1.5.x` / `1.6.x` 从未使用；`1.3.1` 只在 2026-07-28 一次提交的 `frontend/package.json` 里出现，随即被 `1.4.1` 覆盖，`build.sh` / `app/main.py` / `docker-compose.prod.yml` 三处从未跟进，因此不单独列为一个发布。首个 git tag 是 `v1.7.3`（2026-10-19 切出，版本号本身落点在 2026-09-23 的 `a34b62d`）。
+仓库里真实出现过的版本落点只有 `0.1.0 → 1.2.0 → 1.3.0 → 1.4.0 → 1.4.1 → 1.7.0 → 1.7.1 → 1.7.2 → 1.7.3 → 1.8.0 → 1.8.1 → 1.8.2 → 1.8.3 → 1.8.4`：`1.5.x` / `1.6.x` 从未使用；`1.3.1` 只在 2026-07-28 一次提交的 `frontend/package.json` 里出现，随即被 `1.4.1` 覆盖，`build.sh` / `app/main.py` / `docker-compose.prod.yml` 三处从未跟进，因此不单独列为一个发布。首个 git tag 是 `v1.7.3`（2026-10-19 切出，版本号本身落点在 2026-09-23 的 `a34b62d`）。
+
+## [1.8.4] - 2026-10-23
+
+### 修复
+- **镜像构建在代理链路上随机失败**（三条层各自修）：
+  - `npm ci` 静默漏装可选依赖。症状是 `RUN npm run build` 报 rolldown `Cannot find native binding`，根因却在安装层：rolldown 的原生绑定是**可选依赖**，npm 拉那个 ~8.8 MB tarball 失败时不把 install 判为失败、只是略过它，于是这一层被当成成功层缓存下来，缺绑定要等好几层之后才爆（npm/cli#4828）。现在 stage 1 改 `node:20-slim` → `node:22-slim`（与 CI `setup-node: 22`、开发宿主一致），并在 `npm ci --include=dev` 后 `import('rolldown')` 校验完整性，整层重试——缺绑定在安装层失败重跑，不会缓存成坏层。
+  - `apt-get install ffmpeg` 无重试。ffmpeg 要拉 ~200 个包，一个 `.deb` 超时（`Connection timed out`）就让整层 `exit 100`。给 apt 显式加 `Acquire::Retries=5` / `Acquire::http(s)::Timeout=30`。
+  - `pip install -r requirements.txt` 被代理**中途断链**。症状是 `ProtocolError: Connection broken: BrokenPipeError`，不是请求超时，所以 `PIP_RETRIES` 帮不上（它只重发 HTTP 请求，不管传到一半的响应体）。改为整层重试，并在每次成功后逐个核对 `requirements.txt` 里的 pin 是否真的装成那个版本——「装成功但少了东西」同样会缓存成好层、到运行时才炸。核对逻辑双向验证过：正常镜像里 11 个 pin 全通过；把 pin 改成不存在的版本时该层失败。
+  - 核对本身的第一版写法带噪声：`pip freeze | grep -qiE …` 里 `grep -q` 命中即退出，`pip freeze` 收到 SIGPIPE，构建日志在正确判定旁边多出一段 `freeze.py … BrokenPipeError` 的 traceback，而且一次核对要跑 11 次 `pip freeze`。改为把 `pip freeze` 取一次存进变量、逐个 pin 匹配同一份副本（grep 读完整个输入才退出，不会断管）。修后实测：真镜像里 exit 0、零 `pin not satisfied`、无 traceback；反向对照（pin 改成 `pydantic==9.9.9`）exit 1、1 条 `pin not satisfied`、5 次重试、无 traceback；随后的 `./build.sh` 里 pip 层 26.5s 通过、重试 0 次。
+- **交叉架构构建没有护栏**：`./build.sh` 本来就按 `uname -m` 选本机架构（`--platform` 只在显式传入时才进 `docker build`），但传一个与宿主不符的 `--platform` 时它照跑不误，每一层都在 QEMU 模拟下执行——apt/pip 层耗时是原生的数倍，超时概率也高得多，而这正是两份现场手册反复要求「在与现场同架构的打包机上构建」的原因。现在这种调用会先警告，并且当 daemon 根本没注册对应模拟器时直接失败并给出注册命令。交付路径本身不变：在与目标同架构的机器上 `./build.sh --save`，不需要 `--platform`。
+- 版本号 1.8.4（`app/main.py`、`frontend/package.json`、`build.sh`、`docker-compose.prod.yml` 四处一致，文档里的 tarball 名同步）。
 
 ## [1.8.3] - 2026-10-23
 

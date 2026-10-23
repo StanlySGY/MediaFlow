@@ -1,6 +1,6 @@
 # MediaFlow 现场部署与配置指南
 
-> 适用版本：`mediaflow:1.8.3`（**arm64**）。面向离线内网环境，全程无需联网。
+> 适用版本：`mediaflow:1.8.4`（**arm64**）。面向离线内网环境，全程无需联网。
 
 ---
 
@@ -10,7 +10,7 @@
 
 | 文件 | 说明 |
 |---|---|
-| `mediaflow-1.8.3-arm64.tar.gz` | Docker 镜像离线包（arm64） |
+| `mediaflow-1.8.4-arm64.tar.gz` | Docker 镜像离线包（arm64） |
 | `docker-compose.prod.yml` | 部署编排文件（host 网络、只跑不构建） |
 | `.env.example` | 配置模板，据此生成 `.env` |
 | 本文档 | 部署 / 配置 / 验证 / 排错说明 |
@@ -24,6 +24,8 @@
 - 部署目录有写权限(容器会在此创建 `temp/`、`outputs/`、`config/`),并且能 `sudo` 改这三个目录的属主（见第三节第 3 步）。
 
 > 确认架构：`uname -m` 应为 `aarch64`。若为 `x86_64`，本 arm64 镜像无法运行，需向构建方索取 amd64 包。
+>
+> 交付包的架构由**构建它的机器**决定：`build.sh` 按构建机的 `uname -m` 选架构，所以 arm64 包必须在 arm64 打包机上 `./build.sh --save` 产出。跨架构构建（`--platform linux/arm64`）只在打包机架构不符时兜底，每一层都在 QEMU 模拟下执行，apt/pip 层耗时是原生的数倍。
 
 ---
 
@@ -31,7 +33,7 @@
 
 ```bash
 # 1. 加载镜像
-docker load -i mediaflow-1.8.3-arm64.tar.gz
+docker load -i mediaflow-1.8.4-arm64.tar.gz
 
 # 2. 生成配置文件（要改什么见第四节）
 cp .env.example .env
@@ -163,7 +165,7 @@ docker compose -f docker-compose.prod.yml up -d        # 自动用新镜像重�
 | 症状 | 可能原因 | 处理 |
 |---|---|---|
 | 本机 `curl localhost:8999/health` 不通 | 容器没起来 | `... logs` 看报错、`... ps` 看状态 |
-| 启动报 `image not found` | 镜像没加载或版本号不符 | `docker images` 确认有 `mediaflow:1.8.3`，与 compose 的 `image:` 一致 |
+| 启动报 `image not found` | 镜像没加载或版本号不符 | `docker images` 确认有 `mediaflow:1.8.4`，与 compose 的 `image:` 一致 |
 | 本机通、外部电脑打不开 | 防火墙 / 安全组没放行 | 见第五节放行 8999 |
 | `/asr/ping` 返回 `ok=false` 或超时 | ASR 地址 / 密钥 / 协议错，或网络不通 | 核对 `ASR_BASE_URL`/`ASR_API_KEY`/`ASR_PROVIDER`；在宿主上 `curl` 内网 ASR 地址确认可达 |
 | 字幕没有词级时间戳 | 用了 `openai_chat_audio` | 内网 ASR 支持 transcriptions 端点时改用 `openai_compat` |
