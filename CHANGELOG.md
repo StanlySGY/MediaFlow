@@ -11,6 +11,7 @@
 - **开机后第一次历史扫描被节流吞掉**：`HistoryIndex` 用 `_last_refresh = 0.0` 表示「从未刷新」，但判断用的是 `time.monotonic()` —— 它从一个任意的过去时刻起算，在一台刚启动不到 `HISTORY_REFRESH_SECONDS`（默认 1s）的机器上，`monotonic()` 的值比这个窗口还小，于是第一次 `refresh()` 被当成「窗口内」直接返回，归档读出来是空的；写任务结束时调的 `invalidate()` 同理失效，刚完成的任务在开机头一段时间里不进历史列表。本地 `monotonic()` 恒为几万秒，所以这个 bug 只在 CI（新起的 runner）暴露：`test_refresh_is_throttled_unless_forced` 报 `assert 0 == 1`。哨兵改为 `None`，「是否已经刷新过」不再靠时钟值猜。测试用 `monkeypatch` 把时钟拨到 5.0s 复现，回退修复后以同一症状失败。
 - **CI 矩阵互相顶替**：`test` job 的矩阵是默认 `fail-fast: true`，3.11 失败会取消 3.12，那个 job 在页面上显示为 `-`（实际它的 pytest 已经 `276 passed`），一个 3.11 专属故障看起来像「到处都坏了」。改为 `fail-fast: false`，两个版本各自报告结果。
 - **CI 的 Node 版本**：`setup-node` 的 `node-version: 20` 已被 GitHub 强制跑在 Node 24 上并每次发弃用警告，改为 22（与本地开发环境一致）。
+- **CI 工作流的 action 大版本**（v1.8.2 tag 之后补入，只动 `.github/workflows/`，不进交付镜像）：上一条只改了 `node-version`，但弃用警告针对的是 action **自身声明**的运行时的 —— `checkout@v4` / `setup-python@v5` / `setup-node@v4` / `configure-pages@v5` / `deploy-pages@v4` 的 `action.yml` 写的都是 `using: node20`，GitHub 把它们强行跑在 Node 24 上并在每次 run 结束时报警告。核实各 major 的 `using:` 后升 `checkout@v7`、`setup-python@v7`、`setup-node@v7`、`configure-pages@v6`、`upload-pages-artifact@v5`（其内部嵌套的 `upload-artifact` 也从 v4 的 node20 换到 v7 的 node24）、`deploy-pages@v5`。`checkout@v7` 的唯一行为变化是 `pull_request_target` / `workflow_run` 下拒绝检出 fork PR，本仓库这两个触发方式都没用到。
 - 版本号 1.8.2（`app/main.py`、`frontend/package.json`、`build.sh`、`docker-compose.prod.yml` 四处一致）。`v1.8.1` tag 已推送、不改写已发布的 ref，所以这个修复单独发一个补丁版；**`v1.8.1` 那个 tag 的代码带上述历史列表 bug，不要用它构建交付**。
 
 ## [1.8.1] - 2026-10-23

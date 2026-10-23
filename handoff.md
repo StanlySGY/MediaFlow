@@ -262,6 +262,10 @@ session_id 级别的共享状态。违反此隔离会导致并发订阅者在不
 ### CI 配置改动
 - `test` job 加 `fail-fast: false`：两个 Python 版本各自报告结果，不再互相顶替。
 - `setup-node` 的 `node-version: 20` → `22`（GitHub 已把 Node 20 强制跑在 Node 24 上，每次构建都发弃用警告；22 与本地 `node -v` 一致）。
+- **action 大版本升级**（补充）：上一条只改了 `node-version`，警告仍在 —— 它报的是 action 自身 `action.yml` 里的 `using: node20`。逐个核实后升 `checkout@v4→v7`、`setup-python@v5→v7`、`setup-node@v4→v7`、`configure-pages@v5→v6`、`upload-pages-artifact@v3→v5`、`deploy-pages@v4→v5`（v5 内部嵌套的 `upload-artifact` 也从 v4/node20 换到 v7/node24）。`checkout@v7` 唯一行为变化是 `pull_request_target`/`workflow_run` 下拒绝检出 fork PR，本仓库没用到这两种触发。
+
+### 修复后的 CI 结果（run 39911184762，全绿 1m38s）
+`✓ test (3.11) 48s` · `✓ test (3.12) 51s` · `✓ frontend 41s` · `✓ docker 42s`；Pages run 39911184644 也绿。`docker` job 日志确认基础镜像按 digest 解析：`FROM python:3.12-slim-trixie@sha256:a0f57064…`，`naming to docker.io/library/mediaflow:ci done` —— 这同时给上面「下一轮待完成」第 2 条的一个侧证：**CI 里的 `docker build` 能干净跑通**（含 apt 装 FFmpeg 的那几层），只是本机的 `docker compose up -d --build` 端到端验收仍未做。
 
 ### 版本
 发布 **1.8.2**（四处落点 + 文档 tarball 名同步）。`v1.8.1` 已推送且不改写已发布 ref，所以单独发补丁版；**`v1.8.1` tag 的代码带这个历史列表 bug，不要用它构建交付**。
