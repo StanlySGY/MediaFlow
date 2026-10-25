@@ -8,10 +8,14 @@ import { createRealtimeCueTracker } from '../lib/realtimeCueTracker';
 import { downloadFile } from '../lib/download';
 import { formatSize } from '../lib/uploadPreflight';
 import {
+  CAPACITY_RETRY_MAX_ATTEMPTS,
   CAPACITY_TERMINAL_STATUSES,
   blobToBase64,
+  capacityRetryNotice,
+  createSessionWithCapacityRetry,
   formatFromMime,
   microphoneErrorMessage,
+  parseCapacityRefusal,
   pickRecorderMimeType,
   transcriptFileName,
 } from '../lib/realtimeRecording';
@@ -56,6 +60,10 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
   const [transcriptFeedback, setTranscriptFeedback] = useState('');
   const [logsFeedback, setLogsFeedback] = useState('');
   const [notice, setNotice] = useState('');
+  // Separate from `notice` on purpose: a capacity wait is not an error, and an
+  // error-coloured alert over a 4/4 badge that is about to clear reads as a
+  // failure the user has to go fix.
+  const [capacityWait, setCapacityWait] = useState('');
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [chunks, setChunks] = useState(0);
@@ -388,6 +396,8 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     setTranscript('');
     setTranscriptFeedback('');
     setNotice('');
+    // A previous exhausted wait belongs to the attempt that ended, not this one.
+    setCapacityWait('');
     setIsReconnecting(false);
     committedTextRef.current = '';
     cueTrackerRef.current.reset();
@@ -410,19 +420,61 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
     let recordingSessionId = '';
 
     try {
-      const sessionResponse = await authedFetch('/asr/realtime/session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          language: null,
-          sample_rate: 48000,
-          format,
-          channels: 1,
-          mode: 'browser_recording',
-          hotwords: [],
-        }),
-      });
-      if (!sessionResponse.ok) throw await responseError(sessionResponse);
+      // A full cap is a wait, not an error: the panel retries on the server's
+      // own schedule and keeps the badge honest while it waits, so "在用 4/4 路"
+      // and the sentence under the button say the same thing.
+      const sessionResponse = await createSessionWithCapacityRetry(
+        () =>
+          authedFetch('/asr/realtime/session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              language: null,
+              sample_rate: 48000,
+              format,
+              channels: 1,
+              mode: 'browser_recording',
+              hotwords: [],
+            }),
+          }),
+        {
+          shouldAbort: () => generation !== generationRef.current,
+          onRefused: (refusal, attempt) => {
+            if (generation !== generationRef.current) return;
+            setCapacityWait(capacityRetryNotice(refusal, attempt));
+            // The refusal's counters are more current than the last
+            // GET /realtime/sessions, so the badge shows the same numbers the
+            // sentence quotes instead of a stale count beside it.
+            if (refusal.live !== null) setLiveSessions(refusal.live);
+            void refreshCapacity();
+            appendLog('session_capacity_wait', {
+              attempt: attempt + 1,
+              live: refusal.live,
+              limit: refusal.limit,
+            });
+          },
+        },
+      );
+      if (!sessionResponse.ok) {
+        const error = await responseError(sessionResponse);
+        const refusal = parseCapacityRefusal(error);
+        if (refusal && generation === generationRef.current) {
+          // Retries are used up. The neutral wait line already says what to do
+          // (free a slot, or raise REALTIME_MAX_SESSIONS), so an error-coloured
+          // repeat of the same numbers would only read as a crash.
+          setCapacityWait(capacityRetryNotice(refusal, CAPACITY_RETRY_MAX_ATTEMPTS));
+          setNotice('');
+          setState('idle');
+          appendLog('session_capacity_exhausted', {
+            live: refusal.live,
+            limit: refusal.limit,
+          });
+          return;
+        }
+        throw error;
+      }
+      setCapacityWait('');
+      setNotice('');
       const session = await sessionResponse.json();
       if (generation !== generationRef.current) {
         releaseSession(session.session_id);
@@ -663,6 +715,15 @@ export const RealtimeRecorderPanel: React.FC<RealtimeRecorderPanelProps> = ({
         </div>
       )}
 
+      {capacityWait && (
+        <div
+          className="p-3 mb-4 rounded-lg border border-border bg-surface-2 text-[13px] text-muted"
+          role="status"
+          aria-live="polite"
+        >
+          {capacityWait}
+        </div>
+      )}
       {notice && (
         <div className="p-3 mb-4 rounded-lg border border-err/20 bg-err-soft text-err text-[13px]" role="alert">
           {notice}

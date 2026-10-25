@@ -215,3 +215,57 @@ def test_realtime_events_stream_carries_delta(client):
     assert terminal
     for evt in terminal:
         assert evt["delta"] is None
+
+
+def test_session_limit_payload_carries_the_counters(limited_client):
+    """The 429 has to say *which* cap and *how full*, not just "limit reached".
+
+    "You are the fifth recorder" and "this deployment's cap is one" need
+    different answers from the user, and the frontend cannot tell them apart
+    from a sentence.
+    """
+    assert limited_client.post("/asr/realtime/session", json={}).status_code == 200
+    second = limited_client.post("/asr/realtime/session", json={})
+    assert second.status_code == 429
+    detail = second.json()["detail"]
+    assert detail["code"] == "session_limit"
+    assert detail["retryable"] is True
+    assert detail["details"] == {"live": 1, "limit": 1}
+
+
+def test_session_limit_sends_retry_after(limited_client):
+    """Without a hint the client has to guess how long a slot takes to free."""
+    assert limited_client.post("/asr/realtime/session", json={}).status_code == 200
+    second = limited_client.post("/asr/realtime/session", json={})
+    assert int(second.headers["retry-after"]) >= 1
+
+
+def test_resource_limit_refusal_is_not_a_capacity_wait(tmp_path, monkeypatch):
+    """A session that ran out of its own byte budget is not "wait for a slot"."""
+    monkeypatch.setenv("TEMP_DIR", str(tmp_path / "tmp"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("RUNTIME_CONFIG_PATH", str(tmp_path / "rc.json"))
+    monkeypatch.setenv("REALTIME_ASR_PROVIDER", "realtime_mock")
+    monkeypatch.setenv("REALTIME_MAX_SESSION_BYTES", "1")
+    monkeypatch.setenv("ACCESS_TOKENS", "")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    from app.main import create_app
+    from fastapi.testclient import TestClient
+
+    with TestClient(create_app()) as c:
+        sid = c.post("/asr/realtime/session", json={}).json()["session_id"]
+        import base64
+
+        r = c.post(
+            f"/asr/realtime/{sid}/audio",
+            json={"seq": 1, "audio": base64.b64encode(b"\x00\x00" * 8).decode()},
+        )
+        assert r.status_code == 413, r.text
+        detail = r.json()["detail"]
+        assert detail["code"] == "resource_limit"
+        # No Retry-After: retrying cannot shrink a file that is already too big,
+        # so a wait hint here would invite the client to hammer a dead end.
+        assert "retry-after" not in r.headers
+        assert detail["retryable"] is False

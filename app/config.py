@@ -58,6 +58,23 @@ class Settings(BaseSettings):
     # upstream calls; without this, several clients can each push a 2 GiB file
     # to disk simultaneously and fill the volume mid-write.
     max_concurrent_uploads: int = Field(2, ge=1, le=32)
+    # How many /asr/transcribe-stream sessions may run at once. An upload finishes
+    # long before its transcription does, so MAX_CONCURRENT_UPLOADS alone leaves
+    # the expensive half unlimited: every live session holds its normalized WAV
+    # and its segment slices on disk for its whole lifetime, and each session
+    # fans out into asr_concurrency provider calls. Refusing the over-capacity
+    # session with a 429 is what keeps the third one from making everyone slow.
+    stream_max_sessions: int = Field(2, ge=1, le=32)
+    # `openai_chat_audio` inlines the whole audio file as a base64 field inside a
+    # JSON body, so it cannot be streamed: the peak is the file bytes plus the
+    # base64 string plus the data-URI plus the encoded body, all alive at once:
+    # measured peak 6.7x the file (19 MB for a 90 s chunk), paid again on every
+    # retry. The two caps below are checked before the file is read.
+    # The duration cap is the tighter one in practice and is what an upstream
+    # audio model actually enforces; 300 s of 16 kHz mono PCM is 12.8 MB of JSON
+    # body. 0 turns a cap off.
+    asr_max_inline_audio_seconds: float = Field(300.0, ge=0.0, le=3600.0)
+    asr_max_inline_audio_bytes: int = Field(24 * 1024 * 1024, ge=0)
     # Uploads are refused while the temp/output volume has less free space than
     # this (plus the declared upload size). 0 disables the check.
     min_free_disk_bytes: int = Field(512 * 1024 * 1024, ge=0)
@@ -144,6 +161,9 @@ WRITABLE_FIELDS: frozenset[str] = frozenset(
         "silence_noise_db",
         "silence_min_duration",
         "max_upload_bytes",
+        "stream_max_sessions",
+        "asr_max_inline_audio_seconds",
+        "asr_max_inline_audio_bytes",
         "access_tokens",
         "realtime_asr_provider",
         "realtime_asr_base_url",

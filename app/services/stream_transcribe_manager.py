@@ -14,10 +14,16 @@ from app.models.schemas import (
     RealtimeASREvent,
     RealtimeSessionCreate,
 )
-from app.services.asr import ASRError, create_provider
+from app.services.asr import ASRError, RealtimeASRError, create_provider
+from app.services.asr.call_limiter import ASRCallLimiter
 from app.services.asr_monitoring import asr_call_context
 from app.services.asr.realtime_base import classify_message
-from app.services.ffmpeg_service import normalize_to_wav
+from app.services.audio_budget import (
+    AllBatchesFailed,
+    probe_audio_budget,
+    transcribe_in_batches,
+)
+from app.services.ffmpeg_service import FFmpegError, normalize_to_wav
 
 log = logging.getLogger(__name__)
 
@@ -26,11 +32,38 @@ log = logging.getLogger(__name__)
 _EVENT_HISTORY_SIZE = 512
 
 
+def _failure_protocol(exc: BaseException) -> tuple[str, str | None, bool]:
+    """`code` / `hint` / `retryable` for a stream transcription failure.
+
+    Same shape as `stream_manager._failure_protocol`: decode failures are the
+    caller's problem and not worth retrying, provider failures are.
+    """
+    if isinstance(exc, AllBatchesFailed):
+        return "provider_rejected", "上游对全部片段识别失败，可稍后重试", True
+    if isinstance(exc, RealtimeASRError):
+        return exc.code, exc.hint, exc.retryable
+    if isinstance(exc, FFmpegError):
+        return "audio_invalid", "文件无法解码，请确认音视频格式", False
+    code, hint, retryable = classify_message(str(exc))
+    if isinstance(exc, ASRError) and code == "internal_error":
+        return "provider_rejected", hint or "上游识别失败", True
+    return code, hint, retryable
+
+
 class StreamTranscribeManager:
     """管理文件上传流式转录会话"""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        asr_limiter: ASRCallLimiter | None = None,
+    ) -> None:
         self._settings = settings
+        # Same injected cap as TaskManager: splitting fans one upload out into
+        # many provider calls, and two managers with private limiters would each
+        # allow asr_concurrency of them at once.
+        self._asr_limiter = asr_limiter or ASRCallLimiter(settings)
         self._sessions: dict[str, _TranscribeSession] = {}
         self._lock = asyncio.Lock()
         self._workers: set[asyncio.Task] = set()
@@ -125,6 +158,21 @@ class StreamTranscribeManager:
             if self._stopping:
                 raise RuntimeError("transcription manager is stopping")
             self._evict_expired_locked()
+            # Counting and registering have to happen in one critical section,
+            # otherwise two concurrent uploads both see "one live session" and
+            # both get accepted. A finished session stops counting the moment
+            # its worker publishes the terminal event, so `done` is the flag
+            # that frees the slot -- same shape as realtime_max_sessions.
+            limit = max(1, self._settings.stream_max_sessions)
+            live = sum(1 for s in self._sessions.values() if not s.done.is_set())
+            if live >= limit:
+                raise RealtimeASRError(
+                    f"同时转录已达上限（{live}/{limit} 路占用中），正在等待空位",
+                    code="session_limit",
+                    hint="正在等待空位",
+                    retryable=True,
+                    details={"live": live, "limit": limit},
+                )
             self._sessions[session_id] = session
         if self._spawn_queue is None:
             # Bare scripts/tests that never called start(); the task is then
@@ -150,6 +198,7 @@ class StreamTranscribeManager:
             return
 
         work_dir: Path | None = None
+        started_at = time.perf_counter()
         try:
             session.publish(
                 RealtimeASREvent(
@@ -165,26 +214,54 @@ class StreamTranscribeManager:
                 session.file_path, normalized, timeout=self._settings.ffmpeg_timeout
             )
 
-            # 调用 ASR
-            async with create_provider(self._settings) as provider:
+            # 与文件任务链路同源：一次探测决定批次大小，超上限的整段音频交给切分器，
+            # 分片数因此有 `duration / split_chunk_seconds` 的上界，内存、单次请求体
+            # 体积和上游并发一起被这个上界管住（2 GiB 上传归一化后约 19 小时的
+            # 16 kHz PCM，整段送上游是一次没人能超时覆盖的请求）。
+            budget = await probe_audio_budget(normalized, self._settings)
+            prompt = session.config.prompt_hints or None
+            s = self._settings
+
+            async with create_provider(s) as provider:
+
+                async def call(path: Path, batch_prompt: str | None):
+                    return await provider.transcribe(path, prompt=batch_prompt)
+
                 with asr_call_context(
                     source="stream_transcribe",
-                    session_id=session_id,
+                    session_id=session.session_id,
                 ):
-                    result = await provider.transcribe(normalized)
-                session.publish(
-                    RealtimeASREvent(
-                        type="final",
-                        session_id=session_id,
-                        text=result.text,
-                        is_final=True,
+                    text, _words, batch_count, failed = await transcribe_in_batches(
+                        normalized,
+                        budget,
+                        s,
+                        work_dir=work_dir,
+                        source="stream_transcribe",
+                        key=session.session_id,
+                        prompt=prompt,
+                        transcribe_func=call,
+                        limiter=self._asr_limiter,
                     )
+
+            if failed:
+                log.warning(
+                    "stream session %s merged %d/%d batches (%d failed)",
+                    session.session_id, batch_count - failed, batch_count, failed,
                 )
 
+            session.publish(
+                RealtimeASREvent(
+                    type="final",
+                    session_id=session_id,
+                    text=text,
+                    is_final=True,
+                    elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+                )
+            )
             session.publish(RealtimeASREvent(type="done", session_id=session_id))
 
         except asyncio.CancelledError:
-            code, hint, retryable = classify_message("转录任务被取消")
+            _, hint, _ = classify_message("转录任务被取消")
             session.publish(
                 RealtimeASREvent(
                     type="error",
@@ -192,15 +269,13 @@ class StreamTranscribeManager:
                     error="转录任务被取消",
                     error_code="cancelled",
                     hint=hint,
-                    retryable=retryable,
+                    retryable=False,
                 )
             )
             raise
         except Exception as e:
             log.exception("transcription failed for session %s", session_id)
-            code, hint, retryable = classify_message(str(e))
-            if isinstance(e, ASRError) and code == "internal_error":
-                code, hint, retryable = "provider_rejected", hint or "上游识别失败", True
+            code, hint, retryable = _failure_protocol(e)
             session.publish(
                 RealtimeASREvent(
                     type="error",
@@ -218,7 +293,6 @@ class StreamTranscribeManager:
             session.file_path.unlink(missing_ok=True)
             if work_dir is not None and work_dir.exists():
                 shutil.rmtree(work_dir, ignore_errors=True)
-
 
 class _TranscribeSession:
     __slots__ = (

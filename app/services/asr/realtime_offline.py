@@ -23,14 +23,38 @@ from app.models.schemas import (
     RealtimeSessionCreate,
 )
 from app.services.asr.base import ASRProvider
+from app.services.asr.call_limiter import ASRCallLimiter
+from app.services.asr.inline_budget import check_inline_audio, provider_is_non_streaming
+from app.services.asr.realtime_base import RealtimeASRError, classify_message
 from app.services.asr.registry import create_provider
-from app.services.asr.realtime_base import RealtimeASRError
 from app.services.asr_monitoring import asr_call_context
+from app.services.audio_budget import (
+    AllBatchesFailed,
+    probe_audio_budget,
+    transcribe_in_batches,
+)
 from app.services.ffmpeg_service import normalize_to_wav
 
 
 SIMULATED_STREAMING = "simulated_streaming"
 _TEXT_CHARS_PER_EVENT = 24
+
+
+def _failure_protocol(exc: BaseException) -> tuple[str, str | None, bool]:
+    """`code` / `hint` / `retryable` for a failed offline session.
+
+    Same shape as the two file pipelines. `AllBatchesFailed` is not an `ASRError`
+    subclass — the provider answered every batch with a rejection — so it maps
+    explicitly instead of falling through to `internal_error`.
+    """
+    if isinstance(exc, RealtimeASRError):
+        return exc.code, exc.hint, exc.retryable
+    if isinstance(exc, AllBatchesFailed):
+        return "provider_rejected", "上游对全部片段识别失败，可稍后重试", True
+    code, hint, retryable = classify_message(str(exc))
+    if code == "internal_error":
+        return "provider_rejected", hint or "上游识别失败", True
+    return code, hint, retryable
 
 
 class RealtimeOfflineProvider:
@@ -41,9 +65,14 @@ class RealtimeOfflineProvider:
         settings: Settings,
         *,
         provider_factory: Callable[[Settings], ASRProvider] = create_provider,
+        asr_limiter: ASRCallLimiter | None = None,
     ) -> None:
         self._settings = settings
         self._provider_factory = provider_factory
+        # Injected rather than built here: a recording session and a file task
+        # share the same upstream, and private limiters would each allow
+        # asr_concurrency calls against it.
+        self._asr_limiter = asr_limiter
         self._queue: asyncio.Queue[RealtimeASREvent | None] = asyncio.Queue()
         self._session_id = ""
         self._config = RealtimeSessionCreate()
@@ -72,6 +101,17 @@ class RealtimeOfflineProvider:
 
     def bind_session(self, session_id: str) -> None:
         self._session_id = session_id
+
+    def bind_call_limiter(self, limiter: ASRCallLimiter) -> None:
+        """Use the app-wide provider-call cap instead of a private one.
+
+        Duck-typed like `bind_session`: the realtime registry builds providers from
+        `Settings` alone, so the manager hands the shared limiter to the providers
+        that care. Without it, each offline session would get its own
+        `ASRCallLimiter` and the batch fan-out would multiply `asr_concurrency`
+        by the number of live sessions.
+        """
+        self._asr_limiter = limiter
 
     async def start(self, config: RealtimeSessionCreate) -> None:
         self._config = config
@@ -122,25 +162,15 @@ class RealtimeOfflineProvider:
         self._finished = True
         try:
             audio_path = await self._materialize_audio()
-            async with self._provider_factory(self._settings) as provider:
-                with asr_call_context(
-                    source="realtime_offline",
-                    session_id=self._session_id,
-                    **self._monitor_audio_context,
-                ):
-                    result = await provider.transcribe(
-                        audio_path,
-                        prompt=self._config.prompt_hints or None,
-                    )
-            # Build text with speaker labels if words have speaker info
-            text_with_speakers = self._build_text_with_speakers(result.words, result.text)
-            await self._emit_text(text_with_speakers)
+            text = await self._transcribe_audio(audio_path)
+            await self._emit_text(text)
         except asyncio.CancelledError:
             # finish() is marked started before awaiting ASR; ensure event consumers
             # still receive the sentinel when shutdown cancels the transcription.
             self._queue.put_nowait(None)
             raise
         except Exception as e:  # noqa: BLE001
+            code, hint, retryable = _failure_protocol(e)
             self._queue.put_nowait(
                 RealtimeASREvent(
                     type="error",
@@ -148,6 +178,9 @@ class RealtimeOfflineProvider:
                     seq=self._next_event_seq(),
                     mode=SIMULATED_STREAMING,
                     error=str(e),
+                    error_code=code,
+                    hint=hint,
+                    retryable=retryable,
                 )
             )
             self._queue.put_nowait(None)
@@ -161,7 +194,7 @@ class RealtimeOfflineProvider:
                 type="final",
                 session_id=self._session_id,
                 seq=self._next_event_seq(),
-                text=result.text,
+                text=text,
                 is_final=True,
                 elapsed_ms=elapsed,
                 mode=SIMULATED_STREAMING,
@@ -178,6 +211,54 @@ class RealtimeOfflineProvider:
             )
         )
         self._queue.put_nowait(None)
+
+    async def _transcribe_audio(self, audio_path: Path) -> str:
+        """Recognize the accumulated recording, in batches if it is long.
+
+        A session can hold `realtime_max_session_bytes` of audio — one provider
+        call for that much PCM is one giant request body and one call that no
+        upstream timeout will cover. The same probe/split/limit treatment the file
+        pipeline uses applies here, with one difference: the batches have to come
+        back in order and be merged into a single transcript, because the realtime
+        contract is cumulative text.
+        """
+        budget = await probe_audio_budget(audio_path, self._settings)
+        if provider_is_non_streaming(self._settings):
+            # No split can help a provider that must hold the whole body: the cap
+            # is a property of the provider, so refuse the recording outright.
+            await check_inline_audio(
+                audio_path,
+                max_seconds=self._settings.asr_max_inline_audio_seconds,
+                max_bytes=self._settings.asr_max_inline_audio_bytes,
+                timeout=self._settings.ffmpeg_timeout,
+            )
+        prompt = self._config.prompt_hints or None
+
+        async with self._provider_factory(self._settings) as provider:
+
+            async def call(path: Path, batch_prompt: str | None):
+                return await provider.transcribe(path, prompt=batch_prompt)
+
+            with asr_call_context(
+                source="realtime_offline",
+                session_id=self._session_id,
+                **self._monitor_audio_context,
+            ):
+                text, words, _batch_count, _failed = await transcribe_in_batches(
+                    audio_path,
+                    budget,
+                    self._settings,
+                    work_dir=self._work_dir or audio_path.parent,
+                    source="realtime_offline",
+                    key=self._session_id,
+                    prompt=prompt,
+                    transcribe_func=call,
+                    limiter=self._asr_limiter,
+                )
+        # Timestamps from the batches are absolute; speaker labels come from the
+        # merged word stream so a multi-speaker recording keeps its turn-taking
+        # across batch boundaries rather than restarting at every cut.
+        return self._build_text_with_speakers(words, text)
 
     def events(self) -> AsyncIterator[RealtimeASREvent]:
         return self._events()

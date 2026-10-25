@@ -114,17 +114,17 @@ Only loopback is published by default (port from `.env`'s `PORT`, default 8999).
 
 ```bash
 ./build.sh --save                                  # build machine (same arch as the target):
-                                                 # → mediaflow-1.8.6-<build-arch>.tar.gz
+                                                 # → mediaflow-1.8.7-<build-arch>.tar.gz
                                                  # build.sh picks the arch from `uname -m`, so a
                                                  # matching build host needs no --platform; a
                                                  # cross-arch --platform build runs every layer
                                                  # under QEMU and is a fallback only
-docker load -i mediaflow-1.8.6-arm64.tar.gz        # target host
+docker load -i mediaflow-1.8.7-arm64.tar.gz        # target host
 cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d    # prod compose has no `build:` on purpose
 ```
 
-`docker-compose.prod.yml` pins `mediaflow:1.8.6` and mounts `./outputs`, `./temp`, `./config` as volumes, so re-loading an image keeps history and saved configs. The image runs as uid `10001`, so those directories need `chown -R 10001:10001 temp outputs config` once — or `MEDIAFLOW_UID` / `MEDIAFLOW_GID` in `.env` set to their current owner, which both compose files honour. Full field manual: [DEPLOY_ONSITE.md](DEPLOY_ONSITE.md).
+`docker-compose.prod.yml` pins `mediaflow:1.8.7` and mounts `./outputs`, `./temp`, `./config` as volumes, so re-loading an image keeps history and saved configs. The image runs as uid `10001`, so those directories need `chown -R 10001:10001 temp outputs config` once — or `MEDIAFLOW_UID` / `MEDIAFLOW_GID` in `.env` set to their current owner, which both compose files honour. Full field manual: [DEPLOY_ONSITE.md](DEPLOY_ONSITE.md).
 
 ## Wiring an upstream ASR you already run
 
@@ -274,6 +274,9 @@ See `.env.example`. Key variables:
 | `SPLIT_CHUNK_SECONDS` / `SPLIT_OVERLAP_SECONDS` | Target chunk length / overlap seconds (overlap strategy) | `30` / `2` |
 | `ASR_CONCURRENCY` / `ASR_MAX_RETRIES` | Concurrent segments / retries per segment | `4` / `3` |
 | `MAX_UPLOAD_BYTES` | Upload cap per request | 2 GiB |
+| `MAX_CONCURRENT_UPLOADS` | Concurrent in-flight uploads (429 `upload_limit` beyond) | 2 |
+| `STREAM_MAX_SESSIONS` | Concurrent `/asr/transcribe-stream` transcriptions (429 `session_limit` beyond, with `details.live/limit` and `Retry-After`) | 2 |
+| `ASR_MAX_INLINE_AUDIO_SECONDS` / `ASR_MAX_INLINE_AUDIO_BYTES` | `openai_chat_audio` only: the whole file goes inline as base64 JSON, so it cannot be streamed (measured 6.7x peak, 19 MB for a 90 s chunk, paid again per retry). Checked before the file is read; 413 `resource_limit`; `0` = off | 300 / 24 MiB |
 | `TASK_TTL_SECONDS` / `OUTPUT_TTL_SECONDS` | In-memory task state TTL / artifact retention | 3600 / 7 days |
 | `REALTIME_ASR_PROVIDER` | `realtime_mock` / `realtime_http` / `realtime_ws` / `realtime_offline` | `realtime_mock` |
 | `REALTIME_MAX_SESSIONS` | Concurrent realtime sessions across all clients (429 beyond) | 4 |

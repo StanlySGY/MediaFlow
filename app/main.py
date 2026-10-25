@@ -19,6 +19,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from app.api.routes import media_router, meta_router, router as asr_router
 from app.config import get_settings
 from app.security import require_token
+from app.services.asr.call_limiter import shared_call_limiter
 from app.services.metrics import request_metrics
 from app.services.realtime_manager import RealtimeManager
 from app.services.stream_manager import TaskManager
@@ -470,7 +471,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MediaFlow",
         description=API_DESCRIPTION,
-        version="1.8.6",
+        version="1.8.7",
         lifespan=_lifespan,
         docs_url=None,  # replaced by the local-asset /docs route below
         # The schema enumerates every endpoint and payload. FastAPI would serve
@@ -479,9 +480,16 @@ def create_app() -> FastAPI:
         openapi_url=None,
     )
     app.state.settings = settings
-    app.state.manager = TaskManager(settings)
-    app.state.realtime_manager = RealtimeManager(settings)
-    app.state.stream_transcribe_manager = StreamTranscribeManager(settings)
+    # One ASR-call cap for the whole app: the file-task pipeline and the
+    # upload-stream pipeline fan one upload out into many provider calls, and
+    # private limiters would multiply asr_concurrency by the number of managers.
+    asr_limiter = shared_call_limiter(settings)
+    app.state.asr_call_limiter = asr_limiter
+    app.state.manager = TaskManager(settings, asr_limiter=asr_limiter)
+    app.state.realtime_manager = RealtimeManager(settings, asr_limiter=asr_limiter)
+    app.state.stream_transcribe_manager = StreamTranscribeManager(
+        settings, asr_limiter=asr_limiter
+    )
     app.state.upload_gate = UploadGate(
         max_concurrent=settings.max_concurrent_uploads,
         min_free_bytes=settings.min_free_disk_bytes,

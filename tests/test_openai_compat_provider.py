@@ -89,3 +89,90 @@ async def test_plain_json_response_still_works(wav_file: Path):
         res = await p.transcribe(wav_file)
     assert res.text == "你好世界"
     assert res.words == []
+
+
+class _CountingPosixPath(type(Path())):
+    """A Path whose reads are recorded, so the body's chunking is observable."""
+
+    reads: list[int]
+
+    def open(self, mode="rb", *args, **kwargs):  # noqa: ANN002, ANN003
+        handle = super().open(mode, *args, **kwargs)
+        reads = self.reads
+
+        class _Recording:
+            def __enter__(self):
+                handle.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return handle.__exit__(*exc)
+
+            def read(self, size=-1):
+                chunk = handle.read(size)
+                if chunk:
+                    reads.append(len(chunk))
+                return chunk
+
+            def seek(self, *a):
+                return handle.seek(*a)
+
+            def __iter__(self):
+                return iter(handle)
+
+            def __getattr__(self, name):
+                return getattr(handle, name)
+
+        return _Recording()
+
+
+@respx.mock
+async def test_multipart_body_is_streamed_from_the_file_not_one_buffer(tmp_path):
+    """An upload-sized WAV must not sit in memory next to httpx's copy of it.
+
+    `read()` returning the whole file at once is what makes the peak ~2x the
+    file; the multipart encoder has to pull it in fixed-size pieces.
+    """
+    src = _CountingPosixPath(tmp_path / "big.wav")
+    src.reads = []
+    src.write_bytes(b"RIFF" + b"\x00" * 300_000)
+
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json={"text": "ok"}))
+    async with _provider() as p:
+        res = await p.transcribe(src)
+    assert res.text == "ok"
+    assert route.call_count == 1
+    # -1 / None means "read it all" — the failure mode this guards against.
+    assert src.reads, "the file was never read through the handle"
+    assert max(src.reads) <= 64 * 1024, src.reads
+    assert len(src.reads) > 1
+
+
+@respx.mock
+async def test_a_retry_rereads_the_file_from_the_start(tmp_path):
+    """A file field is re-rendered per attempt, so retrying costs no extra memory."""
+    src = _CountingPosixPath(tmp_path / "retry.wav")
+    src.reads = []
+    payload = b"RIFF" + bytes(range(256)) * 400
+    src.write_bytes(payload)
+
+    sent: list[bytes] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request.content)
+        if len(sent) == 1:
+            return httpx.Response(503, text="busy")
+        return httpx.Response(200, json={"text": "ok"})
+
+    respx.post(URL).mock(side_effect=_handler)
+    async with _provider(max_retries=2, retry_backoff=1.0) as p:
+        res = await p.transcribe(src)
+    assert res.text == "ok"
+    assert len(sent) == 2
+    # The boundary token is generated per request, so the bodies differ; what
+    # has to match is the file part. httpx seeks back to 0 and re-renders, so
+    # the second attempt ships the whole file rather than what is left after
+    # the first one stopped.
+    for body in sent:
+        assert payload in body
+        assert body.count(payload) == 1

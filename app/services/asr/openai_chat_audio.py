@@ -14,6 +14,7 @@ from app.services.asr.base import (
     WordTime,
     RetryableASRError,
 )
+from app.services.asr.inline_budget import check_inline_audio
 from app.services.asr.language import normalize_language
 from app.services.asr_monitoring import asr_monitor
 
@@ -43,6 +44,8 @@ class OpenAIChatAudioProvider:
         retry_backoff: float = 1.5,
         hotwords: list[str] | None = None,
         prompt_hints: str = "",
+        max_inline_audio_bytes: int = 0,
+        max_inline_audio_seconds: float = 0.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -53,6 +56,8 @@ class OpenAIChatAudioProvider:
         self._retry_backoff = retry_backoff
         self._hotwords = list(hotwords) if hotwords else []
         self._prompt_hints = prompt_hints.strip()
+        self._max_inline_audio_bytes = max_inline_audio_bytes
+        self._max_inline_audio_seconds = max_inline_audio_seconds
         self._client: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> "OpenAIChatAudioProvider":
@@ -98,11 +103,34 @@ class OpenAIChatAudioProvider:
             ]
         return body
 
+    async def _guard_inline_audio(self, file_path: Path) -> bytes:
+        """Refuse audio that cannot be inlined, then read it.
+
+        The audio becomes a base64 string inside a JSON body, so the whole
+        payload has to exist in memory at once and in several copies: file bytes,
+        the base64 str (1.33x), the data-URI (1.33x), the JSON body (1.33x) and
+        httpx's own copy of it — measured peak 6.7x the file with all of them
+        alive, and paid again on every retry. `openai_compat`
+        streams the same file from a handle; this provider cannot, so an over-cap
+        file has to be refused before it is read rather than paid for and sent.
+
+        The caps are the configured ones, and the caller's batch sizing
+        (`app.services.audio_budget`) is derived from the seconds cap, so a
+        normally-split file never trips either check.
+        """
+        await check_inline_audio(
+            file_path,
+            max_seconds=self._max_inline_audio_seconds,
+            max_bytes=self._max_inline_audio_bytes,
+            timeout=self._timeout,
+        )
+        return file_path.read_bytes()
+
     async def transcribe(self, file_path: Path, *, prompt: str | None = None) -> ASRResult:
         if self._client is None:
             raise RuntimeError("provider must be used as async context manager")
 
-        content = file_path.read_bytes()
+        content = await self._guard_inline_audio(file_path)
         audio_b64 = base64.b64encode(content).decode("ascii")
         body = self._build_body(audio_b64, prompt)
         call_id = asr_monitor.start_call(

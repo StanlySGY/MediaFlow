@@ -46,6 +46,8 @@ def _openai_chat_audio(settings: Settings) -> ASRProvider:
         retry_backoff=settings.asr_retry_backoff,
         hotwords=settings.asr_hotwords_list,
         prompt_hints=settings.asr_prompt_hints,
+        max_inline_audio_bytes=settings.asr_max_inline_audio_bytes,
+        max_inline_audio_seconds=settings.asr_max_inline_audio_seconds,
     )
 
 

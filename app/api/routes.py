@@ -61,9 +61,22 @@ from app.services.subtitles import to_srt, to_vtt
 log = logging.getLogger(__name__)
 
 
+# The floor, not a promise: nothing knows when a recording actually ends, so
+# 429 cannot carry a real "try again at" time. Two seconds is the shortest
+# interval that is worth a client's next attempt — a recorder releases its slot
+# within one chunk cycle (200ms timeslice + round trip), and a client polling
+# faster than this only adds load to the manager that just refused it. The
+# frontend treats it as the first step of its backoff, not as a fixed wait.
+_CAPACITY_RETRY_AFTER_SECONDS = 2
+
+
 def _http_error(status: int, exc: BaseException) -> HTTPException:
     payload = error_payload(exc)
-    return HTTPException(status, payload)
+    # Only a capacity refusal is a "come back in a moment". The other codes
+    # this helper serves (413/502/503) are either terminal for this request or
+    # already carry `retryable`, so inventing a delay for them would be noise.
+    headers = {"Retry-After": str(_CAPACITY_RETRY_AFTER_SECONDS)} if status == 429 else None
+    return HTTPException(status, payload, headers=headers)
 
 
 def _http_message(
@@ -1681,6 +1694,12 @@ async def create_transcribe_stream(
     except asyncio.CancelledError:
         dst.unlink(missing_ok=True)
         raise
+    except RealtimeASRError as e:
+        # Without this branch a capacity refusal (a RuntimeError subclass) fell
+        # into the catch-all below and became a 500 with the upload deleted —
+        # the client paid the whole upload only to be told something broke.
+        dst.unlink(missing_ok=True)
+        raise _http_error(429 if e.code == "session_limit" else 422, e)
     except Exception:
         dst.unlink(missing_ok=True)
         raise

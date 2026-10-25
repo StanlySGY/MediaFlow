@@ -57,6 +57,9 @@
 | 断线、刷新页面不丢消息 | `app/services/stream_manager.py:181-197`：快照与注册之间不 `await`（否则一条事件会既进快照又进队列，或两边都漏）；实时与 `/transcribe-stream` 的事件历史各限 512 条（`realtime_manager.py:68`、`stream_transcribe_manager.py:26`） | 上游的流断一条就没了 |
 | 会话资源边界 | `app/services/realtime_manager.py`：并发上限、累计音频/时长上限、已结束会话不再占额度、DELETE 后给 pump 有界 drain 窗口、`asyncio.shield` 保证被取消的 DELETE 仍释放上游资源 | 并发上限 4 是实测结果（CHANGELOG 1.7.2），不是拍的 |
 | 上游报错是自由文本 | `app/services/asr/realtime_base.py:31-85` `classify_message()` → 稳定的 `code` / `hint` / `retryable` | 前端只在 `retryable` 且文件仍在本地时才给「重试」按钮 |
+| 容量不足要让人能行动 | `app/services/asr/realtime_base.py:98-116` `error_payload()` 在 `details` 里带 `live`/`limit`，429 带 `Retry-After: 2`（`app/api/routes.py:70`）；前端 `src/lib/realtimeRecording.ts` `createSessionWithCapacityRetry()` 退避重试并把「当前 x/y 路占用中」接到按钮上 | 「在用 4/4 路」的徽章和「开始录音没反应」此前是两件事 |
+| 一整段长录音不该等于一次上游调用 | `app/services/audio_budget.py`：`probe_audio_budget()` 先探时长，超过 `split_chunk_seconds`（非流式 provider 还取 `asr_max_inline_audio_seconds`）才切，按 `duration / 上限` 扇出、共用 `ASR_CONCURRENCY` 闸门、word 时间戳平移回整段坐标，单批失败不丢其余批次 | 内存、body 大小和上游扇出是同一个上限决定的 |
+| 只有内联 JSON body 的 provider 得先拒绝 | `app/services/asr/inline_budget.py` `check_inline_audio()`：读文件前按时长/字节拒绝（时长优先看 WAV 头，不起子进程），`openai_chat_audio` 与整段批处理共用同一判断 | 内联 base64 实测峰值是文件的 6.7 倍，只能在读文件之前拦 |
 | 磁盘写满 / 并发上传压垮进程 | `app/services/upload_gate.py`：在读取请求体之前判定，超限 429 `upload_limit`、空间不足 507 `insufficient_storage` | 被拒的上传不落盘，也就不留残留文件 |
 | 崩溃残留与重启后的状态 | `app/main.py:349` `_sweep_temp_dir()`、`stream_manager.recover_interrupted()`：中断任务标成 `interrupted`，仍可查、可重提 | `kill -9` / OOM 之后留在 `temp/` 的源文件此前没人回收 |
 | 离线机器上的可运维性 | 见下文「离线现场部署」：非 root uid + 数据卷属主自检（不可写就拒绝启动并逐条指名路径）、`/docs` 与 `/openapi.json` 需令牌、Swagger 资源本地化、`--provenance=false` 保证离线 `docker load` 能加载、`SHUTDOWN_GRACE_SECONDS = 8.0` 优雅停机 | 这一层跟 ASR 无关，但它是交付到内网 / 昇腾机器的现实前提 |
@@ -145,12 +148,12 @@ docker compose up -d --build
 #    现场是 arm64 就在 arm64 打包机上跑，x86 现场同理。跨架构构建（--platform）只是兜底：
 #    每一层都在 QEMU 模拟下跑，apt/pip 层耗时数倍、更易超时。
 ./build.sh --save
-#    产物：mediaflow-1.8.6-<构建机架构>.tar.gz（arm64 打包机 → mediaflow-1.8.6-arm64.tar.gz）
+#    产物：mediaflow-1.8.7-<构建机架构>.tar.gz（arm64 打包机 → mediaflow-1.8.7-arm64.tar.gz）
 
 # 2. 把 .tar.gz、docker-compose.prod.yml、.env.example 拷到现场（U 盘 / 内网盘）
 
 # 3. 现场服务器（离线）：加载镜像
-docker load -i mediaflow-1.8.6-arm64.tar.gz
+docker load -i mediaflow-1.8.7-arm64.tar.gz
 
 # 4. 准备配置：ASR_BASE_URL 指向内网已部署的 ASR（无鉴权可留空 ASR_API_KEY）
 cp .env.example .env
@@ -159,7 +162,7 @@ cp .env.example .env
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.8.6`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
+`docker-compose.prod.yml` 刻意不含 `build:`——镜像没加载成功时直接报 `image not found`，而不是悄悄尝试离线构建再失败；它固定引用 `mediaflow:1.8.7`，多次交付时现场版本可追溯。`./outputs`、`./temp`、`./config` 已挂载为数据卷，更新镜像（重新 `docker load` + recreate）不丢历史结果，页面上保存的接入配置和密钥也留在宿主机的 `./config` 里。
 
 > `docker-compose.prod.yml` 默认用 `network_mode: host` 以绕开部分主机的 Docker bridge 转发问题，但 `.env.example` 将 `HOST` 设为 `127.0.0.1`。远程访问必须先设置 `ACCESS_TOKENS`，再将 `HOST` 改为 `0.0.0.0` 并放行宿主防火墙/安全组。普通 Docker 主机可改用 bridge 网络；默认端口映射应保留 loopback，远程发布也必须先启用令牌。
 
@@ -519,6 +522,8 @@ curl http://localhost:8999/asr/file/ab12.../result
 | `ASR_TIMESTAMPS` | 请求 word 级时间戳（用于时间轴拼接 + 字幕） | `true` |
 | `ASR_HOTWORDS` | 热词偏置，逗号分隔；`openai_compat` 会拼到 OpenAI `prompt` 字段，`openai_chat_audio` 不发送 | *(空 = 关)* |
 | `ASR_PROMPT_HINTS` | 自由文本上下文提示；`openai_compat` 会拼到 OpenAI `prompt` 字段，`openai_chat_audio` 不发送 | *(空 = 关)* |
+| `ASR_MAX_INLINE_AUDIO_SECONDS` | 仅 `openai_chat_audio`：整段音频以内联 base64 进 JSON body，无法流式，实测峰值为文件的 6.7 倍（90 s 音频 19 MB）且每次重试重付。读文件前按时长拒绝（413 `resource_limit`，不可重试）；`0` 关闭 | 300 |
+| `ASR_MAX_INLINE_AUDIO_BYTES` | 同上，按字节拒绝；对时长读不出来的输入这是唯一的闸门 | 24 MiB |
 | `SPLIT_STRATEGY` | `fixed` / `silence` / `overlap` | `silence` |
 | `SPLIT_CHUNK_SECONDS` | 分片目标长度 | `30` |
 | `SPLIT_OVERLAP_SECONDS` | 重叠秒数（仅 overlap 策略） | `2` |
@@ -526,6 +531,7 @@ curl http://localhost:8999/asr/file/ab12.../result
 | `ASR_MAX_RETRIES` | 单分片最大重试次数 | `3` |
 | `MAX_UPLOAD_BYTES` | 单次上传上限 | 2 GiB |
 | `MAX_CONCURRENT_UPLOADS` | 同时进行的上传数上限（超出返回 429 `upload_limit`）；`ASR_CONCURRENCY` 只约束上游调用，不约束落盘 | 2 |
+| `STREAM_MAX_SESSIONS` | 同时转录中的 `/asr/transcribe-stream` 会话上限（超出返回 429 `session_limit`，`details` 带 `live`/`limit`，响应带 `Retry-After`；前端会退避重试并显示「当前 x/y 路占用中」） | 2 |
 | `MIN_FREE_DISK_BYTES` | 剩余磁盘低于该值（加上本次声明的上传大小）时拒绝上传，返回 507 `insufficient_storage`；`0` 关闭检查 | 512 MiB |
 | `TASK_TTL_SECONDS` | 内存中任务状态的保留时长 | 3600 |
 | `OUTPUT_TTL_SECONDS` | 已结束任务的产物（音频/结果/字幕）保留时长，历史记录页按此说明展示 | 7 天 |

@@ -1,6 +1,6 @@
 # MediaFlow 现场部署与配置指南
 
-> 适用版本：`mediaflow:1.8.6`（**arm64**）。面向离线内网环境，全程无需联网。
+> 适用版本：`mediaflow:1.8.7`（**arm64**）。面向离线内网环境，全程无需联网。
 
 > **这份文档管什么**：MediaFlow 应用本身在现场的部署、配置、验证、运维、排错。
 > 上游 ASR 服务怎么起不在这里：昇腾 NPU 上的 Qwen3-ASR（8022/8023）见 [deploy/qwen3-asr-npu/DEPLOY.md](deploy/qwen3-asr-npu/DEPLOY.md)；
@@ -16,7 +16,7 @@
 
 | 文件 | 说明 |
 |---|---|
-| `mediaflow-1.8.6-arm64.tar.gz` | Docker 镜像离线包（arm64） |
+| `mediaflow-1.8.7-arm64.tar.gz` | Docker 镜像离线包（arm64） |
 | `docker-compose.prod.yml` | 部署编排文件（host 网络、只跑不构建） |
 | `.env.example` | 配置模板，据此生成 `.env` |
 | 本文档 | 部署 / 配置 / 验证 / 排错说明 |
@@ -39,7 +39,7 @@
 
 ```bash
 # 1. 加载镜像
-docker load -i mediaflow-1.8.6-arm64.tar.gz
+docker load -i mediaflow-1.8.7-arm64.tar.gz
 
 # 2. 生成配置文件（要改什么见第四节）
 cp .env.example .env
@@ -211,7 +211,7 @@ docker compose -f docker-compose.prod.yml up -d        # 自动用新镜像重�
 | 症状 | 可能原因 | 处理 |
 |---|---|---|
 | 本机 `curl localhost:8999/health` 不通 | 容器没起来 | `... logs` 看报错、`... ps` 看状态 |
-| 启动报 `image not found` | 镜像没加载或版本号不符 | `docker images` 确认有 `mediaflow:1.8.6`，与 compose 的 `image:` 一致 |
+| 启动报 `image not found` | 镜像没加载或版本号不符 | `docker images` 确认有 `mediaflow:1.8.7`，与 compose 的 `image:` 一致 |
 | 本机通、外部电脑打不开 | 防火墙 / 安全组没放行 | 见第五节放行 8999 |
 | `/asr/ping` 返回 `ok=false` 或超时 | ASR 地址 / 密钥 / 协议错，或网络不通 | 核对 `ASR_BASE_URL`/`ASR_API_KEY`/`ASR_PROVIDER`；在宿主上 `curl` 内网 ASR 地址确认可达 |
 | 字幕没有词级时间戳 | 用了 `openai_chat_audio` | 内网 ASR 支持 transcriptions 端点时改用 `openai_compat` |

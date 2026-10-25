@@ -20,12 +20,18 @@ class RealtimeASRError(RuntimeError):
         code: str | None = None,
         hint: str | None = None,
         retryable: bool | None = None,
+        details: dict[str, object] | None = None,
     ) -> None:
         super().__init__(message)
         inferred_code, inferred_hint, inferred_retryable = classify_message(message)
         self.code = code or inferred_code
         self.hint = inferred_hint if hint is None else hint
         self.retryable = inferred_retryable if retryable is None else retryable
+        # Machine-readable numbers behind the sentence, e.g. {"live": 4, "limit": 4}.
+        # A capacity refusal is only actionable if the client can tell "you are
+        # the fifth" from "the cap is one" -- the first is worth waiting for, the
+        # second means the deployment has to change.
+        self.details: dict[str, object] = dict(details or {})
 
 
 def classify_message(message: str) -> tuple[str, str | None, bool]:
@@ -33,7 +39,11 @@ def classify_message(message: str) -> tuple[str, str | None, bool]:
     low = message.lower()
     if "同时录音已达上限" in message:
         return "session_limit", "请等待他人结束录音后重试", True
-    if "累计音频" in message or "录音时长已达上限" in message:
+    if (
+        "累计音频" in message
+        or "录音时长已达上限" in message
+        or "内联音频" in message
+    ):
         return "resource_limit", "本次录音已达到资源上限，请重新开始", False
     if "session not found" in low or "未知会话" in message:
         return "session_not_found", "请确认会话是否已结束", False
@@ -85,15 +95,22 @@ def classify_message(message: str) -> tuple[str, str | None, bool]:
     return "internal_error", None, False
 
 
-def error_payload(exc: BaseException) -> dict[str, str | bool | None]:
-    """`code` / `message` / `hint` / `retryable` for an HTTP or SSE error."""
+def error_payload(exc: BaseException) -> dict[str, object]:
+    """`code` / `message` / `hint` / `retryable` (+ `details`) for an HTTP or SSE error.
+
+    The return type is `object`, not `str | bool | None`, because `details` carries
+    counters (live/limit) that a client needs as integers.
+    """
     if isinstance(exc, RealtimeASRError):
-        return {
+        payload: dict[str, object] = {
             "code": exc.code,
             "message": str(exc),
             "hint": exc.hint,
             "retryable": exc.retryable,
         }
+        if exc.details:
+            payload["details"] = exc.details
+        return payload
     code, hint, retryable = classify_message(str(exc))
     return {"code": code, "message": str(exc), "hint": hint, "retryable": retryable}
 

@@ -180,3 +180,51 @@ def test_registry_resolves_new_provider():
     assert "openai_chat_audio" in list_providers()
     p = create_provider(Settings(asr_api_key="k", asr_provider="openai_chat_audio"))
     assert isinstance(p, OpenAIChatAudioProvider)
+
+
+@respx.mock
+async def test_over_cap_audio_is_refused_before_any_request(tmp_path):
+    """The whole point of the cap is that the body is never built.
+
+    Inlining costs file bytes + base64 str + serialized body + httpx's copy,
+    ~1.33x the file and paid again per retry, so an over-cap file has to be
+    turned away before it is read.
+    """
+    import io as _io
+    import wave as _wave
+
+    buf = _io.BytesIO()
+    with _wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 16000 * 60)
+    long_wav = tmp_path / "minute.wav"
+    long_wav.write_bytes(buf.getvalue())
+
+    route = respx.post("https://example.test/v1/chat/completions").mock(
+        return_value=_ok_response("should never be sent"),
+    )
+    async with OpenAIChatAudioProvider(
+        "https://example.test/v1", "k", "qwen3-asr-flash",
+        max_inline_audio_seconds=30.0, max_inline_audio_bytes=0,
+    ) as p:
+        with pytest.raises(ASRError, match="内联音频时长已达上限"):
+            await p.transcribe(long_wav)
+    assert route.call_count == 0
+
+
+@respx.mock
+async def test_byte_cap_refuses_undecodable_audio_without_a_request(tmp_path):
+    huge = tmp_path / "huge.wav"
+    huge.write_bytes(b"RIFF" + b"\x00" * 4096)
+    route = respx.post("https://example.test/v1/chat/completions").mock(
+        return_value=_ok_response("no"),
+    )
+    async with OpenAIChatAudioProvider(
+        "https://example.test/v1", "k", "qwen3-asr-flash",
+        max_inline_audio_seconds=0.0, max_inline_audio_bytes=1024,
+    ) as p:
+        with pytest.raises(ASRError, match="内联音频体积已达上限"):
+            await p.transcribe(huge)
+    assert route.call_count == 0

@@ -19,6 +19,7 @@ from app.models.schemas import (
     RealtimeSessionStatus,
 )
 from app.services.asr import create_realtime_provider
+from app.services.asr.call_limiter import ASRCallLimiter
 from app.services.asr.realtime_base import RealtimeASRError, RealtimeASRProvider, classify_message
 
 log = logging.getLogger(__name__)
@@ -253,8 +254,13 @@ class RealtimeSessionExists(RuntimeError):
 
 
 class RealtimeManager:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, *, asr_limiter: ASRCallLimiter | None = None
+    ) -> None:
         self._settings = settings
+        # Only the offline adapter fans one session out into several provider
+        # calls, but the cap is app-wide so its batches queue behind file tasks.
+        self._asr_limiter = asr_limiter
         self._sessions: dict[str, _Session] = {}
         self._workers: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
@@ -346,19 +352,24 @@ class RealtimeManager:
                 1 for ses in self._sessions.values()
                 if ses.info.status not in _TERMINAL_STATUSES
             )
-            if live >= s.realtime_max_sessions:
+            limit = max(1, s.realtime_max_sessions)
+            if live >= limit:
                 capacity_error = RealtimeASRError(
-                    f"同时录音已达上限（{s.realtime_max_sessions} 路），"
-                    "请等待他人结束录音后重试",
+                    f"同时录音已达上限（{live}/{limit} 路占用中），正在等待空位",
                     code="session_limit",
-                    hint="请等待他人结束录音后重试",
+                    hint="正在等待空位",
                     retryable=True,
+                    # "you are the fifth" and "the cap is one" need different
+                    # answers, so both numbers ship with the refusal.
+                    details={"live": live, "limit": limit},
                 )
             else:
                 try:
                     provider = create_realtime_provider(s)
                     if hasattr(provider, "bind_session"):
                         provider.bind_session(session_id)
+                    if self._asr_limiter is not None and hasattr(provider, "bind_call_limiter"):
+                        provider.bind_call_limiter(self._asr_limiter)
                     session = _Session(session_id, config, provider)
                     self._sessions[session_id] = session
                 except Exception as exc:  # noqa: BLE001

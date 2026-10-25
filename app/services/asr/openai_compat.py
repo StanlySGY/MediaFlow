@@ -95,21 +95,32 @@ class OpenAICompatProvider:
             raise RuntimeError("provider must be used as async context manager")
 
         form = self._build_form(prompt)
-        content = file_path.read_bytes()
+        # The multipart body is streamed from the file, not from a buffer: an
+        # upload-sized WAV (up to max_upload_bytes, ~19 h of 16 kHz PCM after
+        # normalization) would otherwise sit in memory next to httpx's own copy
+        # of it for every retry. httpx re-reads a file field from offset 0 on
+        # each render (FileField.render_data seeks), so retrying costs nothing,
+        # and FileField.get_length() takes the length from fstat, so
+        # Content-Length is still sent.
+        request_bytes = file_path.stat().st_size
         call_id = asr_monitor.start_call(
             provider="openai_compat",
             model=self._model,
             base_url=self._base_url,
-            request_bytes=len(content),
+            request_bytes=request_bytes,
         )
         last_err: Exception | None = None
         try:
             for attempt in range(self._max_retries + 1):
                 try:
-                    files = {"file": (file_path.name, content, "audio/wav")}
-                    resp = await self._client.post(
-                        "/audio/transcriptions", data=form, files=files,
-                    )
+                    # The handle has to outlive the whole send: a file field
+                    # becomes a lazily iterated body stream, so closing it after
+                    # build_request would raise on the first chunk.
+                    with file_path.open("rb") as handle:
+                        files = {"file": (file_path.name, handle, "audio/wav")}
+                        resp = await self._client.post(
+                            "/audio/transcriptions", data=form, files=files,
+                        )
                     if resp.status_code >= 500 or resp.status_code == 429:
                         raise RetryableASRError(f"upstream {resp.status_code}: {resp.text[:200]}")
                     if resp.status_code >= 400:

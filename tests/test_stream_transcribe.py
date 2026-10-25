@@ -5,11 +5,13 @@ import io
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
 from app.services.asr.base import ASRResult
+from app.services.asr.realtime_base import RealtimeASRError
 from app.models.schemas import RealtimeSessionCreate
 from app.services.stream_transcribe_manager import StreamTranscribeManager
 
@@ -188,3 +190,200 @@ async def test_transcribe_session_creation_failure_cleans_uploaded_file(tmp_path
         )
 
     assert list(settings.temp_dir.iterdir()) == []
+
+
+async def test_stream_capacity_refusal_is_a_429_and_not_a_500(tmp_path, monkeypatch):
+    """The refusal is a `RealtimeASRError`, which is a plain RuntimeError.
+
+    Before it had its own branch it fell into the catch-all below the upload and
+    came back as a 500 — the client paid for a whole upload to be told that
+    something broke, with no way to know it was only "try again shortly".
+    """
+    from app.api import routes
+
+    settings = Settings(
+        temp_dir=tmp_path / "tmp",
+        output_dir=tmp_path / "out",
+        runtime_config_path=tmp_path / "runtime.json",
+    )
+    settings.temp_dir.mkdir(parents=True)
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+
+    class _Upload:
+        filename = "full.wav"
+
+        def __init__(self):
+            self._data = io.BytesIO(_minimal_wav())
+
+        async def read(self, size=-1):
+            return self._data.read(size)
+
+    class _FullManager:
+        async def create_session(self, file_path, config):
+            raise RealtimeASRError(
+                "同时转录已达上限（2/2 路占用中），正在等待空位",
+                code="session_limit",
+                hint="正在等待空位",
+                retryable=True,
+                details={"live": 2, "limit": 2},
+            )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await routes.create_transcribe_stream(
+            file=_Upload(), model=None, language=None, stm=_FullManager()
+        )
+    exc = excinfo.value
+    assert exc.status_code == 429
+    assert exc.detail["code"] == "session_limit"
+    assert exc.detail["details"] == {"live": 2, "limit": 2}
+    assert exc.headers == {"Retry-After": "2"}
+    # The upload it paid for is gone either way.
+    assert list(settings.temp_dir.iterdir()) == []
+
+
+async def test_stream_provider_error_still_maps_to_a_422(tmp_path, monkeypatch):
+    """Only a capacity refusal gets the 429; an upstream failure is the caller's."""
+    from app.api import routes
+
+    settings = Settings(
+        temp_dir=tmp_path / "tmp",
+        output_dir=tmp_path / "out",
+        runtime_config_path=tmp_path / "runtime.json",
+    )
+    settings.temp_dir.mkdir(parents=True)
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+
+    class _Upload:
+        filename = "bad.wav"
+
+        def __init__(self):
+            self._data = io.BytesIO(_minimal_wav())
+
+        async def read(self, size=-1):
+            return self._data.read(size)
+
+    class _RejectingManager:
+        async def create_session(self, file_path, config):
+            raise RealtimeASRError("上游拒绝了这次识别", code="provider_rejected")
+
+    with pytest.raises(HTTPException) as excinfo:
+        await routes.create_transcribe_stream(
+            file=_Upload(), model=None, language=None, stm=_RejectingManager()
+        )
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.headers is None
+    assert list(settings.temp_dir.iterdir()) == []
+
+
+def test_transcribe_stream_session_cap_is_enforced_over_http(tmp_path, monkeypatch):
+    """The cap is real over HTTP: the third concurrent upload is refused."""
+    monkeypatch.setenv("TEMP_DIR", str(tmp_path / "tmp"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("RUNTIME_CONFIG_PATH", str(tmp_path / "runtime.json"))
+    monkeypatch.setenv("ASR_PROVIDER", "openai_compat")
+    monkeypatch.setenv("ASR_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("ASR_API_KEY", "test-key")
+    monkeypatch.setenv("STREAM_MAX_SESSIONS", "1")
+    monkeypatch.setenv("SPLIT_CHUNK_SECONDS", "600")
+
+    from app.config import get_settings
+    from app.services import stream_transcribe_manager as stream_module
+
+    gate = asyncio.Event()
+
+    class _BlockingProvider:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def transcribe(self, _path, *, prompt=None):
+            await gate.wait()
+            return ASRResult(text="占位")
+
+    monkeypatch.setattr(stream_module, "create_provider", lambda _settings: _BlockingProvider())
+    get_settings.cache_clear()
+    from fastapi.testclient import TestClient
+
+    with TestClient(create_app()) as c:
+        first = c.post(
+            "/asr/transcribe-stream",
+            files={"file": ("first.wav", io.BytesIO(_minimal_wav()), "audio/wav")},
+        )
+        assert first.status_code == 200, first.text
+        second = c.post(
+            "/asr/transcribe-stream",
+            files={"file": ("second.wav", io.BytesIO(_minimal_wav()), "audio/wav")},
+        )
+        assert second.status_code == 429, second.text
+        detail = second.json()["detail"]
+        assert detail["code"] == "session_limit"
+        assert detail["details"] == {"live": 1, "limit": 1}
+        assert int(second.headers["retry-after"]) >= 1
+        gate.set()
+
+
+def test_a_long_upload_is_sliced_into_bounded_provider_calls(tmp_path, monkeypatch):
+    """One file, one call was unbounded: a 2 GiB upload normalizes to ~19 h of PCM.
+
+    The batch count inherits `duration / split_chunk_seconds`, which is what
+    bounds memory, request body size and upstream fan-out at the same time.
+    """
+    monkeypatch.setenv("TEMP_DIR", str(tmp_path / "tmp"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("RUNTIME_CONFIG_PATH", str(tmp_path / "runtime.json"))
+    monkeypatch.setenv("ASR_PROVIDER", "openai_compat")
+    monkeypatch.setenv("ASR_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("ASR_API_KEY", "test-key")
+    monkeypatch.setenv("SPLIT_STRATEGY", "fixed")
+    monkeypatch.setenv("SPLIT_CHUNK_SECONDS", "2")
+    monkeypatch.setenv("SPLIT_OVERLAP_SECONDS", "0")
+    monkeypatch.setenv("STREAM_MAX_SESSIONS", "4")
+
+    from app.config import get_settings
+    from app.services import stream_transcribe_manager as stream_module
+
+    seen: list[Path] = []
+
+    class _BatchProvider:
+        def __init__(self):
+            self.calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def transcribe(self, path, *, prompt=None):
+            self.calls += 1
+            seen.append(path)
+            return ASRResult(text=f"批次{self.calls}")
+
+    fake = _BatchProvider()
+    monkeypatch.setattr(stream_module, "create_provider", lambda _settings: fake)
+    get_settings.cache_clear()
+    from fastapi.testclient import TestClient
+
+    with TestClient(create_app()) as c:
+        r = c.post(
+            "/asr/transcribe-stream",
+            files={
+                "file": ("six.wav", io.BytesIO(_minimal_wav(6.0)), "audio/wav"),
+            },
+        )
+        assert r.status_code == 200, r.text
+        sid = r.json()["session_id"]
+        with c.stream("GET", f"/asr/transcribe-stream/{sid}/events") as resp:
+            events = [line for line in resp.iter_lines() if line.startswith("data:")]
+
+    assert fake.calls == 3  # 6 s at a 2 s ceiling
+    # Each call got a slice, and the worker's own normalized file was not sent whole.
+    assert len(set(seen)) == 3
+    final = [line for line in events if '"final"' in line]
+    assert final, events
+    import json
+
+    text = json.loads(final[-1][len("data:"):].strip())["text"]
+    assert "批次1" in text and "批次3" in text

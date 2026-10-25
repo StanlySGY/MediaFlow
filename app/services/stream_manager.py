@@ -22,6 +22,7 @@ from app.models.schemas import (
 from app.services import splitter
 from app.services.asr import ASRError, create_provider
 from app.services.asr.realtime_base import classify_message
+from app.services.asr.call_limiter import ASRCallLimiter
 from app.services.asr_monitoring import asr_call_context
 from app.services.ffmpeg_service import FFmpegError, normalize_to_wav, probe_duration
 from app.services.history_index import SEARCH_TEXT_LIMIT, HistoryIndex
@@ -61,27 +62,6 @@ def public_status(status: str) -> str:
 class TaskCancelled(Exception):
     """Raised inside the pipeline when the caller asked to stop."""
 
-
-class _ASRCallLimiter:
-    """Dynamically sized, manager-wide cap on active provider calls."""
-
-    def __init__(self, settings: Settings) -> None:
-        self._settings = settings
-        self._active = 0
-        self._condition = asyncio.Condition()
-
-    async def __aenter__(self):
-        async with self._condition:
-            await self._condition.wait_for(
-                lambda: self._active < max(1, self._settings.asr_concurrency)
-            )
-            self._active += 1
-        return self
-
-    async def __aexit__(self, *_args) -> None:
-        async with self._condition:
-            self._active -= 1
-            self._condition.notify_all()
 
 
 def _read_json(path: Path) -> dict | None:
@@ -207,9 +187,17 @@ class _Task:
 class TaskManager:
     """Owns task lifecycle, segment-level event streaming, persistence, and eviction."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        asr_limiter: ASRCallLimiter | None = None,
+    ) -> None:
         self._settings = settings
-        self._asr_limiter = _ASRCallLimiter(settings)
+        # Injected by create_app() so the file-task pipeline and the
+        # upload-stream pipeline count against one cap. The fallback keeps
+        # standalone construction working.
+        self._asr_limiter = asr_limiter or ASRCallLimiter(settings)
         self._tasks: dict[str, _Task] = {}
         self._lock = asyncio.Lock()
         self._bg: set[asyncio.Task] = set()

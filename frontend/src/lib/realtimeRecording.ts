@@ -1,4 +1,4 @@
-import { errorMessage } from './errors';
+import { ApiError, errorMessage, responseError } from './errors';
 
 /**
  * The non-React half of the realtime recorder.
@@ -14,6 +14,115 @@ import { errorMessage } from './errors';
 /** RealtimeManager.list() returns every session it still holds, including the
  *  terminal ones; only non-terminal ones occupy a slot in the cap. */
 export const CAPACITY_TERMINAL_STATUSES: string[] = ['done', 'failed', 'closed'];
+
+/**
+ * The capacity refusal, read as data.
+ *
+ * The server answers a full cap with 429 / code="session_limit" and
+ * details={live, limit}, plus a Retry-After. That is the difference between
+ * "you are the fifth recorder" (wait, someone will finish) and "the cap is one"
+ * (this deployment needs `REALTIME_MAX_SESSIONS` raised, and waiting forever is
+ * just a longer way of failing). Both readings need the numbers, so the panel
+ * reads them out of the error object instead of pattern-matching the sentence.
+ */
+export type CapacityRefusal = {
+  live: number | null;
+  limit: number | null;
+  /** The server's own Retry-After, in ms, when it sent one. */
+  retryAfterMs: number | null;
+};
+
+/** 429 is the only status the gateway uses for a full cap; `retryable` is the
+ *  server's own word for "ask again". Both are checked so a code rename cannot
+ *  silently turn a wait into a dead end. */
+export const parseCapacityRefusal = (error: unknown): CapacityRefusal | null => {
+  if (!(error instanceof ApiError)) return null;
+  if (error.code !== 'session_limit' && error.status !== 429) return null;
+  if (error.retryable === false) return null;
+  const num = (value: unknown) =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null;
+  return {
+    live: num(error.details?.live),
+    limit: num(error.details?.limit),
+    retryAfterMs: error.retryAfterMs,
+  };
+};
+
+/** Retry floor and ceiling. The floor is the server's 2s Retry-After: a
+ *  recording frees its slot within one chunk cycle, so polling faster than that
+ *  only adds load to the manager that just refused. The ceiling exists because a
+ *  cap can be saturated by hour-long recordings, and a client that retries
+ *  every 15s for a few minutes is still a user who can act, not a spinner. */
+export const CAPACITY_RETRY_BASE_MS = 2000;
+export const CAPACITY_RETRY_MAX_MS = 15000;
+export const CAPACITY_RETRY_MAX_ATTEMPTS = 6;
+
+/** attempt is 0-based: the first wait honours the server's hint, later ones
+ *  back off from it so a genuinely busy pool is not hammered. */
+export const capacityRetryDelayMs = (
+  refusal: CapacityRefusal,
+  attempt: number,
+): number => {
+  const base = Math.max(CAPACITY_RETRY_BASE_MS, refusal.retryAfterMs ?? CAPACITY_RETRY_BASE_MS);
+  return Math.min(base * 2 ** Math.max(0, attempt), CAPACITY_RETRY_MAX_MS);
+};
+
+/** What the user sees while the panel waits: the same "在用 4/4 路" numbers the
+ *  badge already shows, turned from a static counter into the reason the
+ *  开始录音 button has not done anything yet. */
+export const capacityRetryNotice = (
+  refusal: CapacityRefusal,
+  attempt: number,
+  maxAttempts = CAPACITY_RETRY_MAX_ATTEMPTS,
+): string => {
+  const full =
+    refusal.live !== null && refusal.limit !== null
+      ? `当前 ${refusal.live}/${refusal.limit} 路占用中`
+      : '录音并发名额已满';
+  return attempt >= maxAttempts - 1
+    ? `${full}，等待 ${maxAttempts} 次仍没有空位。请结束一路录音，或让管理员调大 REALTIME_MAX_SESSIONS。`
+    : `${full}，正在等待空位（第 ${attempt + 1}/${maxAttempts} 次）`;
+};
+
+/**
+ * POST a session-creation request, retrying only a capacity refusal.
+ *
+ * Returns the final Response rather than throwing, so the caller's existing
+ * "not ok -> show the sentence" path still handles every other failure
+ * exactly as it did. `shouldAbort` is checked before each wait: the panel
+ * bumps its generation when the user stops or unmounts, and a waiting retry
+ * must not resurrect a recording nobody asked for.
+ */
+export const createSessionWithCapacityRetry = async (
+  request: () => Promise<Response>,
+  {
+    shouldAbort = () => false,
+    onRefused,
+    maxAttempts = CAPACITY_RETRY_MAX_ATTEMPTS,
+    sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  }: {
+    shouldAbort?: () => boolean;
+    onRefused?: (refusal: CapacityRefusal, attempt: number, delayMs: number) => void;
+    maxAttempts?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<Response> => {
+  let response = await request();
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (response.ok || shouldAbort()) return response;
+    const refusal = parseCapacityRefusal(await responseError(response));
+    if (!refusal || shouldAbort()) return response;
+    const delayMs = capacityRetryDelayMs(refusal, attempt);
+    onRefused?.(refusal, attempt, delayMs);
+    await sleep(delayMs);
+    // Checked again after the wait: if the user stopped or unmounted while we
+    // slept, posting anyway would resurrect a recording nobody asked for.
+    if (shouldAbort()) return response;
+    response = await request();
+  }
+  return response;
+};
+
 
 /** Preferred order: Opus-in-WebM is what the server's ffmpeg step handles best,
  *  so it is asked for first and the rest are fallbacks for browsers without it. */

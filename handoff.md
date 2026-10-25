@@ -349,6 +349,29 @@ session_id 级别的共享状态。违反此隔离会导致并发订阅者在不
 ### 版本
 发布 **1.8.6**。因为本轮不含后端/前端代码与 Dockerfile 层变更，**只替换 `docker-compose.prod.yml` 就能修掉现场的启动崩溃循环**，不必重新 `docker load`。交付命令照旧：在与现场同架构的打包机上 `./build.sh --save` → `mediaflow-1.8.6-<架构>.tar.gz`（~0.2G），现场 `docker load -i mediaflow-1.8.6-arm64.tar.gz && docker compose -f docker-compose.prod.yml up -d`。
 
+## 1.8.7：整段音频的上游调用上界 + 容量拒绝可行动（2026-10-25）
+
+### 这一轮做了什么
+- **4B｜整段音频不再有「一次调用」这条路径**：`/asr/transcribe-stream` 归一化出 `normalized.wav` 后整个送出去，`realtime_offline` 把一路录音攒够（≤100 MiB）再整个送出去。2 GiB 上传归一化后约 19 小时 16 kHz PCM，请求体大小、上游推理时长、`ASR_TIMEOUT` 谁都不覆盖——症状是「转录一直转圈到最后超时，而超时那会儿一整份 body 已经付过了」。新增 `app/services/audio_budget.py`（227 行）：`probe_audio_budget()` 一次 ffprobe 拿时长，`max_batch_seconds()` 定上限，超限才走既有切分器扇出，word 时间戳按批次起点平移回整段坐标，单批失败不丢其余批次，全部失败才 `AllBatchesFailed` → `provider_rejected` / `retryable: true`。本来就在一批之内的输入不切（不起额外 ffmpeg 进程）。
+- **4A｜`openai_compat` 的 multipart body 改为从文件句柄流式**：`file_path.read_bytes()` 会让同一份文件同时存在两份（我们的 bytes + httpx 的 `ByteContent`），每次重试再复制一次。`tracemalloc` 对同一个 asyncio socket 服务端实测：**流式 0.65 MB / 内联 19.2 MB（90 s 音频，文件 2.88 MB）**，且流式侧峰值不随文件长度增长（90/300/900 s → 653 KB / 717 KB / 898 KB）。800,048 B 的 WAV 实测 `content-length 800,633`、33 个 chunk、最大 chunk 恰 65,536 B；`FileField.render_data` 每次 `seek(0)` 所以重试不额外花钱。`with handle` 的范围必须包住 `post()`——file field 是惰性 body stream，`build_request` 之后关掉句柄会在第一个 chunk 上炸。
+- **4C｜只有内联 JSON body 的 provider 加入场检查**：`openai_chat_audio` 的形态是 `input_audio.data = "data:audio/wav;base64,..."`，没法流式。逐段实测：文件 1.00x、base64 1.33x、data-URI 1.33x、JSON body 1.3333x，**全部同时存活时峰值 6.7x**（90 s → 19.2 MB，300 s → 64.0 MB，900 s → 192.0 MB），每次重试重付。新增 `app/services/asr/inline_budget.py`（88 行）：`check_inline_audio()` 在**读文件之前**按时长/字节拒绝，时长优先读 WAV 头（`wave` 模块，不起 ffprobe 子进程），读不出时长时字节上限是唯一杠杆。超限 → 413 `resource_limit`（`retryable: false`，**不带** `Retry-After`）。新增 `ASR_MAX_INLINE_AUDIO_SECONDS=300` / `ASR_MAX_INLINE_AUDIO_BYTES=25165824`（24 MiB，`0` 关闭，均在运行时可改白名单）。`NON_STREAMING_PROVIDERS` 目前只有 `openai_chat_audio`——`openai_compat` 明确排除，把上限套上去只会缩小本来不需要缩小的批次。
+- **5C｜`ASR_CONCURRENCY` 不再被 manager 数量乘掉**：`stream_manager.py` 自带私有 `_ASRCallLimiter`，`StreamTranscribeManager` 整条链路**没有任何** provider 并发闸门（HEAD 核对：`git show HEAD:app/services/stream_transcribe_manager.py` 无 limiter），`RealtimeManager` 也没有。`asr_concurrency=4` 实际含义是「每条链路各 4」。新增 `app/services/asr/call_limiter.py`（83 行）：`weakref.WeakKeyDictionary[loop, _LoopCount]`——`asyncio.Condition` 绑定单个 loop，而同一 limiter 会在不同 loop 上被 acquire（每条 pytest 用例一个新 loop），照单 loop 写会直接 `got Future attached to a different loop`；上限在 acquire 时才读，所以运行时改 `ASR_CONCURRENCY` 对下一次调用生效。`shared_call_limiter(settings)` 造唯一一个实例，`create_app()` 注入 `TaskManager` / `RealtimeManager` / `StreamTranscribeManager`（realtime 再 duck-typed 转交给会扇出的 provider）。私有类删掉；manager 保留 `asr_limiter or ASRCallLimiter(settings)`，单独构造仍可用。新增 `STREAM_MAX_SESSIONS=2`。
+- **5A｜容量拒绝从「一句红字」变成可行动的信息**：`RealtimeASRError` 新增 `details`（`{"live": 4, "limit": 4}`），`error_payload()` 非空时带出；429 带 `Retry-After: 2`（`_CAPACITY_RETRY_AFTER_SECONDS` 注释写明是地板不是承诺），其他 4xx/5xx 不编造延时。前端 `ApiError` 带 `status/code/hint/retryable/details/retryAfterMs`（顺带摊平 FastAPI 的 `{"detail": {...}}`，并不重复已写在句子里的 hint）；`createSessionWithCapacityRetry()` 只对容量拒绝退避重试（`min(max(2000, Retry-After) × 2^attempt, 15000)`，最多 6 次），面板显示中性 `role="status"` 的「当前 4/4 路占用中，正在等待空位（第 1/6 次）」而不是错误警报，每次拒绝后重拉真实并发数，`shouldAbort()` 在 sleep 前后各查一次。
+  - **顺带修一个 HTTP 层 bug**：`RealtimeASRError` 是 `RuntimeError` 子类不是 `ASRError`，`create_transcribe_stream` 没有对应分支 → 容量拒绝落进 catch-all → **500 且上传文件已删**（客户端付完整个上传只换来「内部错误」）。补 `except RealtimeASRError` → 429 / 422。
+- **文档数字改正**：本轮实测否定了三处旧写法——「峰值约 4x」（实测 6.7x）、「90 s 批次 2.88 MB 磁盘 / 3.8 MB base64 / 5.7 MB body」（实测 2,880,044 B 磁盘、3,840,181 B body，body 就是 base64 那份不是再乘一次）、「2 GiB → ~70 小时 PCM」（16 kHz 单声道 pcm_s16le = 32 KB/s，实为 ~19 小时）。`.env`、`.env.example`、`app/config.py`、`app/services/audio_budget.py`、`app/services/asr/openai_compat.py`、`app/services/stream_transcribe_manager.py`、`tests/test_stream_transcribe.py`、`README.md`、`README.en.md` 九处随实测值改写。测量本身也修过一次：初版探测服务端用 `readexactly(content_length)` 把整个 body 读进 sink 进程，tracemalloc 数到的是 sink 的副本（流式被抬高到 2.0x、内联 11x）；改成 1 MiB 分块排水后才是真值。
+
+### 基线与实例状态
+- 后端 `python -m pytest -q` → **336 passed**（原 298，+38）。新增/扩写：`tests/test_audio_budget.py` 17、`tests/test_inline_audio_budget.py` 7、`tests/test_realtime_offline_provider.py` +3、`tests/test_openai_chat_audio.py` +2、`tests/test_openai_compat_provider.py` +2、`tests/test_realtime_routes.py` +3、`tests/test_stream_transcribe.py` +4。
+- 前端 `npm test` → **22 files / 175 passed**（原 22 / 154，+21：`realtimeRecording.test.ts` +15、`errors.test.ts` +6）；`npx tsc -b` exit 0；`npm run lint` 干净。`ruff check app asr-deploy-code tests` 干净。
+- 本地 8999 实例：仓库代码已是 1.8.7，但 8999 上跑的镜像仍是 **1.8.5**（`mediaflow:1.8.5` = `mediaflow:latest`，id `718bc955548b`），`/openapi.json` 报 `1.8.5`。本轮改动**尚未构建进镜像**，也未重建（本轮无依赖变更、无 Dockerfile 层变更）。要实地跑 1.8.7：`./build.sh --up`（本机原生 amd64）或 `./build.sh --save` 产出交付包。
+
+### 版本
+发布 **1.8.7**（`app/main.py`、`frontend/package.json` + lock、`build.sh`、`docker-compose.prod.yml` 四处一致；`DEPLOY_ONSITE.md` / `ONSITE_DEPLOY.md` / `README.md` / `README.en.md` 的 tarball 名与 compose 引脚同步）。本轮**含后端与前端代码变更**，因此必须重新 `docker load`：在与现场同架构的打包机上 `./build.sh --save` → `mediaflow-1.8.7-<架构>.tar.gz`，现场 `docker load -i mediaflow-1.8.7-<架构>.tar.gz && docker compose -f docker-compose.prod.yml up -d`。注意本轮新增了三个运行时可改字段（`STREAM_MAX_SESSIONS`、`ASR_MAX_INLINE_AUDIO_SECONDS`、`ASR_MAX_INLINE_AUDIO_BYTES`），现场如果沿用旧 `.env` 则取默认值（2 / 300 / 24 MiB），需要别的取值就在现场 `.env` 里写清——仓库 `.env` 是 git 跟踪的，服务端 `sed` 改的值会被下一次 `git pull` 覆盖。
+
+### 有意未做
+- **5B（排队与位次）**：容量满时是「拒绝 + 客户端退避」，不是「进队 + 告诉你排第几」。5A 之后拒绝已经可读、可重试；队列的正确性取决于现场到底挤不挤，而 `STREAM_MAX_SESSIONS=2` / `REALTIME_MAX_SESSIONS=4` 多久被打满目前没有任何数据。现场如果反复撞 429，再上队列（位次、队列上限、排队超时）。
+
+
 ## 悬而未决：无（截至本次更新）
 
 
