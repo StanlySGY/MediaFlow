@@ -1,7 +1,9 @@
-# Qwen3-ASR CUDA/NPU 部署与实时语音接入技术说明
+# MediaFlow 对接 Qwen3-ASR 的 CUDA/NPU 部署与实时识别适配说明
 
 > 依据：MediaFlow main 分支已提交代码基线 117552146254（1.8.7）。
 > 范围：描述仓库内的 Qwen3-ASR 服务部署方案，以及 MediaFlow 对文件/实时识别协议的适配。当前未把现场某个镜像认定为该源码的构建产物。
+
+> **文档定位：本文是 MediaFlow 的 Qwen3-ASR 上游集成专项，不是 MediaFlow 平台总体技术方案。** MediaFlow 自身的长音频处理、任务管理、Provider 抽象、实时会话、SSE 事件、字幕校对、资源保护和 Web 控制台见 [MediaFlow 平台总体技术方案](mediaflow-platform-architecture-and-voice-processing.md)；实时会话与容量保护细节见 [实时识别专题](realtime-asr-and-resource-guardrails.md)。
 
 ## 1. 整体架构
 

@@ -1,7 +1,9 @@
-# 实时 ASR 处理链路与资源保护技术说明
+# MediaFlow 实时 ASR 处理链路与资源保护技术说明
 
 > 依据：仓库 main 分支，已提交基线 117552146254（版本记录 1.8.7）。
 > 本文只描述该提交及其之前已提交的实现，不把当前工作区尚未提交的改动写成已交付功能。
+
+> 本文是 MediaFlow 总体方案中的实时识别与资源保护专题；项目整体定位、文件转写、结果拼接、字幕校对、Web UI 和部署边界见 [MediaFlow 平台总体技术方案](mediaflow-platform-architecture-and-voice-processing.md)。
 
 ## 1. 项目定位与处理链路
 
