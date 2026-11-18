@@ -92,7 +92,29 @@ Web UI 不只是模型调试页，包含文件任务、实时识别、服务配�
 - 服务配置在线维护、上游连通测试、Provider/模型选择和原始响应查看。
 - 历史任务查询、结果回放，以及移动端响应式布局。
 
-### 3.8 音视频后处理与部署运维
+### 3.8 视频文件接入、音轨转写与视频预览
+
+MediaFlow 不仅接收音频文件，也支持将带有音轨的视频作为转写输入：
+
+- 后端文件上传白名单包含 .mp4、.mov、.mkv；前端上传区也允许选择音频和视频文件。
+- 文件通过 POST /asr/file（旧别名 /asr/task）提交。服务端使用 FFmpeg 将输入媒体规范化为 16 kHz、单声道 PCM WAV；转换参数包含 -vn，即不保留视频流，只提取音轨供 ASR 识别。
+- 因此，视频转写识别的是视频中的语音/音频内容，转写时间轴基于提取出的音轨；它不是对视频画面进行视觉理解。
+- 前端保留用户选取的原始视频对象，检测到 video MIME 时使用 HTML video 播放器预览。点击转写分段可将本地视频播放器定位到对应时间，便于一边看画面一边校对语音转写。
+- 若视频没有可解码的音轨，音轨抽取/规范化可能失败，不能保证产生转写结果。
+
+视频处理边界：
+
+| 能力 | 当前实现 |
+|---|---|
+| 视频文件上传 | 支持 MP4、MOV、MKV 等后端白名单格式 |
+| 视频语音转写 | FFmpeg 抽取音轨后复用 MediaFlow 文件 ASR、长音频切分和字幕流程 |
+| 视频预览 | 前端原始视频播放器，可按转写分段时间定位 |
+| 视频无损合并 | /media/concat 使用 FFmpeg concat demuxer + stream copy，要求输入容器/编码等参数兼容 |
+| 视频画面理解 | 当前未发现抽帧、视觉模型分析、场景理解或画面 OCR 能力 |
+
+这意味着可以将 MediaFlow 描述为“支持视频文件音轨转写、视频预览校对和视频无损合并的音视频处理工具”，不能描述为完整的视频内容理解或视频编辑平台。
+
+### 3.9 音视频后处理与部署运维
 
 - POST /media/concat 支持同容器/编码参数的多段音频或视频通过 FFmpeg concat demuxer 和 -c copy 无损拼接；不支持混格式拼接或任意转码。
 - Docker 提供部署封装；支持离线镜像交付、数据卷持久化、非 root 运行、数据卷权限检查、受保护的 API 文档入口和优雅停机。
@@ -131,10 +153,15 @@ Qwen3-ASR 部署参数、CUDA/NPU 容器和协议细节见配套文档《MediaFl
 | 实时会话生命周期 | app/services/realtime_manager.py |
 | ASR 调用监控 | app/services/asr_monitoring.py |
 | 字幕生成 | app/services/subtitles.py |
-| FFmpeg 封装 | app/services/ffmpeg_service.py |
-| 前端文件转写 | frontend/src/hooks/useFileTask.ts、frontend/src/components/HistoryView.tsx |
+| FFmpeg 音频抽取/规范化与媒体探测 | app/services/ffmpeg_service.py（normalize_to_wav、probe_duration） |
+| 视频无损合并 API | app/api/routes.py（concat_media_files）、app/services/ffmpeg_service.py（concat_media） |
+| 前端文件转写与音视频类型识别 | frontend/src/hooks/useFileTask.ts、frontend/src/components/HistoryView.tsx |
+| 前端视频预览与时间定位 | frontend/src/App.tsx、frontend/src/hooks/useFileTask.ts（mediaIsVideo、handleSeek） |
+| 音视频文件选择与无损合并页面 | frontend/src/components/Dropzone.tsx、frontend/src/components/ConcatView.tsx |
 | 前端实时录音和会话交互 | frontend/src/components/RealtimeRecorderPanel.tsx、RealtimeView.tsx |
 | 前端音频电平和校对 | frontend/src/components/AudioLevelMeter.tsx、HistoryTranscriptDialog.tsx |
+| 视频无损合并回归测试 | tests/test_routes.py（test_concat_merges_video） |
+| 视频格式白名单验证 | tests/test_runtime_config.py（allowed_exts 含 .mp4） |
 | Qwen3-ASR CUDA 部署 | deploy/qwen3-asr-cuda/ |
 | Qwen3-ASR NPU 部署 | deploy/qwen3-asr-npu/ |
 | 配套 ASR 模型服务代码 | asr-deploy-code/ |
